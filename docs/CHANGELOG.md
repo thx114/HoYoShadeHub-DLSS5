@@ -84,6 +84,12 @@
   按 id 覆盖内置条目 —— 以后加插件 / 换来源 / 加 OptiScaler 分支**不用重新发版**。
 - 远端目录**每天最多自动拉一次**；拉不到就用上次缓存 / 内置表。设置页（关于）新增「拉取插件目录」手动刷新。
 
+## 1.0.22（app-9.9.32）· 首个公开发布
+
+- 远端目录地址指向本 fork 的仓库：`https://raw.githubusercontent.com/thx114/HoYoShadeHub-DLSS5/main/catalog/`。
+- 同一份 zip 作为 GitHub Release **v1.0.22** 发布（以后「一键更新 / 退回」就读这个 Release）。
+
+
 
 
 

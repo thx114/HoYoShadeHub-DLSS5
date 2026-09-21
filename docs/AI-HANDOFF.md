@@ -44,7 +44,7 @@
 
 | 东西 | 值 |
 | --- | --- |
-| 最近 dev 实例 | `build\HoYoShadeHub\app-9.9.30\`（每次 +1，如 9.9.30 → 9.9.31） |
+| 最近 dev 实例 | `build\HoYoShadeHub\app-9.9.32\`（每次 +1，如 9.9.32 → 9.9.33） |
 | 沙箱启动器 | `build\smoke4\{HoYoShadeHub.exe, config.ini}`，`build\smoke4\app-9.9.9-smoke` 是指向 dev app 目录的 **junction**（换版本 = `cmd /c rmdir` 后重建 junction） |
 | 沙箱用户数据 | `D:\CODE\HoyoDLSS5\build\smoke\data`（`config.ini` 里的 UserDataFolder；里面有 `HoYoShadeHubDatabase.db`，**手动 HoYoShade 根目录**就存在这个库里 = `D:\APPS\HoYoShadeHub\HoYoShade`） |
 | 便携包产物 | `build\release\HoYoShadeHub_Portable_<ver>_x64.zip`（约 166 MB，含背景动图压到 2.4 MB） |
@@ -252,7 +252,11 @@ docs/
   （只约束二进制再分发）、Starward 是 MIT；**不要把 ReShade / HoYoShade / addon / OptiScaler 的二进制放进源码仓库**。
 - **上游对照**（同一份文档 §2）：我们落后上游两个提交 `d90b6dd`（Beta 客户端 config.ini 修复）和 `b11c63b`（HEA/PP 测试服选项迁到官方 API，14 个文件）；
   这两个提交和我们改过的文件大面积重叠，**不能直接覆盖** —— 正路是 `git init` + `upstream` remote + cherry-pick 手工合并（工作目录现在没有 `.git`）。
-- **还没做**：GitHub 更新渠道 + 一键更新 + 退回旧版本（设计见 `OPEN-SOURCE-PLAN.md` §5，需要仓库地址）。
+- **开源仓库（已建并推送）**：`https://github.com/thx114/HoYoShadeHub-DLSS5`（public / main，首次提交 `f8c8909`，494 文件 / 16 MB；
+  `.gitignore` 里加了 `build/`；README 顶部有 fork 声明）。`thx114/hoyodlss5` 是放 DC 插件的仓库，**别混用**。
+- **Release v1.0.22**（首个公开发布，Latest）挂的资产就是 `HoYoShadeHub_Portable_1.0.22_x64.zip`；远端目录
+  `raw.githubusercontent.com/thx114/HoYoShadeHub-DLSS5/main/catalog/{plugins,optiscaler}.json` 已验证 HTTP 200。
+- **还没做**：GitHub 更新渠道 + 一键更新 + 退回旧版本（设计见 `OPEN-SOURCE-PLAN.md` §5，仓库地址已定，可以开工）。
 
 ---
 
@@ -333,8 +337,8 @@ Select-String -Path docs\GAMES-AND-INJECT.md -Pattern '^### 8\.' | Select-Object
 
 | 东西 | 值 |
 | --- | --- |
-| 最近 dev 版本 | app-9.9.30 |
-| 最近便携包 | `HoYoShadeHub_Portable_1.0.21_x64.zip`（914 条目 / 166.5 MB，根目录不带 config.ini） |
+| 最近 dev 版本 | app-9.9.32 |
+| 最近便携包 | `HoYoShadeHub_Portable_1.0.22_x64.zip`（914 条目 / 166.9 MB，不带 config.ini），已发 GitHub Release v1.0.22 |
 | 扩展自测 | PASS 255 / FAIL 0（离线） |
 | 内置插件目录条目 | `src/HoYoShadeHub.Extensions/Resources/catalog.builtin.json`（8 条，含 `dlss5.neural.interposer`、`dlss5.bridge`） |
 | DLSS Enabler | v0.9.4，`D:\APPS\HoYoShadeHub\DLSS-Enabler` |

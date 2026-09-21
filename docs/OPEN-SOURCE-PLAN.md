@@ -89,3 +89,16 @@ raw.githubusercontent.com/<owner>/<repo>/main/catalog/{plugins,optiscaler}.json�
 2. 一键更新：下载 HoYoShadeHub_Portable_<版本>_x64.zip → 复用现有 SetupService/UpdateWindow 的落盘逻辑换包；
 3. 退回：版本列表里选比当前**旧**的 tag 也能装（列表里标出「当前版本」「比当前新 / 旧」），这就是退回；
    顺带在本地保留上一份 zip（<用户数据目录>\.hysx\update-backup\）以防新版本起不来。
+
+## 6. 实际执行记录（2026-09-21）
+
+- 仓库：**https://github.com/thx114/HoYoShadeHub-DLSS5**（public，默认分支 main）。
+  另一个仓库 `thx114/hoyodlss5` 是用户放 DC 插件用的，**不要混用**（远端目录 / 更新渠道都指前者）。
+- 已推：整棵源码树（494 个文件 / 16 MB）+ `catalog/{plugins,optiscaler}.json`；`.gitignore` 追加了 `build/`
+  （里面有本地 HoYoShade 沙箱、已发布 app 目录、便携包 zip，**绝不能入库**）；删掉了 `.github/workflows/`（上游 CI，引用上游 secrets）；
+  README 顶部加了 fork 声明 + 协议说明。
+- 首次提交：`f8c8909`（git 身份 `thx114` + `52259890+thx114@users.noreply.github.com`）。
+- Release：**v1.0.22**（Latest），资产 `HoYoShadeHub_Portable_1.0.22_x64.zip`（914 条目 / 166.9 MB，不带 config.ini）。
+- 远端目录已验证可匿名访问：`raw.githubusercontent.com/thx114/HoYoShadeHub-DLSS5/main/catalog/{plugins,optiscaler}.json` → HTTP 200。
+- 客户端默认地址已指向该仓库（`RemoteCatalogDefaults.BaseUrl`，换仓库只改这一行）。
+- 仍未实现：§5 的 GitHub 更新渠道 + 一键更新 + 退回（仓库地址已定，可以直接开工）。
