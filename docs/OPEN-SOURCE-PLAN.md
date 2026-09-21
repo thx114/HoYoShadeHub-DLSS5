@@ -101,4 +101,6 @@ raw.githubusercontent.com/<owner>/<repo>/main/catalog/{plugins,optiscaler}.json�
 - Release：**v1.0.22**（Latest），资产 `HoYoShadeHub_Portable_1.0.22_x64.zip`（914 条目 / 166.9 MB，不带 config.ini）。
 - 远端目录已验证可匿名访问：`raw.githubusercontent.com/thx114/HoYoShadeHub-DLSS5/main/catalog/{plugins,optiscaler}.json` → HTTP 200。
 - 客户端默认地址已指向该仓库（`RemoteCatalogDefaults.BaseUrl`，换仓库只改这一行）。
-- 仍未实现：§5 的 GitHub 更新渠道 + 一键更新 + 退回（仓库地址已定，可以直接开工）。
+- **§5 已完成**（1.0.23）：设置 → 关于新增「更新渠道」（官方 / GitHub · 本分支）；GitHub 渠道用
+  `Features/Update/GithubUpdateService.cs`（复用 Extensions 的 `GithubReleaseResolver` + `DownloadService`）列版本、下载 zip、
+  解压到便携包根目录；装旧 tag 就是退回，装前把 `version.ini` 备份到 `.hysx\update-backup\`；装完「重启生效」。

@@ -89,6 +89,14 @@
 - 远端目录地址指向本 fork 的仓库：`https://raw.githubusercontent.com/thx114/HoYoShadeHub-DLSS5/main/catalog/`。
 - 同一份 zip 作为 GitHub Release **v1.0.22** 发布（以后「一键更新 / 退回」就读这个 Release）。
 
+## 1.0.23（app-9.9.33）· GitHub 更新渠道 + 一键更新 + 退回
+
+- 设置 → 关于新增**「更新渠道」**：官方（RPC 元数据）/ **GitHub · 本分支**。切到 GitHub 后：
+  - 「刷新版本列表」列出本仓库所有 Release（标出「当前版本 / 比当前新 / 比当前旧」）；
+  - 「下载并安装」一键装：下载 `HoYoShadeHub_Portable_<版本>_x64.zip` → 解压到便携包根目录（多出 `app-<版本>\` 并改写 `version.ini`）→「重启生效」；
+  - **退回**：在版本列表里选一个比当前旧的 tag 装即可；旧版本目录原样留着，装前还会把当前 `version.ini` 备份到 `<用户数据目录>\.hysx\update-backup\`。
+
+
 
 
 

@@ -112,7 +112,47 @@
                 </ComboBox.ItemTemplate>
             </ComboBox>
             
-            <Grid Margin="0,12,0,0" ColumnSpacing="16">
+            <!--  更新渠道：官方（RPC 元数据）/ GitHub（本 fork 的仓库，能一键更新 + 退回）  -->
+            <StackPanel Margin="0,12,0,0" Orientation="Horizontal" Spacing="8">
+                <TextBlock VerticalAlignment="Center" Text="更新渠道：" />
+                <ComboBox MinWidth="260" SelectedIndex="{x:Bind UpdateChannelIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="官方（RPC 元数据）" />
+                    <ComboBoxItem Content="GitHub · 本分支（thx114/HoYoShadeHub-DLSS5）" />
+                </ComboBox>
+            </StackPanel>
+
+            <!--  GitHub 渠道：版本列表（比当前旧的就是退回）+ 一键安装  -->
+            <StackPanel Margin="0,8,0,0" Spacing="8" Visibility="{x:Bind IsGithubChannel, Mode=OneWay}">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Height="40" Command="{x:Bind RefreshGithubVersionsCommand}" Content="刷新版本列表" />
+                    <ComboBox MinWidth="260"
+                              Header="版本"
+                              ItemsSource="{x:Bind GithubVersions, Mode=OneWay}"
+                              PlaceholderText="点「刷新版本列表」"
+                              SelectedItem="{x:Bind SelectedGithubVersion, Mode=TwoWay}" />
+                    <Button Height="40"
+                            VerticalAlignment="Bottom"
+                            Command="{x:Bind InstallGithubVersionCommand}"
+                            Content="下载并安装（选旧的即退回）"
+                            Style="{ThemeResource AccentButtonStyle}" />
+                </StackPanel>
+
+                <ProgressBar Height="4"
+                             Maximum="100"
+                             Value="{x:Bind GithubProgress, Mode=OneWay}"
+                             Visibility="{x:Bind IsGithubProgressVisible, Mode=OneWay}" />
+
+                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Text="{x:Bind GithubStatusText, Mode=OneWay}"
+                           TextWrapping="Wrap" />
+
+                <Button Command="{x:Bind RestartAfterGithubUpdateCommand}"
+                        Content="重启生效"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Visibility="{x:Bind IsGithubRestartVisible, Mode=OneWay}" />
+            </StackPanel>
+
+            <Grid Margin="0,12,0,0" ColumnSpacing="16" Visibility="{x:Bind IsOfficialChannel, Mode=OneWay}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />

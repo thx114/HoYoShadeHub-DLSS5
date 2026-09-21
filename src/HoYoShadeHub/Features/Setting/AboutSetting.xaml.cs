@@ -1,6 +1,8 @@
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Features.Update;
 using HoYoShadeHub.Frameworks;
@@ -8,6 +10,7 @@ using HoYoShadeHub.Helpers;
 using HoYoShadeHub.Language;
 using HoYoShadeHub.Models;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
@@ -164,6 +167,129 @@ public sealed partial class AboutSetting : PageBase
 
     /// <summary>手动拉远端目录（插件 + OptiScaler）的结果文本</summary>
     public string CatalogRefreshText { get; set => SetProperty(ref field, value); } = string.Empty;
+
+
+    // ---------------- GitHub 更新渠道（本 fork）----------------
+
+    private readonly GithubUpdateService _githubUpdate = new();
+
+    /// <summary>GitHub 渠道的版本列表</summary>
+    public ObservableCollection<GithubVersionInfo> GithubVersions { get; } = [];
+
+    /// <summary>更新渠道下拉的选中项：0 官方 / 1 GitHub</summary>
+    public int UpdateChannelIndex
+    {
+        get => AppConfig.UpdateChannel;
+        set
+        {
+            if (AppConfig.UpdateChannel == value)
+            {
+                return;
+            }
+
+            AppConfig.UpdateChannel = value;
+            OnPropertyChanged(nameof(UpdateChannelIndex));
+            OnPropertyChanged(nameof(IsOfficialChannel));
+            OnPropertyChanged(nameof(IsGithubChannel));
+        }
+    }
+
+    public Visibility IsOfficialChannel => UpdateChannelIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility IsGithubChannel => UpdateChannelIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>选中的 GitHub 版本</summary>
+    public GithubVersionInfo? SelectedGithubVersion { get; set => SetProperty(ref field, value); }
+
+    public string GithubStatusText { get; set => SetProperty(ref field, value); } = string.Empty;
+
+    public double GithubProgress { get; set => SetProperty(ref field, value); }
+
+    public Visibility IsGithubProgressVisible { get; set => SetProperty(ref field, value); } = Visibility.Collapsed;
+
+    public Visibility IsGithubRestartVisible { get; set => SetProperty(ref field, value); } = Visibility.Collapsed;
+
+    /// <summary>刷新 GitHub 仓库里的版本列表（含「当前 / 比当前新 / 比当前旧」标注）</summary>
+    [RelayCommand]
+    private async Task RefreshGithubVersionsAsync()
+    {
+        try
+        {
+            GithubStatusText = "正在读 GitHub Release…";
+            List<GithubVersionInfo> versions = await _githubUpdate.ListVersionsAsync();
+
+            GithubVersions.Clear();
+            foreach (GithubVersionInfo version in versions)
+            {
+                GithubVersions.Add(version);
+            }
+
+            SelectedGithubVersion = versions.FirstOrDefault(v => v.IsCurrent) ?? versions.FirstOrDefault();
+
+            GithubStatusText = versions.Count == 0
+                ? "没读到版本 —— 仓库里还没有 Release，或者网络不通。"
+                : $"共 {versions.Count} 个版本。当前版本 {AppConfig.AppVersion}；选比当前旧的就是退回。";
+        }
+        catch (Exception ex)
+        {
+            GithubStatusText = "读取失败：" + ex.Message;
+            _logger.LogError(ex, "List GitHub versions");
+        }
+    }
+
+    /// <summary>下载并安装选中的版本（装旧版本 = 退回；旧目录会留着）</summary>
+    [RelayCommand]
+    private async Task InstallGithubVersionAsync()
+    {
+        if (SelectedGithubVersion is not { } version)
+        {
+            GithubStatusText = "先在「版本」里选一个。";
+            return;
+        }
+
+        try
+        {
+            IsGithubRestartVisible = Visibility.Collapsed;
+            IsGithubProgressVisible = Visibility.Visible;
+            GithubProgress = 0;
+
+            var progress = new Progress<DownloadProgress>(p =>
+            {
+                GithubProgress = p.Percent ?? 0;
+                GithubStatusText = p.Percent is null
+                    ? $"正在下载 {version.Tag}… {p.BytesReceived / 1024d / 1024d:F1} MB"
+                    : $"正在下载 {version.Tag}… {p.Percent.Value:F0}%";
+            });
+
+            string zipPath = await _githubUpdate.DownloadAsync(version.Tag, progress);
+
+            GithubStatusText = $"正在解压到 {GithubUpdateService.PortableRoot}…";
+            await _githubUpdate.ApplyAsync(zipPath);
+
+            GithubStatusText = $"已装好 {version.Tag}：新版本在 app-{version.Version} 目录，" +
+                               "旧版本目录原样留着（想退回就再装一个旧版本）。重启后生效。";
+            IsGithubRestartVisible = Visibility.Visible;
+            _logger.LogInformation("GitHub update installed: {Tag}", version.Tag);
+        }
+        catch (Exception ex)
+        {
+            GithubStatusText = "安装失败：" + ex.Message;
+            _logger.LogError(ex, "Install GitHub version");
+        }
+        finally
+        {
+            IsGithubProgressVisible = Visibility.Collapsed;
+        }
+    }
+
+    [RelayCommand]
+    private void RestartAfterGithubUpdate()
+    {
+        if (!GithubUpdateService.Restart())
+        {
+            GithubStatusText = "找不到便携包启动器（HoYoShadeHub.exe），请自己手动重启。";
+        }
+    }
 
 
     /// <summary>

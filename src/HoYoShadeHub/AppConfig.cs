@@ -1007,6 +1007,15 @@ public static class AppConfig
         set => SetValue(value);
     }
 
+    /// <summary>
+    /// 更新渠道：0 = 官方（RPC 元数据），1 = GitHub（本 fork 的仓库，支持一键更新 + 退回旧版本）。
+    /// </summary>
+    public static int UpdateChannel
+    {
+        get => GetValue(0);
+        set => SetValue(value);
+    }
+
     /// <summary>上次成功拉取远端目录的时间（UTC，空 = 从没拉过）</summary>
     public static DateTimeOffset LastCatalogFetchUtc
     {
