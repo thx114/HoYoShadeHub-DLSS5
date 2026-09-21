@@ -758,7 +758,7 @@ public sealed partial class GlobalPluginPage : PageBase
     private bool _isRefreshingOptiScaler;
 
     /// <summary>每个来源拉过的版本 tag（装完刷新时直接用，不再打网络）</summary>
-    private readonly Dictionary<string, List<string>> _optiScalerVersions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<ExtensionVersion>> _optiScalerVersions = new(StringComparer.OrdinalIgnoreCase);
 
     private OptiScalerLibrary OptiLib => new(AppConfig.OptiScalerRootPath);
 
@@ -822,7 +822,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 }
 
                 // 之前拉过版本列表就直接用（装完/删完重新刷新时不用再打一遍网络）
-                if (_optiScalerVersions.TryGetValue(source.Id, out List<string>? cached))
+                if (_optiScalerVersions.TryGetValue(source.Id, out List<ExtensionVersion>? cached))
                 {
                     vm.ApplyVersions(cached);
                 }
@@ -966,22 +966,21 @@ public sealed partial class GlobalPluginPage : PageBase
         try
         {
             List<ExtensionVersion> versions = await OptiDownloads.ListVersionsAsync(item.Source);
-            List<string> tags = [.. versions.Select(v => v.Tag)];
 
-            _optiScalerVersions[item.Source.Id] = tags;
-            item.ApplyVersions(tags);
+            _optiScalerVersions[item.Source.Id] = versions;
+            item.ApplyVersions(versions);
 
-            if (tags.Count == 0)
+            if (versions.Count == 0)
             {
                 item.StatusText = "没拿到任何版本 —— 仓库可能已改名 / 删除，或者网络不通。";
             }
             else if (item.SelectedVersion is { } selected)
             {
-                item.StatusText = $"共 {tags.Count} 个版本，默认选中 {OptiScalerSourceItemViewModel.TagOf(selected)}。";
+                item.StatusText = $"共 {versions.Count} 个版本，默认选中 {item.TagOf(selected)}。";
             }
             else
             {
-                item.StatusText = $"共 {tags.Count} 个版本（第一个是最新的）。";
+                item.StatusText = $"共 {versions.Count} 个版本（第一个是最新的）。";
             }
         }
         catch (Exception ex)
@@ -1003,7 +1002,7 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
-        string tag = OptiScalerSourceItemViewModel.TagOf(item.SelectedVersion);
+        string tag = item.TagOf(item.SelectedVersion);
         if (string.IsNullOrWhiteSpace(tag))
         {
             ShowInfo("还没选版本", "点开「版本」下拉，选一个版本。", InfoBarSeverity.Warning);
@@ -1327,11 +1326,7 @@ public sealed partial class GlobalPluginPage : PageBase
             List<ExtensionVersion> versions = await Task.Run(
                 () => _manager.ListVersionsAsync(item.Manifest, 30));
 
-            item.Versions.Clear();
-            foreach (ExtensionVersion version in versions)
-            {
-                item.Versions.Add(version.Tag);
-            }
+            item.ApplyVersions(versions);
 
             item.VersionsLoaded = true;
             item.VersionsHint = versions.Count == 0
@@ -1362,7 +1357,7 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
-        string? tag = item.SelectedVersion;
+        string? tag = item.TagOf(item.SelectedVersion);
         if (string.IsNullOrWhiteSpace(tag))
         {
             TextBlock_Status.Text = "先在「版本」里选一个。";
@@ -1716,8 +1711,44 @@ public partial class PluginItemViewModel : ObservableObject
         SetGlobalEnabledSilently(AreEnabled(GlobalAddonFiles));
     }
 
-    /// <summary>可装版本（GitHub tag，新 → 旧）—— 点开卡片时才去拉</summary>
+    /// <summary>可装版本（GitHub tag，新 → 旧）—— 点开卡片时才去拉。
+    /// 下拉里显示的是「tag · 发布日期」，真正用的 tag 在 <see cref="_versionTags"/> 里。</summary>
     public ObservableCollection<string> Versions { get; } = [];
+
+    private readonly Dictionary<string, string> _versionTags = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 铺进下拉。显示文本带上发布日期：GitHub 自己的列表是按 release 的创建时间排的，
+    /// 光看 tag 顺序会觉得「乱」，把时间摆出来就一眼能看明白为什么是这个顺序。
+    /// </summary>
+    public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
+    {
+        Versions.Clear();
+        _versionTags.Clear();
+
+        foreach (ExtensionVersion version in versions)
+        {
+            string display = DisplayOf(version);
+            _versionTags[display] = version.Tag;
+            Versions.Add(display);
+        }
+    }
+
+    /// <summary>下拉里选的文本还原成 tag</summary>
+    public string? TagOf(string? display)
+    {
+        if (string.IsNullOrWhiteSpace(display))
+        {
+            return null;
+        }
+
+        return _versionTags.TryGetValue(display, out string? tag) ? tag : display.Trim();
+    }
+
+    private static string DisplayOf(ExtensionVersion version)
+        => version.Published is { } published
+            ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
+            : version.Tag;
 
     [ObservableProperty]
     private string? selectedVersion;
@@ -2146,35 +2177,60 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
     /// <summary>这个来源能装的版本（下拉里显示的文本，当前版本带后缀）</summary>
     public ObservableCollection<string> Versions { get; } = [];
 
+    private readonly Dictionary<string, string> _versionTags = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>这个来源已经装过的版本 tag</summary>
     public HashSet<string> InstalledVersions { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>「当前版本」：当前启用的那个，或这个来源最近装的那个</summary>
     public string? CurrentVersion { get; set; }
 
-    /// <summary>把 tag 列表铺进下拉，并默认选中当前版本（用户要求）</summary>
-    public void ApplyVersions(IReadOnlyList<string> tags)
+    /// <summary>把版本列表铺进下拉，并默认选中当前版本（用户要求）</summary>
+    public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
     {
         Versions.Clear();
-        foreach (string tag in tags)
+        _versionTags.Clear();
+
+        foreach (ExtensionVersion version in versions)
         {
-            Versions.Add(DisplayOf(tag));
+            string display = DisplayOf(version);
+            _versionTags[display] = version.Tag;
+            Versions.Add(display);
         }
 
         if (CurrentVersion is { Length: > 0 } current)
         {
-            string display = DisplayOf(current);
-            SelectedVersion = Versions.FirstOrDefault(v => string.Equals(v, display, StringComparison.OrdinalIgnoreCase));
+            SelectedVersion = Versions.FirstOrDefault(v => string.Equals(
+                _versionTags.TryGetValue(v, out string? tag) ? tag : v,
+                current,
+                StringComparison.OrdinalIgnoreCase));
         }
     }
 
-    /// <summary>下拉里显示的文本：当前版本带「(当前)」</summary>
-    public string DisplayOf(string tag)
-        => string.Equals(tag, CurrentVersion, StringComparison.OrdinalIgnoreCase) ? tag + CurrentSuffix : tag;
+    /// <summary>下拉里显示的文本：tag · 发布日期，当前版本再带「(当前)」</summary>
+    private string DisplayOf(ExtensionVersion version)
+    {
+        string text = version.Published is { } published
+            ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
+            : version.Tag;
+
+        return string.Equals(version.Tag, CurrentVersion, StringComparison.OrdinalIgnoreCase)
+            ? text + CurrentSuffix
+            : text;
+    }
 
     /// <summary>从下拉文本还原出版本 tag</summary>
-    public static string TagOf(string? display)
-        => string.IsNullOrWhiteSpace(display) ? string.Empty : display.Replace(CurrentSuffix, string.Empty).Trim();
+    public string TagOf(string? display)
+    {
+        if (string.IsNullOrWhiteSpace(display))
+        {
+            return string.Empty;
+        }
+
+        return _versionTags.TryGetValue(display, out string? tag)
+            ? tag
+            : display.Replace(CurrentSuffix, string.Empty).Trim();
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ActionText))]

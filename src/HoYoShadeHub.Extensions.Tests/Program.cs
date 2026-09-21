@@ -326,6 +326,59 @@ foreach (var entry in builtin.Extensions.Where(e => e.ConflictsWith is { Length:
 var diag = manager.Diagnose();
 Check(diag.AddonPathConfigured, "体检：AddonPath 已配置");
 
+Console.WriteLine();
+Console.WriteLine("== 10. 版本下拉的排序（GitHub 按创建时间列，我们按发布时间排）==");
+// 真实样本：RankFTW/rhi-repo 的 releases 页前四条。卡片顺序 = 创建顺序，发布时间是乱序的（09-19 / 09-18 / 09-20 / 09-21）。
+string cardsHtml =
+    "<a href=\"/RankFTW/rhi-repo/releases/tag/renodx-dlss5-6.5.3\">RenoDX DLSS5 6.5.3</a>"
+    + "<relative-time class=\"no-wrap\" datetime=\"2026-09-19T17:09:53Z\"></relative-time>"
+    + "<a href=\"/RankFTW/rhi-repo/releases/tag/renodx-dlss5-6.4.1\">6.4.1</a>"
+    + "<relative-time class=\"no-wrap\" datetime=\"2026-09-18T22:45:36Z\"></relative-time>"
+    + "<a href=\"/RankFTW/rhi-repo/releases/tag/renodx-dlss-SF-26.0919.2025\">SF</a>"
+    + "<relative-time datetime=\"2026-09-10 23:50:46 UTC\"></relative-time>"   // commit 时间那种写法，不能当成发布时间
+    + "<relative-time class=\"no-wrap\" datetime=\"2026-09-20T12:24:35Z\"></relative-time>"
+    + "<a href=\"/RankFTW/rhi-repo/releases/tag/DLSS-Enabler-4.10.0.7\">Enabler</a>"
+    + "<relative-time class=\"no-wrap\" datetime=\"2026-09-21T05:02:09Z\"></relative-time>";
+
+var cards = GithubReleaseResolver.ExtractReleaseCards(cardsHtml);
+Check(cards.Count == 4, $"抓到 4 条 release 卡片（实际 {cards.Count}）");
+Check(cards[0].Tag == "renodx-dlss5-6.5.3" && cards[0].Published == DateTimeOffset.Parse("2026-09-19T17:09:53Z"),
+    $"卡片顺序还是页面的顺序，第一条带上了发布时间（{cards[0].Tag} / {cards[0].Published:u}）");
+Check(cards[2].Tag == "renodx-dlss-SF-26.0919.2025" && cards[2].Published == DateTimeOffset.Parse("2026-09-20T12:24:35Z"),
+    "commit 时间那种 datetime 不会被当成发布时间，卡片里第一个 ISO 时间才是");
+
+List<ExtensionVersion> reordered = GithubReleaseResolver.SortByPublishedDescending(cards.Select(c => new ExtensionVersion(c.Tag, c.Published)));
+Check(reordered.Select(v => v.Tag).SequenceEqual(["DLSS-Enabler-4.10.0.7", "renodx-dlss-SF-26.0919.2025", "renodx-dlss5-6.5.3", "renodx-dlss5-6.4.1"]),
+    "重排后按发布时间新 → 旧：" + string.Join(" > ", reordered.Select(v => v.Tag)));
+
+List<ExtensionVersion> noTime = GithubReleaseResolver.SortByPublishedDescending(
+    [new ExtensionVersion("b"), new ExtensionVersion("a", DateTimeOffset.Parse("2026-09-01T00:00:00Z")), new ExtensionVersion("c")]);
+Check(noTime[0].Tag == "a" && noTime[1].Tag == "b" && noTime[2].Tag == "c",
+    "没拿到时间的垫底，且保持原来的相对顺序：" + string.Join(" > ", noTime.Select(v => v.Tag)));
+
+// atom：<updated> 在 tag 链接**前面**，跨 entry 的正则会把它配到下一条的时间上
+string atomXml =
+    "<feed><entry>"
+    + "<id>tag:github.com,2008:Repository/1172082676/renodx-dlss5-6.5.3</id>"
+    + "<updated>2026-09-19T17:09:53Z</updated>"
+    + "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/RankFTW/rhi-repo/releases/tag/renodx-dlss5-6.5.3\"/>"
+    + "<title>RenoDX DLSS5 6.5.3</title>"
+    + "</entry><entry>"
+    + "<id>tag:github.com,2008:Repository/1172082676/DLSS-Enabler-4.10.0.7</id>"
+    + "<updated>2026-09-21T05:02:09Z</updated>"
+    + "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/RankFTW/rhi-repo/releases/tag/DLSS-Enabler-4.10.0.7\"/>"
+    + "</entry></feed>";
+
+List<ExtensionVersion> atomVersions = GithubReleaseResolver.ParseAtom(atomXml);
+Check(atomVersions.Count == 2, $"atom 解析出 2 条（实际 {atomVersions.Count}）");
+Check(atomVersions[0].Tag == "renodx-dlss5-6.5.3" && atomVersions[0].Published == DateTimeOffset.Parse("2026-09-19T17:09:53Z"),
+    $"atom 每条 tag 配的是自己那条的时间，不是下一条的（{atomVersions[0].Tag} / {atomVersions[0].Published:u}）");
+Check(atomVersions[1].Tag == "DLSS-Enabler-4.10.0.7" && atomVersions[1].Published == DateTimeOffset.Parse("2026-09-21T05:02:09Z"),
+    $"atom 第二条同理（{atomVersions[1].Tag} / {atomVersions[1].Published:u}）");
+Check(GithubReleaseResolver.SortByPublishedDescending(atomVersions)[0].Tag == "DLSS-Enabler-4.10.0.7",
+    "atom 的顺序不是时间序，重排后才把 09-21 那条放到最前（atom 里它排第二）");
+
+
 // 目录里的 tagPattern / assetPattern 是人工写的，必须真的连一次 GitHub 才知道对不对。
 // 默认不跑，加 --online 才跑。
 if (args.Contains("--online"))
@@ -380,6 +433,46 @@ if (args.Contains("--online"))
         catch (Exception ex)
         {
             Check(false, $"{entry.Id}: {ex.GetType().Name} {ex.Message}");
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("== 11.1 联网：版本列表按发布时间倒序、第一条 = 「装最新」解析出来的 tag（--online）==");
+    foreach (string id in new[] { "renodx.dlss5", "renodx.dlss.sf" })
+    {
+        var target = builtin.Extensions.First(e => e.Id == id);
+        try
+        {
+            List<ExtensionVersion> list = await resolver.ListVersionsAsync(target.Source, 30);
+            DateTimeOffset? prev = null;
+            bool descending = true;
+            int timed = 0;
+            foreach (ExtensionVersion v in list)
+            {
+                if (v.Published is null)
+                {
+                    continue;
+                }
+
+                timed++;
+                if (prev is not null && v.Published > prev)
+                {
+                    descending = false;
+                }
+
+                prev = v.Published;
+            }
+
+            Check(list.Count > 0 && descending,
+                $"{id}: {list.Count} 个版本、{timed} 个带时间，时间是倒序的（第一条 {list[0].Tag} / {list[0].Published:u}）");
+
+            GithubArtifact? artifact = await resolver.ResolveAsync(target.Source, default);
+            Check(artifact is not null && string.Equals(artifact.Tag, list[0].Tag, StringComparison.OrdinalIgnoreCase),
+                $"{id}: 「装最新」解析出 {artifact?.Tag}，和下拉第一条 {list[0].Tag} 一致");
+        }
+        catch (Exception ex)
+        {
+            Check(false, $"{id}: {ex.GetType().Name} {ex.Message}");
         }
     }
 }

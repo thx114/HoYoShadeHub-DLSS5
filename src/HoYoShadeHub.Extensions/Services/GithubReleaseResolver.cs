@@ -1,6 +1,7 @@
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
 using System.Net.Http;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -53,6 +54,16 @@ public sealed class GithubReleaseResolver
     /// <summary>releases 列表页里每条 release 的 tag 链接</summary>
     private static readonly Regex _releaseTagHrefRegex = new(
         @"/releases/tag/(?<tag>[^""<?#]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// releases 列表页里每条 release 卡片上的发布时间：
+    /// <c>&lt;relative-time class="no-wrap" prefix="" datetime="2026-09-21T05:02:09Z"&gt;</c>，
+    /// 和 API 的 <c>published_at</c> 一模一样。只认 ISO 那种写法 —— 页面上还有 commit 时间用的是
+    /// <c>datetime="2026-09-10 23:50:46 UTC"</c>，别混进来。
+    /// </summary>
+    private static readonly Regex _releaseCardDateRegex = new(
+        @"datetime=""(?<dt>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))""",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>expanded_assets 那个 HTML 页里每个资产的下载链接</summary>
     private static readonly Regex _assetHrefRegex = new(
@@ -258,6 +269,8 @@ public sealed class GithubReleaseResolver
         var versions = new List<ExtensionVersion>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
         void Add(string tag, DateTimeOffset? published)
         {
             if (string.IsNullOrWhiteSpace(tag) || (tagRegex is not null && !tagRegex.IsMatch(tag)))
@@ -265,10 +278,21 @@ public sealed class GithubReleaseResolver
                 return;
             }
 
-            if (seen.Add(tag))
+            if (!seen.Add(tag))
             {
-                versions.Add(new ExtensionVersion(tag, published));
+                // 同一个 tag 又见一次：这次带了发布时间就补上（atom 那批有、翻 HTML 那批本来没有）
+                if (published is not null
+                    && positions.TryGetValue(tag, out int position)
+                    && versions[position].Published is null)
+                {
+                    versions[position] = versions[position] with { Published = published };
+                }
+
+                return;
             }
+
+            positions[tag] = versions.Count;
+            versions.Add(new ExtensionVersion(tag, published));
         }
 
         try
@@ -279,11 +303,9 @@ public sealed class GithubReleaseResolver
             if (response.IsSuccessStatusCode)
             {
                 string xml = await response.Content.ReadAsStringAsync(cancellationToken);
-                foreach (Match match in _atomEntryRegex.Matches(xml))
+                foreach (ExtensionVersion version in ParseAtom(xml))
                 {
-                    string tag = Uri.UnescapeDataString(match.Groups["tag"].Value);
-                    DateTimeOffset? published = DateTimeOffset.TryParse(match.Groups["updated"].Value, out var t) ? t : null;
-                    Add(tag, published);
+                    Add(version.Tag, version.Published);
                 }
             }
         }
@@ -310,9 +332,9 @@ public sealed class GithubReleaseResolver
 
                 string html = await response.Content.ReadAsStringAsync(cancellationToken);
                 int before = versions.Count;
-                foreach (Match match in _releaseTagHrefRegex.Matches(html))
+                foreach ((string tag, DateTimeOffset? published) in ExtractReleaseCards(html))
                 {
-                    Add(match.Groups["tag"].Value, null);
+                    Add(tag, published);
                 }
 
                 if (versions.Count == before)
@@ -326,13 +348,129 @@ public sealed class GithubReleaseResolver
             }
         }
 
-        return [.. versions.Take(max)];
+        return SortByPublishedDescending(versions).Take(max).ToList();
     }
 
-    /// <summary>atom 里每条 entry 的 tag + 时间</summary>
+    /// <summary>
+    /// 按真正的发布时间排成新 → 旧。
+    ///
+    /// <para>
+    /// GitHub 的 <c>/releases</c> 列表是按「release 对象的创建时间」排的：同一批创建的几条会挨在一起，
+    /// 于是「后发布的那条」反而排在下面（实测 rhi-repo 页面前四条发布时间是 09-19 / 09-18 / 09-20 / 09-21），
+    /// 下拉框看起来就像乱序。这里按卡片里抓到的发布时间重排；<c>OrderByDescending</c> 是稳定排序，
+    /// 没拿到时间的（翻页时页面改版、或者 atom 也没有）保持原顺序垫底。
+    /// </para>
+    /// </summary>
+    public static List<ExtensionVersion> SortByPublishedDescending(IEnumerable<ExtensionVersion> versions)
+        => [.. versions.OrderByDescending(v => v.Published ?? DateTimeOffset.MinValue)];
+
+    /// <summary>
+    /// 从 <c>/releases</c> 列表页按卡片顺序取出 (tag, 发布时间)。
+    /// 卡片 = 一条 <c>/releases/tag/…</c> 链接到下一链接之间的那段 HTML，日期取这段里第一个 ISO 时间。
+    /// </summary>
+    public static List<(string Tag, DateTimeOffset? Published)> ExtractReleaseCards(string html)
+    {
+        var cards = new List<(string Tag, DateTimeOffset? Published)>();
+        if (string.IsNullOrEmpty(html))
+        {
+            return cards;
+        }
+
+        MatchCollection links = _releaseTagHrefRegex.Matches(html);
+
+        for (int i = 0; i < links.Count; i++)
+        {
+            Match link = links[i];
+            string tag = Uri.UnescapeDataString(link.Groups["tag"].Value);
+
+            int start = link.Index;
+            int end = i + 1 < links.Count ? links[i + 1].Index : html.Length;
+            int length = Math.Min(end - start, 20000);   // 发布日期就在卡片开头，不用扫整张卡
+
+            DateTimeOffset? published = null;
+            Match date = _releaseCardDateRegex.Match(html, start, length);
+            if (date.Success
+                && DateTimeOffset.TryParse(
+                    date.Groups["dt"].Value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out DateTimeOffset parsed))
+            {
+                published = parsed;
+            }
+
+            cards.Add((tag, published));
+        }
+
+        return cards;
+    }
+
+    /// <summary>atom 里每条 entry 的整段 XML</summary>
     private static readonly Regex _atomEntryRegex = new(
-        @"<entry>.*?releases/tag/(?<tag>[^""<]+).*?<updated>(?<updated>[^<]+)</updated>",
+        @"<entry>(?<body>.*?)</entry>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    /// <summary>atom entry 的 id：<c>tag:github.com,2008:Repository/123456/&lt;tag&gt;</c></summary>
+    private static readonly Regex _atomIdTagRegex = new(
+        @"/Repository/\d+/(?<tag>[^<]+)</id>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>atom entry 里的时间（= Release 的 published_at）</summary>
+    private static readonly Regex _atomUpdatedRegex = new(
+        @"<updated>(?<updated>[^<]+)</updated>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// 解析 releases.atom，按 feed 里的顺序返回、每条都带发布时间。
+    ///
+    /// <para>
+    /// **必须逐条 entry 取，不能写一个跨 entry 的正则**：entry 里的 <c>&lt;updated&gt;</c> 在 tag 链接
+    /// **前面**，懒惰匹配会一路跑到下一条 entry 的 <c>&lt;updated&gt;</c>，
+    /// 于是每条 tag 都被配上「下一条」的时间（实测就是这个问题，下拉框看起来完全没有规律）。
+    /// </para>
+    /// </summary>
+    public static List<ExtensionVersion> ParseAtom(string xml)
+    {
+        var versions = new List<ExtensionVersion>();
+        if (string.IsNullOrEmpty(xml))
+        {
+            return versions;
+        }
+
+        foreach (Match entry in _atomEntryRegex.Matches(xml))
+        {
+            string body = entry.Groups["body"].Value;
+
+            Match tagMatch = _atomIdTagRegex.Match(body);
+            if (!tagMatch.Success)
+            {
+                tagMatch = _atomTagRegex.Match(body);
+            }
+
+            if (!tagMatch.Success)
+            {
+                continue;
+            }
+
+            string tag = Uri.UnescapeDataString(tagMatch.Groups["tag"].Value.Trim());
+
+            DateTimeOffset? published = null;
+            Match updated = _atomUpdatedRegex.Match(body);
+            if (updated.Success
+                && DateTimeOffset.TryParse(
+                    updated.Groups["updated"].Value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out DateTimeOffset parsed))
+            {
+                published = parsed;
+            }
+
+            versions.Add(new ExtensionVersion(tag, published));
+        }
+
+        return versions;
+    }
 
     /// <summary>只走 atom：拿到匹配 tagPattern 的最新 tag；拿不到返回 null</summary>
     private async Task<string?> TryResolveTagFromAtomAsync(
@@ -354,14 +492,29 @@ public sealed class GithubReleaseResolver
             Regex? tagRegex = BuildTagRegex(source.TagPattern);
             string xml = await response.Content.ReadAsStringAsync(cancellationToken);
 
-            foreach (Match match in _atomTagRegex.Matches(xml))
+            // atom 的顺序**不是**发布时间倒序（实测 rhi-repo 里最新发布的 DLSS-Enabler-4.10.0.7
+            // 排在第 4 位），所以取「命中的里面发布时间最晚的」，而不是第一个。
+            string? latest = null;
+            DateTimeOffset newest = DateTimeOffset.MinValue;
+
+            foreach (ExtensionVersion version in ParseAtom(xml))
             {
-                string tag = Uri.UnescapeDataString(match.Groups["tag"].Value);
-                if (tagRegex is null || tagRegex.IsMatch(tag))
+                if (tagRegex is not null && !tagRegex.IsMatch(version.Tag))
                 {
-                    // atom 按时间倒序，第一个命中的就是最新
-                    return tag;
+                    continue;
                 }
+
+                DateTimeOffset published = version.Published ?? DateTimeOffset.MinValue;
+                if (latest is null || published > newest)
+                {
+                    latest = version.Tag;
+                    newest = published;
+                }
+            }
+
+            if (latest is not null)
+            {
+                return latest;
             }
         }
         catch
