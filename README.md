@@ -1,143 +1,44 @@
-**English** | [简体中文](./docs/README.zh-CN.md) | [繁体中文](./docs/README.zh-TW.md)
+# HoYoShade Hub · DLSS5 魔改版
 
-# HoYoShade Hub · DLSS5 fork
+> ⚠️ 这是 [DuolaD/HoYoShade-Hub](https://github.com/DuolaD/HoYoShade-Hub) 的**非官方魔改版**（fork）。
+> 本 fork 的问题请提到本仓库的 Issues，**不要去打扰上游作者**。
 
-> [!IMPORTANT]
-> **This repository is a modified fork (魔改版) of [DuolaD/HoYoShade-Hub](https://github.com/DuolaD/HoYoShade-Hub).**
-> 它不是官方版本：问题请提到本仓库 Issues，**不要**去打扰上游作者。
->
-> 本 fork 在官方版本之上主要加了：游戏发现 + 多游戏 ReShade.ini 管理、注入模式、插件（addon）管理、
-> DLSS5 / 神经渲染的驱动版本检查、OptiScaler（社区 DLSS-NR 分支）的下载 / 单选启用 / 启动时注入，
-> 以及「插件 + OptiScaler 远端目录」（catalog/，启动器每天最多自动拉一次）。
->
-> - 上游：https://github.com/DuolaD/HoYoShade-Hub （MIT，Copyright (c) 2025 哆啦D夢|DuolaD）
-> - 本 fork 沿用 **MIT**（见 LICENSE）；HoYoShade 框架本体是 **BSD-3-Clause**，第三方见 docs/ThirdParty.md；
-> - 本仓库**只放源码与目录 JSON**，不放 ReShade / HoYoShade / 插件 / OptiScaler 的二进制（启动器按需下载）；
-> - 便携包版本号（1.0.x）是本 fork 自己的，与上游 app-9.9.x / 0.0.0-Beta.x 不是一套。
+## 这个版本多了什么
 
----
+- **游戏发现**：自动 / 手动找游戏，顶部一行图标随便切；也支持自定义游戏（WeGame、非米哈游的游戏）。
+- **多游戏 ReShade.ini 管理**：插件开关按游戏各写各的 ini，互不影响。
+- **注入模式**：Hub 不替你启动游戏，只架 HoYoShade 的注入器等进程（游戏用 HoYoPlay / WeGame 自己拉起来）。
+- **插件（addon）管理**：装 / 删 / 换版本、全局开关，还会按插件族把缺的 dll 直接红黄标出来。
+- **DLSS5 / 神经渲染**：NVIDIA 驱动版本检查（用 DLSS5 插件时提示要求区间）、HookPoint（hook 点）直接改。
+- **OptiScaler**：全局插件里能下载社区 DLSS-NR 分支（wilsjo2 / NeuRotic / DLSS NR on AMD），**同一时间只启用一个**；
+  启动器页勾上「启动 OptiScaler」，启动游戏时就把它注进游戏进程。
+  （DLSS NR on AMD 只有它自己的安装程序：下载后会弹窗提醒，装到默认目录即可。）
 
-# HoYoShade Hub
+## 下载与安装
 
-> **HoYoShade Hub** is a brand-new GUI launcher developed for HoYoShade, based on the secondary development of Starward.
->
-> The logo design of **HoYoShade Hub** was inspired by the logo of the well-known anti-censorship proxy core [Sing-Box](https://github.com/SagerNet/sing-box). This design aligns with the definition of "Hub" itself and represents our new vision for HoYoShade—
->
-> Even if we can never obtain the freedom we deserve, we should never forget to fight for it.
->
-> Enjoy the fleeting freedom we have fought for, for it is yours.
+在 [Releases](https://github.com/thx114/HoYoShadeHub-DLSS5/releases) 下 `HoYoShadeHub_Portable_<版本>_x64.zip`，
+解压**覆盖**到你的便携版目录（例如 `D:\APPS\HoYoShadeHub`）。
 
-HoYoShade Hub is an open-source GUI launcher developed to address the shortcomings of the current Bat launcher for HoYoShade. It supports all miHoYo/HoYoverse game clients for Windows PC, including clients from Mainland China, BiliBili, Global, and other special distribution channels, as well as Public, Beta, Devkit, SDK, and Creator Test servers. The goal is to completely replace the existing Bat launcher for HoYoShade.
+- 包里**不带 `config.ini`**，不会覆盖你已有的配置和游戏列表；
+- 便携版根目录只有 `HoYoShadeHub.exe` + `version.ini` + `app-<版本>\`；
+- **更新 / 退回**：设置 → 关于 → 更新渠道，切到「GitHub · 本分支」→「刷新版本列表」→ 选一个版本「下载并安装」→「重启生效」。
+  选比当前旧的版本就是退回。
 
-> [!NOTE]
-> Please note that this project is still under development. Some text may not reflect the actual situation, and some features may not work as expected. Further logs/issues will be collected and fixed, or features may not yet be implemented in HoYoShade Hub. For details, please refer to the [GitHub Release](https://github.com/DuolaD/HoYoShade-Hub/releases) for the changelog.
+## 运行要求
 
-> [!NOTE]
-> If you have specific requirements for functionality/stability, we recommend using the old Bat launcher in the [HoYoShade repository](https://github.com/DuolaD/HoYoShade/).
+- Windows 10 1809 (17763) 或更高；
+- WebView2 Runtime（系统一般自带）；
+- 要用 DLSS5 神经渲染插件的话，**游戏目录里要有 `nvngx_dlssnr.dll`**（各 DLSS-NR 分支的手册都要求这个文件，
+  本仓库不替用户分发它）。
 
-> [!NOTE]
-> This GUI launcher will replace the existing Bat launcher for HoYoShade once all features are fully developed. At that time, HoYoShade will only be usable with HoYoShade Hub as the launcher.
+## 仓库里有什么
 
-## Installation
+- `src/` 源码、`build-local.ps1` 本地构建脚本（不需要 Visual Studio 就能 publish）、`docs/` 文档；
+- **不放** ReShade / HoYoShade / 插件 / OptiScaler 的二进制 —— 那些由启动器按需下载。
 
-First, your device needs to meet the following requirements:
+## 许可与致谢
 
-- Windows 10 1809 (17763) or later.
-- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2) installed.
-- [WebP Image Extension](https://apps.microsoft.com/detail/9pg2dk419drg) installed.
-- For a better experience, please enable **Transparency effects** and **Animation effects** in the system settings.
-
->[WebP Image Extension](https://apps.microsoft.com/detail/9pg2dk419drg) is typically bundled with your system. If the application isn’t displaying background images correctly, please ensure it’s installed.
-
-Next, download the compressed package for your CPU architecture from [GitHub Release](https://github.com/DuolaD/HoYoShade-Hub/releases). Extract it, then run `HoYoShadeHub.exe` and follow the prompts.
-
-> [!NOTE]
-> Continuing to use this software indicates your agreement to [our User Agreement and Privacy Policy](https://hoyosha.de/zh_cn/user-agreement.html).
-
-## Localization
-
-HoYoShade Hub uses **[Crowdin](https://crowdin.com/project/hoyoshade-hub)** for in-app text localization. You can contribute by helping us translate and proofread content in your native language. We warmly welcome anyone who wants to join!
-
-👉 [Localization Guide](./docs/Localization.md)
-
-## Development
-
-To compile the project locally, you need to install Visual Studio 2022 (or later) and select the following workloads:
-
--  .NET Desktop Development
--  C++ Desktop Development
--  Universal Windows Platform Development
-
-## Donation
-
-Development is not easy. If you find HoYoShade Hub useful, you can support me on [my GitHub homepage](https://github.com/DuolaD).
-
-## Sources
-
-We sincerely express our heartfelt gratitude to all contributors whose work has been referenced in this project. With your contributions, HoYoShade Hub becomes better.
-
-| Name | Description | URL |
-| --- | --- | --- |
-| **Starward** | HoYoShade Hub is based on this for secondary development. "Standing on the shoulders of giants." | [Official Repository](https://github.com/Scighost/Starward/) \ [Official Website](https://starward.scighost.com/) |
-| **HoYoShade** | HoYoShade Framework | [Official Repository](https://github.com/DuolaD/HoYoShade/) \ [Official Website](https://hoyosha.de) |
-| **MiSans Font Series** | Default font for HoYoShade Hub, copyright owned by Xiaomi Group. | [Official Website](https://www.mi.com) \ [MiSans Font Series Official Website](https://hyperos.mi.com/font/) |
-| **Time Sync Tool** | Develop on it and Built into the Blender Plugins fix tool. | [Official Repository](https://gitee.com/haitangyunchi/TimeSyncTool) |
-
-And the [third-party libraries](./docs/ThirdParty.md) used in this project.
-
-## Contributors
-
-We sincerely express our heartfelt gratitude to all contributors whose work has been referenced in this project. With your contributions, HoYoShade Hub becomes better.
-
-Thanks to all contributors for their selfless contributions to this project!
-
-<div align="center">
-    <table>
-        <tr>
-            <td>
-                <h3>DuolaDStudio Hong Kong Ltd.</h3>
-                <a href="https://github.com/DuolaDStudio">
-                    <img src="https://avatars.githubusercontent.com/u/152937804?s=200&v=4" width="70" style="border-radius: 50%" alt="DuolaDStudio Hong Kong Ltd.">
-                </a>
-		<h3>Including the following members:</h3>
-		<h5>DuolaD | DuolaD & Lynette | LynetteNotFound</h5>
-		<a href="https://github.com/DuolaD"><img src="https://avatars.githubusercontent.com/u/110040721?v=4" width="70" style="border-radius: 50%" alt="DuolaD"></img></a>
-		<a href="https://github.com/LynetteNotFound">
-                    <img src="https://avatars.githubusercontent.com/u/159673876?v=4" width="70" style="border-radius: 50%" alt="LynetteNotFound">
-                </a>
-            </td>
-	    <td>
-                <a href="https://github.com/DuolaDStudio">Organization GitHub Homepage</a><br>
-		<a href="https://github.com/DuolaD">DuolaD's GitHub Personal Homepage</a><br>
-		<a href="https://github.com/LynetteNotFound">LynetteNotFound's GitHub Personal Homepage</a><br>
-		<br>
-		<a>Note: Other personal homepage links for DuolaD are listed above;</a><br>
-		<a>LynetteNotFound has no public contact information</a>
-            </td>
-	</tr>
-        <tr>
-            <td>
-                <h3>ZelbertYQ</h3>
-                <a href="https://space.bilibili.com/435289515">
-                    <img src="https://avatars.githubusercontent.com/u/116244982?v=4" width="70" style="border-radius: 50%" alt="ZelbertYQ">
-                </a>
-            </td>
-            <td>
-    <a href="https://github.com/ZelbertYQ">GitHub Personal Homepage</a><br>
-		<a href="https://space.bilibili.com/435289515">Bilibili Channel</a>
-    <a href="https://v.douyin.com/gah7b4ZwQqo">Douyin Channel</a>
-    <a href="https://www.xiaohongshu.com/user/profile/660ad54b000000001701a61c">Xiaohongshu Channel</a>
-            </td>
-        </tr>
-    </table>
-</div>
-
-Thanks to CloudFlare for providing free CDN, which brings a great update experience to everyone.
-
-<img alt="cloudflare" width="300px" src="https://user-images.githubusercontent.com/61003590/246605903-f19b5ae7-33f8-41ac-8130-6d0069fde27a.png" />
-
-# Open Source License
-
-HoYoShade Hub will continue to be released under the MIT License used by Starward, which aligns with our new vision for HoYoShade itself.
-
-However, during actual development, please ensure that you comply with the MIT License and [our User Agreement](https://hoyosha.de/zh_cn/user-agreement.html), otherwise, you may face legal actions from us.
+- **HoYoShade Hub**：MIT，Copyright (c) 2025 哆啦D夢|DuolaD（见 [LICENSE](./LICENSE)）；本 fork 沿用 MIT。
+- **HoYoShade 框架**：BSD 3-Clause，Copyright (c) 2024 哆啦D夢|DuolaD。
+- 本项目基于 [Starward](https://github.com/Scighost/Starward)（MIT）二次开发；MiSans 字体版权归小米集团。
+- 第三方库清单见 [docs/ThirdParty.md](./docs/ThirdParty.md)。
