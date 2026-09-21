@@ -1,0 +1,367 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.UI.Xaml;
+using HoYoShadeHub.Core;
+using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Features.HoYoPlay;
+using HoYoShadeHub.Helpers;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using Windows.Graphics.Imaging;
+using Windows.Media.Core;
+using Windows.Storage;
+
+namespace HoYoShadeHub.Features.Background;
+
+public class BackgroundService
+{
+
+    private readonly ILogger<BackgroundService> _logger;
+
+    private readonly HoYoPlayService _hoYoPlayService;
+
+    private readonly HttpClient _httpClient;
+
+
+
+    public BackgroundService(ILogger<BackgroundService> logger, HoYoPlayService hoYoPlayService, HttpClient httpClient)
+    {
+        _logger = logger;
+        _hoYoPlayService = hoYoPlayService;
+        _httpClient = httpClient;
+    }
+
+
+
+    /// <summary>
+    /// 获取背景图文件路径，保存在 UserData\bg
+    /// </summary>
+    /// <param name="name"></param>
+    /// <returns></returns>
+    [return: NotNullIfNotNull(nameof(name))]
+    public static string? GetBgFilePath(string? name)
+    {
+        return Path.Join(AppConfig.UserDataFolder, "bg", name);
+    }
+
+
+    /// <summary>
+    /// 获取自定义背景图文件路径
+    /// </summary>
+    /// <param name="gameId"></param>
+    /// <param name="path"></param>
+    /// <returns></returns>
+    public static bool TryGetCustomBgFilePath(GameId gameId, [NotNullWhen(true)] out string? path)
+    {
+        path = null;
+        if (gameId is null)
+        {
+            return false;
+        }
+        if (AppConfig.GetEnableCustomBg(gameId.GameBiz))
+        {
+            path = GetBgFilePath(AppConfig.GetCustomBg(gameId.GameBiz));
+            if (File.Exists(path))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    /// <summary>
+    /// 文件是否是支持的视频格式，支持 mp4、mkv、flv、webm
+    /// </summary>
+    /// <param name="name"></param>
+    /// <returns></returns>
+    public static bool FileIsSupportedVideo(string? name)
+    {
+        return Path.GetExtension(name) switch
+        {
+            ".mp4" or ".mkv" or ".webm" => true,
+            _ => false,
+        };
+    }
+
+
+    /// <summary>
+    /// 获取已缓存的背景图文件路径
+    /// </summary>
+    /// <param name="gameId"></param>
+    /// <returns></returns>
+    public static string? GetCachedBackgroundFile(GameId gameId)
+    {
+        if (gameId is null)
+        {
+            return null;
+        }
+        if (TryGetCustomBgFilePath(gameId, out string? path))
+        {
+            return path;
+        }
+        path = GetBgFilePath(AppConfig.GetBg(gameId.GameBiz));
+        return File.Exists(path) ? path : null;
+    }
+
+
+
+    /// <summary>
+    /// 背景图和版本海报链接
+    /// </summary>
+    /// <param name="gameId"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    public async Task<List<GameBackground>> GetGameBackgroundsAsync(GameId gameId, CancellationToken cancellationToken = default)
+    {
+        var backgrounds = new List<GameBackground>();
+
+        // 自定义游戏（合成 biz）/ Hub 不认识的：HoYoPlay 那边没有它，别去问 —— 问了就是一串
+        // 「Unknown launcher id」异常日志。调用方拿不到东西会自己退到兜底背景图。
+        if (gameId?.GameBiz.IsKnown() == true)
+        {
+            try
+            {
+                GameBackgroundInfo backgroundInfo = await _hoYoPlayService.GetGameBackgroundAsync(gameId, cancellationToken);
+                backgrounds.AddRange(backgroundInfo?.Backgrounds?.ToList() ?? []);
+
+                GameInfo gameInfo = await _hoYoPlayService.GetGameInfoAsync(gameId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(gameInfo?.Display?.Background?.Url))
+                {
+                    backgrounds.Add(GameBackground.FromPosterUrl(gameInfo.Display.Background.Url));
+                }
+            }
+            catch (Exception ex)
+            {
+                // 没有官方背景不算错误（测试服 / 还没上架的游戏都会走到这儿）
+                _logger.LogDebug(ex, "No HoYoPlay background for {GameBiz}", gameId.GameBiz);
+            }
+        }
+
+        if (TryGetCustomBgFilePath(gameId, out string? path))
+        {
+            backgrounds.Add(GameBackground.FromCustomFile(path));
+        }
+
+        return backgrounds;
+    }
+
+
+
+    public async Task<GameBackground?> GetSuggestedGameBackgroundAsync(GameId gameId, CancellationToken cancellationToken = default)
+    {
+        if (TryGetCustomBgFilePath(gameId, out string? file))
+        {
+            return GameBackground.FromCustomFile(file);
+        }
+        List<GameBackground> backgrounds = await GetGameBackgroundsAsync(gameId, cancellationToken);
+        GameBackground? bg = null;
+        string? lastBg = AppConfig.GetBg(gameId.GameBiz);
+        string? lastBgIds = AppConfig.GetGameBackgroundIds(gameId.GameBiz);
+        string firstBgId = backgrounds.FirstOrDefault()?.Id ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(lastBg) && (lastBgIds?.StartsWith(firstBgId) ?? false))
+        {
+            // 没有新背景
+            if (backgrounds.FirstOrDefault(x => Path.GetFileName(x.Background.Url) == lastBg) is GameBackground bg1)
+            {
+                bg1.StopVideo = true;
+                bg = bg1;
+            }
+            else if (backgrounds.Where(x => x.Video != null).FirstOrDefault(x => Path.GetFileName(x.Video.Url) == lastBg) is GameBackground bg2)
+            {
+                bg = bg2;
+            }
+        }
+        if (bg is null)
+        {
+            bg = backgrounds.FirstOrDefault();
+            if (bg is not null && AppConfig.DefaultDisableVideoBackgroundPlayback)
+            {
+                bg.StopVideo = true;
+            }
+        }
+        return bg;
+    }
+
+
+
+    public async Task<string> GetBackgroundFileAsync(string url, CancellationToken cancellationToken = default)
+    {
+        string name = Path.GetFileName(url);
+        string file = GetBgFilePath(name);
+        if (!File.Exists(file))
+        {
+            var bytes = await _httpClient.GetByteArrayAsync(url, cancellationToken);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            await File.WriteAllBytesAsync(file, bytes, cancellationToken);
+        }
+        return file;
+    }
+
+
+
+
+    /// <summary>
+    /// 获取默认的背景图文件路径
+    /// </summary>
+    /// <param name="gameId"></param>
+    /// <returns></returns>
+    public static string? GetFallbackBackgroundImage(GameId gameId)
+    {
+        string? bg = GetBgFilePath(AppConfig.GetBg(gameId.GameBiz));
+        if (!File.Exists(bg))
+        {
+            string baseFolder = AppContext.BaseDirectory;
+            
+            // 星布谷地使用固定的背景图
+            if (gameId.GameBiz == GameBiz.pp_cbt1)
+            {
+                string ppPath = Path.Combine(baseFolder, @"Assets\Image\background_pp.png");
+                bg = File.Exists(ppPath) ? ppPath : null;
+            }
+            // 崩坏：因缘精灵使用固定的背景图
+            else if (gameId.GameBiz == GameBiz.hna_cbt1)
+            {
+                string hnaPath = Path.Combine(baseFolder, @"Assets\Image\background_hna.png");
+                bg = File.Exists(hnaPath) ? hnaPath : null;
+            }
+            // 其他测试服提供随机背景图片
+            else if (gameId.GameBiz.IsBetaServer())
+            {
+                // 从 backround_for_beta_client_1.png 到 backround_for_beta_client_6.png 随机选择
+                Random random = new Random();
+                int randomIndex = random.Next(1, 7); // 1-6
+                string betaBackground = $"backround_for_beta_client_{randomIndex}.png";
+                string path = Path.Combine(baseFolder, "Assets", "Image", betaBackground);
+                if (File.Exists(path))
+                {
+                    bg = path;
+                }
+                else
+                {
+                    // 如果测试服背景图片不存在，使用默认背景
+                    path = Path.Combine(baseFolder, @"Assets\Image\UI_CutScene_1130320101A.png");
+                    bg = File.Exists(path) ? path : null;
+                }
+            }
+            else
+            {
+                string path = Path.Combine(baseFolder, @"Assets\Image\UI_CutScene_1130320101A.png");
+                bg = File.Exists(path) ? path : null;
+            }
+        }
+        return bg;
+    }
+
+
+
+    /// <summary>
+    /// 更改自定义背景图文件，保存在 UserData\bg，返回文件名
+    /// </summary>
+    /// <param name="xamlRoot"></param>
+    /// <returns></returns>
+    public async Task<string?> ChangeCustomBackgroundFileAsync(XamlRoot xamlRoot)
+    {
+        string? file = await PickBackgroundFileAsync(xamlRoot);
+        if (file is null)
+        {
+            return null;
+        }
+        await CheckBackgroundFileAvailableAsync(file);
+        string bg = Path.Join(AppConfig.UserDataFolder, "bg");
+        Directory.CreateDirectory(bg);
+        string name = Path.GetFileName(file);
+        string path = Path.Combine(bg, name);
+        if (path != file)
+        {
+            File.Copy(file, path, true);
+        }
+        return name;
+    }
+
+
+
+    /// <summary>
+    /// 更改自定义背景图文件，保存在 UserData\bg，返回文件名
+    /// </summary>
+    /// <param name="file"></param>
+    /// <returns></returns>
+    public static async Task<string?> ChangeCustomBackgroundFileAsync(StorageFile file)
+    {
+        string bg = Path.Join(AppConfig.UserDataFolder, "bg");
+        if (Path.GetDirectoryName(file.Path) != bg)
+        {
+            if (FileIsSupportedVideo(file.Name))
+            {
+                using var source = MediaSource.CreateFromStorageFile(file);
+                await source.OpenAsync();
+            }
+            else
+            {
+                using var fs = await file.OpenReadAsync();
+                var decoder = await BitmapDecoder.CreateAsync(fs);
+            }
+            {
+                Directory.CreateDirectory(bg);
+                string path = Path.Combine(bg, file.Name);
+                using var dest = File.OpenWrite(path);
+                using var stream = await file.OpenReadAsync();
+                await stream.AsStream().CopyToAsync(dest);
+            }
+        }
+        return file.Name;
+    }
+
+
+    /// <summary>
+    /// 选择背景图文件
+    /// </summary>
+    /// <param name="xamlRoot"></param>
+    /// <returns></returns>
+    private async Task<string?> PickBackgroundFileAsync(XamlRoot xamlRoot)
+    {
+        var filter = new (string, string)[]
+            {
+                ("Image", ".bmp"),
+                ("Image", ".jpg"),
+                ("Image", ".png"),
+                ("Image", ".webp"),
+                ("Image", ".avif"),
+                ("Image", ".jxl"),
+                ("Video", ".mp4"),
+                ("Video", ".mkv"),
+                ("Video", ".webm"),
+            };
+        return await FileDialogHelper.PickSingleFileAsync(xamlRoot, filter);
+    }
+
+
+
+    /// <summary>
+    /// 检查背景图文件是否可用
+    /// </summary>
+    /// <param name="file"></param>
+    /// <returns></returns>
+    private static async Task CheckBackgroundFileAvailableAsync(string file)
+    {
+        if (FileIsSupportedVideo(file))
+        {
+            // 0xC00D36C4
+            using var source = MediaSource.CreateFromUri(new Uri(file));
+            await source.OpenAsync();
+        }
+        else
+        {
+            // 0x88982F8B
+            using var fs = File.OpenRead(file);
+            var decoder = await BitmapDecoder.CreateAsync(fs.AsRandomAccessStream());
+        }
+    }
+
+
+}

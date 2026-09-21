@@ -1,0 +1,25 @@
+{
+  "sources": [
+    {
+      "id": "wilsjo2",
+      "name": "OptiScaler DLSSNR PreSR Multipass (wilsjo2)",
+      "repository": "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
+      "description": "DLSS 神经渲染 + pre-SR 摆放，支持 1~3 遍处理。带 -rtx40-mfg 的是 40 系多帧生成特化包。",
+      "tagPattern": "^v?\\d"
+    },
+    {
+      "id": "neurotic",
+      "name": "NeuRotic (MagicalPrincessUnicorn)",
+      "repository": "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork",
+      "description": "NeuRotic 分支（alpha 系列）。名字里带 Patch 的包是在上一版上打的补丁，单独装是残缺的。",
+      "tagPattern": "^alpha-\\d"
+    },
+    {
+      "id": "dlssnr-amd",
+      "name": "DLSS NR on AMD (danielblnc)",
+      "repository": "danielblnc/DLSS-NR-on-AMD",
+      "description": "A 卡用的 DLSS-NR 分支。它只有一个自己的安装程序：下载后会先弹窗提醒，然后运行它 —— 装到默认目录（就是构建目录）即可；装完那里会有 version.dll，勾「启动 OptiScaler」就能注入。",
+      "tagPattern": "^v?\\d"
+    }
+  ]
+}

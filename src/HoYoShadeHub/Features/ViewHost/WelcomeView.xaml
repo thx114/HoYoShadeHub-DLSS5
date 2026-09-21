@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl x:Class="HoYoShadeHub.Features.ViewHost.WelcomeView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:lang="using:HoYoShadeHub.Language"
+             xmlns:local="using:HoYoShadeHub.Features.ViewHost"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:models="using:HoYoShadeHub.Models"
+             x:DefaultBindMode="OneWay"
+             mc:Ignorable="d">
+
+    <Grid Loaded="Grid_Loaded">
+
+
+
+
+        <StackPanel Margin="0,48,48,0"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Spacing="8">
+            <ComboBox Name="ComboBox_Language"
+                      MinWidth="200"
+                      HorizontalAlignment="Stretch"
+                      SelectionChanged="ComboBox_Language_SelectionChanged" />
+        </StackPanel>
+
+
+
+        <ScrollViewer Margin="{x:Bind GetScrollViewerMargin()}"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Stretch"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="0"
+                      VerticalScrollBarVisibility="Auto"
+                      MaxWidth="760"
+                      ZoomMode="Disabled">
+
+            <StackPanel>
+
+            <!--  欢迎  -->
+            <TextBlock Margin="{x:Bind GetMargin(12)}"
+                       FontSize="24"
+                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                       IsTextScaleFactorEnabled="False"
+                       Text="{x:Bind lang:Lang.WelcomeView_DearPlayerWelcomeToHoYoShadeHub}" />
+            <TextBlock Margin="{x:Bind GetMargin(16)}"
+                       FontSize="16"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       IsTextScaleFactorEnabled="False"
+                       Text="{x:Bind lang:Lang.WelcomeView_WelcomeToHoYoShadeHubDescription}"
+                       TextWrapping="Wrap" />
+
+            <!--  数据文件夹  -->
+            <TextBlock Margin="{x:Bind GetMargin(22)}"
+                       FontSize="16"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       IsTextScaleFactorEnabled="False"
+                       Text="{x:Bind lang:Lang.WelcomeView_SelectUserDataFolderDescription}"
+                       TextWrapping="Wrap" />
+            <StackPanel Margin="{x:Bind GetMargin(10)}"
+                        Orientation="Horizontal"
+                        Spacing="8">
+                <FontIcon FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                          Glyph="&#xE838;"
+                          IsTextScaleFactorEnabled="False" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind UserDataFolder}" />
+            </StackPanel>
+            <!--  选择文件夹  -->
+            <StackPanel Margin="{x:Bind GetMargin(14)}"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <Button BorderThickness="0"
+                        Command="{x:Bind ChangeUserDataFolderCommand}"
+                        Content="{x:Bind lang:Lang.SelectDirectoryPage_SelectFolder}"
+                        IsTextScaleFactorEnabled="False"
+                        Style="{ThemeResource AccentButtonStyle}" />
+                <TextBlock VerticalAlignment="Center"
+                           FontSize="12"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind UserDataFolderErrorMessage}"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!--  必要的检查  -->
+            <TextBlock Margin="{x:Bind GetMargin(20)}"
+                       FontSize="16"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       IsTextScaleFactorEnabled="False"
+                       Text="{x:Bind lang:Lang.WelcomeView_BeforeStartingSomeNecessaryEnvironmentChecksAreRequired}" />
+
+            <!--  网络状态  -->
+            <StackPanel Height="30"
+                        Margin="{x:Bind GetMargin(14)}"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <FontIcon Margin="0,0,-4,0"
+                          FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                          Glyph="&#xE701;"
+                          IsTextScaleFactorEnabled="False" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind lang:Lang.WelcomeView_NetworkStatus}" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind NetworkDelay}" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind NetworkSpeed}" />
+                <Button Padding="4"
+                        VerticalAlignment="Center"
+                        BorderThickness="0"
+                        Command="{x:Bind TestSpeedCommand}"
+                        Style="{ThemeResource DateTimePickerFlyoutButtonStyle}">
+                    <Grid>
+                        <FontIcon FontSize="14"
+                                  Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                  Glyph="&#xE72C;"
+                                  IsTextScaleFactorEnabled="False"
+                                  Visibility="{x:Bind TestSpeedCommand.IsRunning, Converter={StaticResource BoolToVisibilityReversedConverter}}" />
+                        <ProgressRing Width="16"
+                                      Height="16"
+                                      IsActive="{x:Bind TestSpeedCommand.IsRunning}" />
+                    </Grid>
+                </Button>
+            </StackPanel>
+
+            <!--  系统代理  -->
+            <StackPanel Height="30"
+                        Margin="{x:Bind GetMargin(8)}"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <FontIcon Margin="0,0,-4,0"
+                          FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                          Glyph="&#xE705;"
+                          IsTextScaleFactorEnabled="False" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind SystemProxyTitleText, Mode=OneWay}" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind SystemProxyStatusText, Mode=OneWay}" />
+            </StackPanel>
+
+            <!--  WebView2  -->
+            <StackPanel Height="30"
+                        Margin="{x:Bind GetMargin(8)}"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <FontIcon Margin="0,0,-4,0"
+                          FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                          Glyph="&#xE774;"
+                          IsTextScaleFactorEnabled="False" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="WebView2 Runtime" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind WebView2Version}"
+                           Visibility="{x:Bind WebView2Version, Converter={StaticResource ObjectToVisibilityConverter}}" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind lang:Lang.WelcomeView_NotInstalled}"
+                           Visibility="{x:Bind WebView2Version, Converter={StaticResource ObjectToVisibilityReversedConverter}}" />
+                <HyperlinkButton Padding="8,4,8,4"
+                                 VerticalAlignment="Center"
+                                 Content="{x:Bind lang:Lang.WelcomeView_InstallNow}"
+                                 Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                 IsTextScaleFactorEnabled="False"
+                                 NavigateUri="https://developer.microsoft.com/microsoft-edge/webview2"
+                                 Visibility="{x:Bind WebView2Version, Converter={StaticResource ObjectToVisibilityReversedConverter}}" />
+            </StackPanel>
+
+            <!--  WebP  -->
+            <StackPanel Height="30"
+                        Margin="{x:Bind GetMargin(8)}"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <FontIcon Margin="0,0,-4,0"
+                          FontSize="16"
+                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                          Glyph="&#xE91B;"
+                          IsTextScaleFactorEnabled="False" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="WebP Decoder" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind lang:Lang.WelcomeView_Installed}"
+                           Visibility="{x:Bind WebpDecoderSupport}" />
+                <TextBlock VerticalAlignment="Center"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                           IsTextScaleFactorEnabled="False"
+                           Text="{x:Bind lang:Lang.WelcomeView_NotInstalled}"
+                           Visibility="{x:Bind WebpDecoderSupport, Converter={StaticResource BoolToVisibilityReversedConverter}}" />
+                <HyperlinkButton Padding="8,4,8,4"
+                                 VerticalAlignment="Center"
+                                 Content="{x:Bind lang:Lang.WelcomeView_InstallNow}"
+                                 Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                 IsTextScaleFactorEnabled="False"
+                                 NavigateUri="https://apps.microsoft.com/detail/9pg2dk419drg"
+                                 Visibility="{x:Bind WebpDecoderSupport, Converter={StaticResource BoolToVisibilityReversedConverter}}" />
+            </StackPanel>
+
+            <TextBlock Margin="{x:Bind GetMargin(12)}"
+                       FontSize="16"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       IsTextScaleFactorEnabled="False"
+                       TextWrapping="Wrap">
+                <Run Text="{x:Bind DohRecommendationText}" />
+                <Hyperlink Click="Hyperlink_NetworkSettings_Click" UnderlineStyle="None">
+                    <Run Text="{x:Bind lang:Lang.WelcomeView_NetworkSettingsButton}" />
+                </Hyperlink>
+                <Run Text="{x:Bind lang:Lang.WelcomeView_NetworkSettingsPeriod}" />
+            </TextBlock>
+
+            <!--  透明/动画效果  -->
+            <TextBlock Margin="{x:Bind GetMargin(18)}"
+                       HorizontalAlignment="Left"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="{x:Bind lang:Lang.SettingPage_ForABetterExperiencePleaseEnableTheFollowingFeaturesInSystemSettings}"
+                       TextWrapping="Wrap" />
+            <TextBlock Margin="{x:Bind GetMargin(10)}" HorizontalAlignment="Left">
+                <Hyperlink Click="Hyperlink_Click"
+                           NavigateUri="ms-settings:easeofaccess-visualeffects"
+                           UnderlineStyle="None">
+                    <Run Text="{x:Bind lang:Lang.AppearanceSettingPage_TransparencyEffects}" />
+                </Hyperlink>
+                <Run Text="" />
+                <Run Text="" />
+                <Hyperlink Click="Hyperlink_Click"
+                           NavigateUri="ms-settings:easeofaccess-visualeffects"
+                           UnderlineStyle="None">
+                    <Run Text="{x:Bind lang:Lang.AppearanceSettingPage_AnimationEffects}" />
+                </Hyperlink>
+            </TextBlock>
+
+            <!--  智能应用控制提醒  -->
+            <TextBlock Margin="{x:Bind GetMargin(18)}"
+                       HorizontalAlignment="Left"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="{x:Bind lang:Lang.WelcomeView_IfHoYoShadeHubTakesALongTimeToStartItIsRecommendedToDisableSmartAppControlInWindowsSecurity}"
+                       TextWrapping="Wrap"
+                       Visibility="{x:Bind IsWin11}" />
+            <TextBlock Margin="{x:Bind GetMargin(10)}"
+                       HorizontalAlignment="Left"
+                       Visibility="{x:Bind IsWin11}">
+                <Hyperlink Click="Hyperlink_Click"
+                           NavigateUri="windowsdefender://smartapp"
+                           UnderlineStyle="None">
+                    <Run Text="{x:Bind lang:Lang.WelcomeView_OpenWindowsSecurity}" />
+                </Hyperlink>
+            </TextBlock>
+            </StackPanel>
+        </ScrollViewer>
+
+
+        <!--  HoYoShadeHub 启动  -->
+        <Button Height="40"
+                Margin="0,0,80,48"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                BorderThickness="0"
+                Command="{x:Bind StartCommand}"
+                CornerRadius="8,20,20,8"
+                IsEnabled="{x:Bind CanStartHoYoShadeHub}"
+                Style="{ThemeResource AccentButtonStyle}">
+            <TextBlock Margin="4,0,8,0"
+                       FontSize="14"
+                       IsTextScaleFactorEnabled="False"
+                       Text="{x:Bind lang:Lang.HoYoShadeDownloadView_Next}" />
+        </Button>
+
+
+    </Grid>
+
+</UserControl>

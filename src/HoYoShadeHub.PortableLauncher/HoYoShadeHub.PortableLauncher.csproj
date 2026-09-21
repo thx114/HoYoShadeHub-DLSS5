@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 便携版的「外层启动器」：产物名字必须是 HoYoShadeHub.exe，
+         和上游 src/HoYoShadeHub.Launcher（C++ 那份）产出的文件同名同位置。
+         上游那份要 VS + MSBuild 才能编；这台机器没有 C++ 工具链，所以这里用 C# 复刻了同样的行为。
+         （这个项目故意不进 sln，和上游那个 .vcxproj 一样） -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>HoYoShadeHub</AssemblyName>
+    <RootNamespace>HoYoShadeHub.PortableLauncher</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <UseWindowsForms>false</UseWindowsForms>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <ApplicationIcon>..\HoYoShadeHub.Launcher\logo.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

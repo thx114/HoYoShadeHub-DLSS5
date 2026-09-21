@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-09-18T00:00:00Z",
+  "_readme": [
+    "内置扩展目录。这个文件会被嵌进 HoYoShadeHub.Extensions.dll，改内容需要重新发版。",
+    "想加条目：复制下面任意一项，改 id / source / rules 即可。",
+    "source.type:",
+    "  github-release  -> 从某个 GitHub 仓库的 Release 里挑一个资产下载（repository + assetPattern + tagPattern）",
+    "  direct          -> 直接给一个下载地址（url），支持 codeload 打包的 zip",
+    "rules 语义：",
+    "  match   : 相对压缩包根的 glob（** 跨层级，* 单层）",
+    "  to      : 落到 HoYoShade 目录下的相对路径",
+    "  flatten : true 只保留文件名；false 保留 match 里第一个通配符之前的字面前缀之下的目录结构",
+    "  optional: 匹配不到时是否忽略（默认 true）",
+    "conflictsWith: 互斥的扩展 id，装了就不让装，避免两个实现抢同一个进程",
+    "注意：同一个 GitHub 仓库里可能有多个插件族，用 tagPattern 区分（例如 RankFTW/rhi-repo 有 96 个 release、十几族）"
+  ],
+  "extensions": [
+    {
+      "id": "renodx.hkrpg",
+      "name": "RenoDX — 崩坏：星穹铁道",
+      "version": "latest",
+      "author": "clshortfuse",
+      "description": "HDR tonemap 重构插件。替换原版后处理链路，亮部与色相比原生 HDR 更干净。装好后需在 ReShade 叠加层里手动启用。",
+      "homepage": "https://github.com/clshortfuse/renodx",
+      "tags": ["hdr", "tonemap", "miHoYo"],
+      "gameBiz": ["hkrpg_cn", "hkrpg_global", "hkrpg_bilibili"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "clshortfuse/renodx",
+        "includePrerelease": true,
+        "tagPattern": "^nightly-\\d{8}$",
+        "assetName": "renodx-honkai-starrail.addon64"
+      },
+      "addonPatterns": ["renodx-honkai-starrail*"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "renodx.dlss5",
+      "name": "RenoDX DLSS5",
+      "version": "latest",
+      "author": "clshortfuse / RankFTW",
+      "description": "RenoDX 的 DLSS5 插件，由 RHI 的资产仓库分发（该仓库有多个插件族，靠 tag 前缀区分）。⚠️ DLSS5 通常还要配套的 nvngx_dlss.dll / DLSS5 运行时，光装这个 addon 不一定出画面。",
+      "homepage": "https://github.com/RankFTW/rhi-repo/releases",
+      "tags": ["dlss5", "neural", "rtx"],
+      "hosts": ["HoYoShade"],
+      "conflictsWith": ["renodx.dlss5.superanus"],
+      "source": {
+        "type": "github-release",
+        "repository": "RankFTW/rhi-repo",
+        "tagPattern": "^renodx-dlss5-",
+        "assetPattern": "renodx-dlss5_*.zip"
+      },
+      "addonPatterns": ["renodx-dlss5.addon64*", "renodx-dlss5(*"],
+      "rules": [
+        { "match": "**/*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "renodx.dlss5.superanus",
+      "name": "RenoDX DLSS5 Super Anus",
+      "version": "latest",
+      "author": "An0sTheGreat",
+      "description": "另一款 DLSS5 实现，单文件 addon 直接下载 .addon64。与「RenoDX DLSS5」是同一件事的两种做法，不能同时装。",
+      "homepage": "https://github.com/An0sTheGreat/DLSS-5-Super-Anus-Manual/releases",
+      "tags": ["dlss5", "neural", "rtx"],
+      "hosts": ["HoYoShade"],
+      "conflictsWith": ["renodx.dlss5"],
+      "source": {
+        "type": "github-release",
+        "repository": "An0sTheGreat/DLSS-5-Super-Anus-Manual",
+        "tagPattern": "^v\\d",
+        "assetPattern": "*.addon64"
+      },
+      "addonPatterns": ["renodx-dlss5-super-anus*"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "renodx.dlss.sf",
+      "name": "RenoDX DLSS (ShortFuse)",
+      "version": "latest",
+      "author": "clshortfuse / RankFTW",
+      "description": "RenoDX 的 DLSS 版插件（ShortFuse 分支），与上面的 DLSS5 是不同一代实现，同一个 RHI 资产仓库。",
+      "homepage": "https://github.com/RankFTW/rhi-repo/releases",
+      "tags": ["dlss", "neural", "rtx"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "RankFTW/rhi-repo",
+        "tagPattern": "^renodx-dlss-SF-",
+        "assetPattern": "renodx-dlss_SF_*.zip"
+      },
+      "addonPatterns": ["renodx-dlss.addon64*", "renodx-dlss(ShortFuse*"],
+      "rules": [
+        { "match": "**/*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "dlss5.neural.interposer",
+      "name": "RenoDX Neural Interposer (nvngx)",
+      "version": "latest",
+      "author": "thx114",
+      "description": "renodx-neural-interposer-nvngx —— 又一个 DLSS5 实现，单文件 addon（实测文件名 renodx-neural-interposer-nvngx.dll (23.1.0 RC1).addon64）。它以前只在 Discord 里发，这里从作者的 GitHub release 取；仓库里如果以后放了别的 addon，把 assetPattern 收窄即可。",
+      "homepage": "https://github.com/thx114/hoyodlss5/releases",
+      "tags": ["dlss5", "neural", "rtx"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "thx114/hoyodlss5",
+        "tagPattern": "^renodx-neural-interposer-nvngx",
+        "assetPattern": "*.addon64"
+      },
+      "addonPatterns": ["*interposer*"],
+      "rules": [
+        { "match": "**/*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "renodx.ue.doffix",
+      "name": "RenoDX Universal UE DoF Fix",
+      "version": "latest",
+      "author": "clshortfuse / RankFTW",
+      "description": "虚幻引擎景深修复插件。只对 Unreal Engine 游戏有意义 —— 原神/星铁/绝区零都是 Unity，装了不会有任何效果。",
+      "homepage": "https://github.com/RankFTW/rhi-repo/releases",
+      "tags": ["unreal-only", "dof"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "RankFTW/rhi-repo",
+        "tagPattern": "^ue-dof-fix-",
+        "assetPattern": "*.addon64"
+      },
+      "addonPatterns": ["renodx-universal_ue-dof-fix*"],
+      "rules": [
+        { "match": "**/*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "dlss5.bridge",
+      "name": "DLSS5 Bridge（DX11 桥接）",
+      "version": "latest",
+      "author": "NIGos",
+      "description": "dlss5-bridge —— 让 DX11 游戏也能吃 DLSS5 的桥接插件，单文件 addon（实测装出来就叫 dlss5-bridge.addon64，PE 版本 1.4.13-pre7 / 现在最新是 pre8）。",
+      "homepage": "https://github.com/NIGos/dlss5-bridge/releases",
+      "tags": ["dlss5", "dx11", "bridge"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "NIGos/dlss5-bridge",
+        "includePrerelease": true,
+        "tagPattern": "^v\\d",
+        "assetName": "dlss5-bridge.addon64"
+      },
+      "addonPatterns": ["dlss5-bridge*"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "hoyoshade.presets",
+      "name": "HoYoShade 官方预设合集",
+      "version": "main",
+      "author": "HoYoShade-Dev",
+      "description": "官方 Presets 仓库里的全部预设，按游戏分成 GI / HSR / ZZZ / Universal 等子目录，直接铺到 HoYoShade 的 Presets 目录下。",
+      "homepage": "https://github.com/HoYoShade-Dev/HoYoShade.Presets",
+      "tags": ["preset"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "direct",
+        "url": "https://codeload.github.com/HoYoShade-Dev/HoYoShade.Presets/zip/refs/heads/main"
+      },
+      "rules": [
+        { "match": "HoYoShade.Presets-main/GI/**", "to": "Presets/GI", "flatten": false, "optional": true },
+        { "match": "HoYoShade.Presets-main/HSR/**", "to": "Presets/HSR", "flatten": false, "optional": true },
+        { "match": "HoYoShade.Presets-main/ZZZ/**", "to": "Presets/ZZZ", "flatten": false, "optional": true },
+        { "match": "HoYoShade.Presets-main/Universal/**", "to": "Presets/Universal", "flatten": false, "optional": true }
+      ]
+    }
+  ]
+}

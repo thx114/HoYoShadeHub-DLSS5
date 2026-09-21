@@ -1,0 +1,517 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<sf:PageBase x:Class="HoYoShadeHub.Features.Plugins.GlobalPluginPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:local="using:HoYoShadeHub.Features.Plugins"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:sf="using:HoYoShadeHub.Frameworks"
+             x:DefaultBindMode="OneWay"
+             mc:Ignorable="d">
+
+    <Grid Padding="36,4,36,12" RowSpacing="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!--  标题 + 操作（搜索框放在「本地安装」左边）  -->
+        <Grid Grid.Row="0" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Spacing="0">
+                <TextBlock Style="{ThemeResource TitleTextBlockStyle}" Text="全局插件" />
+                <TextBlock x:Name="TextBlock_TargetPath"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Text="正在检测 HoYoShade…"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal"
+                        Spacing="8"
+                        VerticalAlignment="Center">
+                <Button x:Name="Button_Refresh" Click="Button_Refresh_Click" ToolTipService.ToolTip="重新检测">
+                    <FontIcon FontSize="14" Glyph="&#xE72C;" />
+                </Button>
+                <Button x:Name="Button_PickFolder" Click="Button_PickFolder_Click" Content="指定目录" />
+                <Button x:Name="Button_OpenFolder" Click="Button_OpenFolder_Click" Content="打开目录" />
+                <TextBox x:Name="TextBox_Search"
+                         Width="200"
+                         VerticalAlignment="Center"
+                         PlaceholderText="搜索插件…"
+                         TextChanged="TextBox_Search_TextChanged" />
+                <Button x:Name="Button_CleanStale"
+                        Click="Button_CleanStaleReferences_Click"
+                        Content="清理失效条目"
+                        ToolTipService.ToolTip="扫一遍所有游戏的 ReShade.ini，把 DisabledAddons / LoadFromDllMain 里指向「已经不存在的插件文件」的条目删掉" />
+                <Button x:Name="Button_InstallLocal"
+                        Click="Button_InstallLocal_Click"
+                        Content="本地安装…"
+                        Style="{ThemeResource AccentButtonStyle}" />
+            </StackPanel>
+        </Grid>
+
+        <!--  诊断  -->
+        <InfoBar x:Name="InfoBar_Status"
+                 Grid.Row="1"
+                 IsClosable="True"
+                 IsOpen="False"
+                 Severity="Informational" />
+
+        <!--  一行：左边视图，右边过滤 + 计数  -->
+        <Grid Grid.Row="2" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <RadioButtons x:Name="RadioButtons_View"
+                          Grid.Column="0"
+                          MaxColumns="3"
+                          SelectedIndex="0"
+                          SelectionChanged="RadioButtons_View_SelectionChanged">
+                <RadioButton Content="扩展包" Tag="extensions" />
+                <RadioButton Content="插件文件" Tag="files" />
+                <RadioButton Content="OptiScaler" Tag="optiscaler" />
+            </RadioButtons>
+
+            <StackPanel Grid.Column="2"
+                        Orientation="Horizontal"
+                        Spacing="12"
+                        VerticalAlignment="Center">
+                <RadioButtons x:Name="RadioButtons_Filter"
+                              MaxColumns="3"
+                              SelectedIndex="0"
+                              SelectionChanged="RadioButtons_Filter_SelectionChanged">
+                    <RadioButton Content="全部" Tag="all" />
+                    <RadioButton Content="已安装" Tag="installed" />
+                    <RadioButton Content="可下载" Tag="available" />
+                </RadioButtons>
+                <TextBlock x:Name="TextBlock_Count"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{ThemeResource CaptionTextBlockStyle}" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="3">
+            <!--  插件视图：卡片默认一行，点开才展开详情  -->
+            <Grid x:Name="Grid_Extensions">
+                <ListView x:Name="PluginList"
+                          Padding="0,0,0,8"
+                          IsItemClickEnabled="True"
+                          ItemClick="PluginList_ItemClick"
+                          SelectionMode="None">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:PluginItemViewModel">
+                            <Border Margin="0,0,0,6"
+                                    Padding="14,10"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="4">
+                                <StackPanel Spacing="6">
+                                    <!--  一行：名字 + 标签 + 已安装，右边是操作  -->
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0"
+                                                    Orientation="Horizontal"
+                                                    Spacing="8">
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                       Text="{x:Bind Name, Mode=OneWay}" />
+                                            <ItemsControl VerticalAlignment="Center" ItemsSource="{x:Bind Tags, Mode=OneWay}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="x:String">
+                                                        <Border Padding="6,1"
+                                                                Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                                                                CornerRadius="3">
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                       Text="{x:Bind}" />
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <Border Padding="6,1"
+                                                    VerticalAlignment="Center"
+                                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                    CornerRadius="3"
+                                                    Visibility="{x:Bind InstalledVisibility, Mode=OneWay}">
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                           Text="已安装" />
+                                            </Border>
+                                            <!--  GitHub 上有更新的版本（点开卡片时会查）  -->
+                                            <Border Padding="6,1"
+                                                    VerticalAlignment="Center"
+                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                    CornerRadius="3"
+                                                    Visibility="{x:Bind UpdateBadgeVisibility, Mode=OneWay}">
+                                                <TextBlock FontSize="11" Text="{x:Bind UpdateBadgeText, Mode=OneWay}" />
+                                            </Border>
+                                            <!--  缺 DLSS5 运行时：红 = 起不来，黄 = 可能不出画面  -->
+                                            <Border Padding="6,1"
+                                                    VerticalAlignment="Center"
+                                                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                    CornerRadius="3"
+                                                    Visibility="{x:Bind DllRequiredVisibility, Mode=OneWay}">
+                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
+                                            </Border>
+                                            <Border Padding="6,1"
+                                                    VerticalAlignment="Center"
+                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                    CornerRadius="3"
+                                                    Visibility="{x:Bind DllRecommendedVisibility, Mode=OneWay}">
+                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
+                                            </Border>
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    VerticalAlignment="Center">
+                                            <!--  全局开关：改文件名后缀（.addon64 ↔ .addon64x），影响所有游戏  -->
+                                            <ToggleSwitch MinWidth="0"
+                                                          VerticalAlignment="Center"
+                                                          IsEnabled="{x:Bind CanInteract, Mode=OneWay}"
+                                                          IsOn="{x:Bind GlobalEnabled, Mode=TwoWay}"
+                                                          OffContent="全局关"
+                                                          OnContent="全局开"
+                                                          Visibility="{x:Bind GlobalSwitchVisibility, Mode=OneWay}"
+                                                          ToolTipService.ToolTip="全局开关 = 直接改插件文件名后缀（.addon64 ↔ .addon64x），ReShade 就加载不到它了 —— 影响所有游戏，不只是某一个" />
+                                            <Button Click="Button_Install_Click"
+                                                    Content="{x:Bind ActionText, Mode=OneWay}"
+                                                    IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
+                                            <Button Click="Button_Uninstall_Click"
+                                                    Content="删除"
+                                                    Visibility="{x:Bind InstalledVisibility, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <ProgressBar Height="3"
+                                                 Maximum="100"
+                                                 Visibility="{x:Bind BusyVisibility, Mode=OneWay}"
+                                                 Value="{x:Bind ProgressPercent, Mode=OneWay}" />
+
+                                    <!--  点开才显示  -->
+                                    <StackPanel Spacing="4" Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}">
+                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind Description, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind VersionText, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind DiskOnlyHint, Mode=OneWay}"
+                                                   TextWrapping="Wrap"
+                                                   Visibility="{x:Bind DiskOnlyHintVisibility, Mode=OneWay}" />
+                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind StatusText, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind FilesText, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+                                        <!--  版本：下拉选一个装（用户要求「直接下拉选择插件版本」）  -->
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <ComboBox MinWidth="200"
+                                                      Header="版本"
+                                                      ItemsSource="{x:Bind Versions, Mode=OneWay}"
+                                                      PlaceholderText="点开卡片时自动获取"
+                                                      SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                            <Button VerticalAlignment="Bottom"
+                                                    Click="Button_InstallVersion_Click"
+                                                    Content="装这个版本"
+                                                    IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
+                                        </StackPanel>
+                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind VersionsHint, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+                                        <HyperlinkButton Padding="0"
+                                                         Click="Hyperlink_Homepage_Click"
+                                                         Content="{x:Bind Homepage, Mode=OneWay}"
+                                                         Visibility="{x:Bind HomepageVisibility, Mode=OneWay}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <TextBlock x:Name="TextBlock_Empty"
+                           MaxWidth="420"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Text="没有可管理的插件。"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed" />
+            </Grid>
+
+            <!--  插件文件视图：全局开关 = 重命名，影响所有游戏  -->
+            <Grid x:Name="Grid_AddonFiles" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <InfoBar Grid.Row="0"
+                         Margin="0,0,0,6"
+                         IsClosable="False"
+                         IsOpen="True"
+                         Message="这里的开关是「重命名 .addon64 ↔ .addon64x」，ReShade 会直接扫不到这个文件 —— 影响所有游戏。只想对某个游戏关掉，请到左侧「插件」里按游戏设置。"
+                         Severity="Warning"
+                         Title="全局开关会影响所有游戏" />
+
+                <Grid Grid.Row="1">
+                    <ListView x:Name="AddonFileList" Padding="0,0,0,8" SelectionMode="None">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="local:AddonFileItemViewModel">
+                                <Border Margin="0,0,0,6"
+                                        Padding="14,10"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="4">
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0" Spacing="2">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <TextBlock VerticalAlignment="Center"
+                                                           Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                           Text="{x:Bind Name, Mode=OneWay}" />
+                                                <Border Padding="6,1"
+                                                        VerticalAlignment="Center"
+                                                        Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                        CornerRadius="3"
+                                                        Visibility="{x:Bind DisabledVisibility, Mode=OneWay}">
+                                                    <TextBlock FontSize="11" Text="全局已禁用" />
+                                                </Border>
+                                                <Border Padding="6,1"
+                                                        VerticalAlignment="Center"
+                                                        Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                        CornerRadius="3"
+                                                        Visibility="{x:Bind DllRequiredVisibility, Mode=OneWay}">
+                                                    <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
+                                                </Border>
+                                                <Border Padding="6,1"
+                                                        VerticalAlignment="Center"
+                                                        Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                        CornerRadius="3"
+                                                        Visibility="{x:Bind DllRecommendedVisibility, Mode=OneWay}">
+                                                    <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                       Text="{x:Bind MetaText, Mode=OneWay}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    VerticalAlignment="Center">
+                                            <ToggleSwitch MinWidth="0"
+                                                          VerticalAlignment="Center"
+                                                          IsOn="{x:Bind Enabled, Mode=TwoWay}"
+                                                          OffContent="全局关"
+                                                          OnContent="全局开"
+                                                          ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64 ↔ .addon64x）" />
+                                            <!--  删除这个插件文件（有二级确认）  -->
+                                            <Button MinWidth="0"
+                                                    Padding="8,3"
+                                                    VerticalAlignment="Center"
+                                                    Click="Button_DeleteAddonFile_Click"
+                                                    ToolTipService.ToolTip="把这个插件文件从插件目录里删掉（会先弹一次确认），并清掉各游戏 ini 里指向它的条目">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                    <TextBlock FontSize="12" Text="删除" />
+                                                </StackPanel>
+                                            </Button>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <TextBlock x:Name="TextBlock_AddonFilesEmpty"
+                               MaxWidth="420"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="插件目录里没有 addon 文件。"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed" />
+                </Grid>
+            </Grid>
+
+            <!--  OptiScaler 视图：下载社区 NR 分支，同一时间只启用一个  -->
+            <Grid x:Name="Grid_OptiScaler" Visibility="Collapsed">
+                <ScrollViewer Padding="0,0,10,0">
+                    <StackPanel Spacing="10">
+                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="已下载" />
+                        <TextBlock x:Name="TextBlock_OptiScalerEmpty"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Text="还没有下载任何 OptiScaler。先在下面「可下载」里拉一个。"
+                                   TextWrapping="Wrap" />
+
+                        <ItemsControl x:Name="OptiScalerBuildList" ItemsSource="{x:Bind OptiScalerBuilds}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
+                                    <Border Margin="0,0,0,6"
+                                            Padding="14,10"
+                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="4">
+                                        <Grid ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <StackPanel Grid.Column="0" Spacing="2">
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                               Text="{x:Bind Title, Mode=OneWay}" />
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                            CornerRadius="3"
+                                                            Visibility="{x:Bind EnabledVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                   Text="启用中" />
+                                                    </Border>
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                            CornerRadius="3"
+                                                            Visibility="{x:Bind NoDllVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11" Text="包里没找到 OptiScaler.dll" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind MetaText, Mode=OneWay}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="1"
+                                                        Orientation="Horizontal"
+                                                        Spacing="8"
+                                                        VerticalAlignment="Center">
+                                                <RadioButton MinWidth="0"
+                                                             VerticalAlignment="Center"
+                                                             Checked="RadioButton_OptiScalerBuild_Checked"
+                                                             Content="启用"
+                                                             GroupName="OptiScalerBuild"
+                                                             IsChecked="{x:Bind Enabled, Mode=TwoWay}" />
+                                                <Button Click="Button_OpenOptiScalerBuild_Click"
+                                                        Content="打开目录"
+                                                        IsEnabled="{x:Bind CanOpenFolder, Mode=OneWay}" />
+                                                <Button Click="Button_DeleteOptiScalerBuild_Click" Content="删除" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Margin="0,6,0,0"
+                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                   Text="可下载" />
+
+                        <ItemsControl x:Name="OptiScalerSourceList" ItemsSource="{x:Bind OptiScalerSources}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:OptiScalerSourceItemViewModel">
+                                    <Border Margin="0,0,0,6"
+                                            Padding="14,10"
+                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="4">
+                                        <StackPanel Spacing="6">
+                                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Name, Mode=OneWay}" />
+                                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                       Text="{x:Bind Description, Mode=OneWay}"
+                                                       TextWrapping="Wrap" />
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <ComboBox MinWidth="200"
+                                                          Header="版本"
+                                                          DropDownOpened="ComboBox_OptiScalerVersions_DropDownOpened"
+                                                          ItemsSource="{x:Bind Versions, Mode=OneWay}"
+                                                          PlaceholderText="点开下拉自动获取版本"
+                                                          SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                <Button VerticalAlignment="Bottom"
+                                                        Click="Button_DownloadOptiScaler_Click"
+                                                        Content="{x:Bind ActionText, Mode=OneWay}"
+                                                        IsEnabled="{x:Bind CanInteract, Mode=OneWay}"
+                                                        Style="{ThemeResource AccentButtonStyle}" />
+                                            </StackPanel>
+                                            <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                       Text="{x:Bind StatusText, Mode=OneWay}"
+                                                       TextWrapping="Wrap" />
+                                            <HyperlinkButton Padding="0"
+                                                             Click="Hyperlink_OptiScalerRepo_Click"
+                                                             Content="{x:Bind Repository, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <!--  底部状态  -->
+        <StackPanel Grid.Row="4" Spacing="4">
+            <ProgressBar x:Name="ProgressBar_Overall"
+                         Height="3"
+                         Maximum="100"
+                         Visibility="Collapsed" />
+            <TextBlock x:Name="TextBlock_Status"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       TextWrapping="Wrap" />
+        </StackPanel>
+    </Grid>
+
+</sf:PageBase>

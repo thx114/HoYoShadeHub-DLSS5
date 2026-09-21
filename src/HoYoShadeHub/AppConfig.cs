@@ -1,0 +1,1606 @@
+using Dapper;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Serilog;
+using HoYoShadeHub.Core;
+using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Core.Networking;
+using HoYoShadeHub.Core.SelfQuery;
+using HoYoShadeHub.Features.Background;
+using HoYoShadeHub.Features.Database;
+using HoYoShadeHub.Features.GameLauncher;
+using HoYoShadeHub.Features.HoYoPlay;
+using HoYoShadeHub.Features.PlayTime;
+using HoYoShadeHub.Features.RPC;
+using HoYoShadeHub.Features.Screenshot;
+using HoYoShadeHub.Features.Update;
+using HoYoShadeHub.Features.ViewHost;
+using HoYoShadeHub.Helpers;
+using HoYoShadeHub.RPC.Update;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Security.Principal;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace HoYoShadeHub;
+
+public static class AppConfig
+{
+
+
+
+    public static readonly JsonSerializerOptions JsonSerializerOptions = new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+
+    public static string HoYoShadeHubExecutePath => Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "HoYoShadeHub.exe");
+
+
+
+
+
+    static AppConfig()
+    {
+        try
+        {
+            SystemCulture = CultureInfo.CurrentUICulture;
+            AppVersion = typeof(AppConfig).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+
+            IsAppInRemovableStorage = DriveHelper.IsDeviceRemovableOrOnUSB(AppContext.BaseDirectory);
+            string? parentFolder = new DirectoryInfo(AppContext.BaseDirectory).Parent?.FullName;
+            string launcherExe = Path.Join(parentFolder, "HoYoShadeHub.exe");
+            if (Directory.Exists(parentFolder) && File.Exists(launcherExe))
+            {
+                IsPortable = true;
+                InstallType = HoYoShadeHub.RPC.Update.Metadata.InstallType.Portable;
+                HoYoShadeHubLauncherExecutePath = launcherExe;
+            }
+            else
+            {
+                IsPortable = false;
+                InstallType = HoYoShadeHub.RPC.Update.Metadata.InstallType.Setup;
+            }
+
+            if (IsAppInRemovableStorage && IsPortable)
+            {
+                CacheFolder = Path.Combine(parentFolder!, ".cache");
+                ConfigPath = Path.Combine(parentFolder!, "config.ini");
+            }
+            else if (IsAppInRemovableStorage)
+            {
+                CacheFolder = Path.Combine(Path.GetPathRoot(AppContext.BaseDirectory)!, ".HoYoShadeHubCache");
+                ConfigPath = Path.Combine(CacheFolder, "config.ini");
+            }
+            else if (IsPortable)
+            {
+                CacheFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HoYoShadeHub");
+                ConfigPath = Path.Combine(parentFolder!, "config.ini");
+            }
+            else
+            {
+                CacheFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HoYoShadeHub");
+#if DEBUG || DEV
+                ConfigPath = Path.Combine(CacheFolder, "config.ini");
+#else
+                string roamingFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HoYoShadeHub");
+                ConfigPath = Path.Combine(roamingFolder, "config.ini");
+#endif
+            }
+            Directory.CreateDirectory(CacheFolder);
+            var webviewFolder = Path.Combine(CacheFolder, "webview");
+            Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", webviewFolder, EnvironmentVariableTarget.Process);
+
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            WindowsPrincipal principal = new WindowsPrincipal(identity);
+            IsAdmin = principal.IsInRole(WindowsBuiltInRole.Administrator);
+
+            if (File.Exists(ConfigPath))
+            {
+                string text = File.ReadAllText(ConfigPath);
+                string lang = Regex.Match(text, @"Language=(.+)").Groups[1].Value.Trim();
+                string folder = Regex.Match(text, @"UserDataFolder=(.+)").Groups[1].Value.Trim();
+                bool.TryParse(Regex.Match(text, @"EnableLoginAuthTicket=(.+)").Groups[1].Value.Trim(), out bool enabled);
+                EnableLoginAuthTicket = enabled;
+                stoken = Regex.Match(text, @"stoken=(.+)").Groups[1].Value.Trim();
+                mid = Regex.Match(text, @"mid=(.+)").Groups[1].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(lang))
+                {
+                    try
+                    {
+                        CultureInfo.CurrentUICulture = new CultureInfo(lang);
+                        Language = lang;
+                    }
+                    catch { }
+                }
+                if (!string.IsNullOrWhiteSpace(folder))
+                {
+                    string userDataFolder;
+                    if (Path.IsPathFullyQualified(folder))
+                    {
+                        userDataFolder = folder;
+                    }
+                    else
+                    {
+                        userDataFolder = Path.GetFullPath(folder, Path.GetDirectoryName(ConfigPath)!);
+                    }
+                    if (Directory.Exists(userDataFolder))
+                    {
+                        UserDataFolder = Path.GetFullPath(userDataFolder);
+                        DatabaseService.SetDatabase(userDataFolder);
+                    }
+                }
+            }
+
+            // config.ini 是空的那份（zip 覆盖、或者用户手删过）：找找盘上有没有现成的 profile。
+            // 不做这一步的话，App 会用一个「默认目录」当数据目录 —— 用户的游戏列表 / 安装路径全在旧 DB 里，
+            // 看起来就像「游戏丢了」（真事，2026-09-20，用户报「新版跳过初始化，找不到之前的游戏」）。
+            if (string.IsNullOrWhiteSpace(UserDataFolder))
+            {
+                UseUserDataFolder(TryFindExistingProfileFolder());
+            }
+        }
+        catch { }
+    }
+
+
+
+    /// <summary>
+    /// 切到某个用户数据目录：**必须同时**把 DB 也指过去。
+    ///
+    /// <para>
+    /// 只设 <see cref="UserDataFolder"/> 是不够的 —— 数据库连接用的是
+    /// <c>DatabaseService.SetDatabase()</c> 那个路径。漏掉这一步的后果（2026-09-20 用户踩过）：
+    /// 游戏列表、安装路径这些**都在 DB 里**，于是顶部只剩「自定义游戏」（那个走 games.json），
+    /// 看起来就像游戏全丢了。
+    /// </para>
+    /// </summary>
+    public static void UseUserDataFolder(string? folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            return;
+        }
+
+        UserDataFolder = folder;
+        DatabaseService.SetDatabase(folder);
+    }
+
+
+
+    /// <summary>
+    /// 盘上现成的 profile 目录（里面有 DB / <c>.hysx\games.json</c> / <c>HoYoShade\ReShade64.dll</c>）；
+    /// 多个的时候按「证据文件最近改动」那个算。找不到返回 null。
+    /// </summary>
+    public static string? TryFindExistingProfileFolder()
+    {
+        try
+        {
+            var candidates = new List<string>();
+
+            void AddCandidate(string? path)
+            {
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    candidates.Add(path);
+                }
+            }
+
+            string appDirectory = AppContext.BaseDirectory;
+            string? parent = new DirectoryInfo(appDirectory).Parent?.FullName;
+
+            AddCandidate(ResolveDefaultUserDataFolder());
+            AddCandidate(parent);
+            AddCandidate(appDirectory);
+            AddCandidate(parent is null ? null : Path.GetDirectoryName(parent));
+            AddCandidate(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HoYoShadeHub"));
+            AddCandidate(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HoYoShadeHub"));
+
+            // 同级目录也扫一层：用户很可能把新 zip 解压到了旁边的文件夹
+            if (parent is { Length: > 0 } && Directory.Exists(parent))
+            {
+                foreach (string sibling in Directory.EnumerateDirectories(parent))
+                {
+                    AddCandidate(sibling);
+                }
+            }
+
+            string? best = null;
+            DateTimeOffset bestTime = DateTimeOffset.MinValue;
+
+            foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                DateTimeOffset time = ProfileEvidenceTime(candidate);
+                if (time > bestTime)
+                {
+                    bestTime = time;
+                    best = candidate;
+                }
+            }
+
+            return best;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+
+
+    /// <summary>这个目录里「用户数据」的最新改动时间；一点证据都没有就返回 MinValue</summary>
+    private static DateTimeOffset ProfileEvidenceTime(string directory)
+    {
+        DateTimeOffset newest = DateTimeOffset.MinValue;
+
+        foreach (string path in new[]
+                 {
+                     Path.Combine(directory, "HoYoShadeHubDatabase.db"),
+                     Path.Combine(directory, ".hysx", "games.json"),
+                     Path.Combine(directory, "HoYoShade", "ReShade64.dll"),
+                 })
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    DateTimeOffset time = File.GetLastWriteTime(path);
+                    if (time > newest)
+                    {
+                        newest = time;
+                    }
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        return newest;
+    }
+
+
+
+
+    #region Configuration
+
+
+
+    public static string? HoYoShadeHubLauncherExecutePath { get; private set; }
+
+
+    public static string AppVersion { get; private set; }
+
+
+    public static bool IsPortable { get; private set; }
+
+    public static HoYoShadeHub.RPC.Update.Metadata.InstallType InstallType { get; set; } = HoYoShadeHub.RPC.Update.Metadata.InstallType.Setup;
+
+
+    public static bool IsAppInRemovableStorage { get; private set; }
+
+
+    public static CultureInfo SystemCulture { get; private set; }
+
+
+    public static string CacheFolder { get; private set; }
+
+
+    public static string ConfigPath { get; private set; }
+
+
+    public static string? Language { get; set; }
+
+
+    public static string? UserDataFolder { get; set; }
+
+
+    /// <summary>
+    /// 默认用户数据目录（跟 <c>WelcomeView.InitializeDefaultUserDataFolder</c> 同一套规则）。
+    /// 首次引导那一步要用它来判断「老客户端的数据还在不在」。
+    /// </summary>
+    public static string ResolveDefaultUserDataFolder()
+    {
+        try
+        {
+            string? parentFolder = new DirectoryInfo(AppContext.BaseDirectory).Parent?.FullName;
+
+            if (IsAppInRemovableStorage && IsPortable)
+            {
+                return parentFolder ?? AppContext.BaseDirectory;
+            }
+
+            if (IsAppInRemovableStorage)
+            {
+                return Path.Combine(Path.GetPathRoot(AppContext.BaseDirectory)!, ".HoYoShadeHubData");
+            }
+
+            if (IsPortable)
+            {
+                return parentFolder ?? AppContext.BaseDirectory;
+            }
+
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HoYoShadeHub");
+        }
+        catch
+        {
+            return AppContext.BaseDirectory;
+        }
+    }
+
+
+    public static bool IsAdmin { get; private set; }
+
+
+    public static string LogFile { get; private set; }
+
+
+    public static bool? EnableLoginAuthTicket { get; set; }
+
+    public static string? stoken { get; set; }
+
+    public static string? mid { get; set; }
+
+
+
+    public static void SaveConfiguration()
+    {
+        try
+        {
+            StringBuilder sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(UserDataFolder))
+            {
+                string dataFolder = UserDataFolder;
+                string? parentFolder = Path.GetDirectoryName(ConfigPath);
+                if (!string.IsNullOrWhiteSpace(parentFolder) && UserDataFolder.StartsWith(parentFolder))
+                {
+                    dataFolder = Path.GetRelativePath(parentFolder, UserDataFolder);
+                }
+                sb.AppendLine($"Language={Language}");
+                sb.AppendLine($"UserDataFolder={dataFolder}");
+            }
+            else
+            {
+                sb.AppendLine($"Language={Language}");
+                sb.AppendLine($"UserDataFolder=");
+            }
+            if (EnableLoginAuthTicket.HasValue)
+            {
+                sb.AppendLine($"{nameof(EnableLoginAuthTicket)}={EnableLoginAuthTicket}");
+            }
+            if (!string.IsNullOrWhiteSpace(stoken))
+            {
+                sb.AppendLine($"{nameof(stoken)}={stoken}");
+            }
+            if (!string.IsNullOrWhiteSpace(mid))
+            {
+                sb.AppendLine($"{nameof(mid)}={mid}");
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+            File.WriteAllText(ConfigPath, sb.ToString());
+        }
+        catch { }
+    }
+
+
+
+    #endregion
+
+
+
+    #region Service Provider
+
+
+
+    private static IServiceProvider _serviceProvider;
+
+
+
+    private static void BuildServiceProvider()
+    {
+        if (_serviceProvider == null)
+        {
+            var logFolder = Path.Combine(CacheFolder, "log");
+            Directory.CreateDirectory(logFolder);
+            LogFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
+            Log.Logger = new LoggerConfiguration().WriteTo.File(path: LogFile, shared: true, outputTemplate: $$"""[{Timestamp:HH:mm:ss.fff}] [{Level:u4}] [{{Path.GetFileName(Environment.ProcessPath)}} ({{Environment.ProcessId}})] {SourceContext}{NewLine}{Message}{NewLine}{Exception}{NewLine}""")
+                                                  .Enrich.FromLogContext()
+                                                  .CreateLogger();
+            Log.Information($"Welcome to HoYoShadeHub v{AppVersion}\r\nSystem: {Environment.OSVersion}\r\nCommand Line: {Environment.CommandLine}");
+
+            var sc = new ServiceCollection();
+            sc.AddMemoryCache();
+            sc.AddLogging(c => c.AddSerilog(Log.Logger));
+            DohService.Provider = DohProvider;
+            DohService.Enabled = EnableDoh;
+            DohService.EnableEch = EnableEch;
+            sc.AddHttpClient().ConfigureHttpClientDefaults(config =>
+            {
+                config.RemoveAllLoggers();
+                config.ConfigureHttpClient(client =>
+                {
+                    client.DefaultRequestHeaders.Add("User-Agent", $"HoYoShadeHub/{AppVersion}");
+                    client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher;
+                });
+                config.ConfigurePrimaryHttpMessageHandler(() => DohService.CreateSocketsHttpHandler());
+            });
+
+            sc.AddSingleton<HoYoPlayClient>();
+
+            sc.AddSingleton<HoYoPlayService>();
+            sc.AddSingleton<BackgroundService>();
+            sc.AddSingleton<GameLauncherService>();
+            sc.AddSingleton<PlayTimeService>();
+
+
+            sc.AddTransient<MetadataClient>();
+            sc.AddTransient<UpdateService>();
+            sc.AddTransient<SetupService>();
+
+            sc.AddSingleton<RpcService>();
+
+            sc.AddSingleton<ScreenCaptureService>();
+
+            _serviceProvider = sc.BuildServiceProvider();
+        }
+    }
+
+
+    public static T GetService<T>()
+    {
+        BuildServiceProvider();
+        return _serviceProvider.GetService<T>()!;
+    }
+
+
+    public static ILogger<T> GetLogger<T>()
+    {
+        BuildServiceProvider();
+        return _serviceProvider.GetService<ILogger<T>>()!;
+    }
+
+
+    public static SqliteConnection CreateDatabaseConnection()
+    {
+        return DatabaseService.CreateConnection();
+    }
+
+
+    #endregion
+
+
+
+
+
+    #region Static Setting
+
+
+
+    public static bool EnablePreviewRelease
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 是否已完成首次启动欢迎/OOBE动画
+    /// </summary>
+    public static bool WelcomeOOBECompleted
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 启动时自动检测启动器更新
+    /// </summary>
+    public static bool AutoCheckLauncherUpdateOnStartup
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static string? IgnoreVersion
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+
+
+
+    public static bool IgnoreRunningGame
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool ShowNoviceGacha
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+    public static bool ShowChronicledWish
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static string? AccentColor
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    public static int VideoBgVolume
+    {
+        get => Math.Clamp(GetValue(0), 0, 100);
+        set => SetValue(value);
+    }
+
+
+    [Obsolete("已不用", true)]
+    public static bool UseOneBg
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool AcceptHoyolabToolboxAgreement
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool HoyolabToolboxPaneOpen
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static bool EnableSystemTrayIcon
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static bool ExitWhenClosing
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 主窗口关闭选项，隐藏/退出
+    /// </summary>
+    public static MainWindowCloseOption CloseWindowOption
+    {
+        get => GetValue<MainWindowCloseOption>();
+        set => SetValue(value);
+    }
+
+
+    public static bool UseSystemThemeColor
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool EnableNavigationViewLeftCompact
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool DisableGameNoticeRedHot
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static bool DefaultDisableVideoBackgroundPlayback
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static bool EnableDoh
+    {
+        get => GetValue(false, nameof(EnableCloudflareDohViaCloudflare));
+        set
+        {
+            if (EnableDoh == value)
+            {
+                return;
+            }
+
+            SetValue(value, nameof(EnableCloudflareDohViaCloudflare));
+            DohService.Enabled = value;
+
+            if (!value)
+            {
+                EnableEch = false;
+            }
+        }
+    }
+
+
+    public static bool EnableEch
+    {
+        get => GetValue(false);
+        set
+        {
+            if (EnableEch == value)
+            {
+                return;
+            }
+
+            SetValue(value);
+            DohService.EnableEch = value;
+        }
+    }
+
+
+
+    public static DohProvider DohProvider
+    {
+        get => GetValue(HoYoShadeHub.Core.Networking.DohProvider.Cloudflare);
+        set
+        {
+            if (DohProvider == value)
+            {
+                return;
+            }
+
+            SetValue(value);
+            DohService.Provider = value;
+        }
+    }
+
+
+    [Obsolete("Use EnableDoh", false)]
+    public static bool EnableCloudflareDohViaCloudflare
+    {
+        get => EnableDoh;
+        set => EnableDoh = value;
+    }
+
+
+    public static StartGameAction StartGameAction
+    {
+        get => GetValue<StartGameAction>();
+        set => SetValue(value);
+    }
+
+
+
+    public static string? HyperionDeviceId
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+
+    public static string? HyperionDeviceFp
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+
+    public static DateTimeOffset HyperionDeviceFpLastUpdateTime
+    {
+        get => GetValue<DateTimeOffset>();
+        set => SetValue(value);
+    }
+
+
+
+    public static string? LastAppVersion
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 当前选择的游戏区服
+    /// </summary>
+    public static GameBiz CurrentGameBiz
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    public static string? SelectedGameBizs
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 固定待选择的游戏区服图标
+    /// </summary>
+    public static bool IsGameBizSelectorPinned
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static string? DefaultGameInstallationPath
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    public static int SpeedLimitKBPerSecond
+    {
+        get => GetValue(0);
+        set => SetValue(value);
+    }
+
+
+
+    /// <summary>
+    /// 缓存的游戏信息 <see cref="HoYoShadeHub.Core.HoYoPlay.GameInfo"/>
+    /// </summary>
+    public static string? CachedGameInfo
+    {
+        get => DatabaseService.GetValue<string>(nameof(CachedGameInfo), out _, default);
+        set => DatabaseService.SetValue(nameof(CachedGameInfo), value);
+    }
+
+
+    /// <summary>
+    /// 更新完成后自动重启
+    /// </summary>
+    public static bool AutoRestartWhenUpdateFinished
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 更新完成后显示更新内容
+    /// </summary>
+    public static bool ShowUpdateContentAfterUpdateRestart
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 保持 RPC 服务在后台运行
+    /// </summary>
+    public static bool KeepRpcServerRunningInBackground
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 安装游戏时自动创建子文件夹
+    /// </summary>
+    public static bool AutomaticallyCreateSubfolderForInstall
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 崩坏3国际服多区服选项
+    /// </summary>
+    public static string? LastGameIdOfBH3Global
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 启用硬链接
+    /// </summary>
+    public static bool EnableHardLink
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 原神HDR
+    /// </summary>
+    public static bool EnableGenshinHDR
+    {
+        get => GetValue(false);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 截图文件夹
+    /// </summary>
+    public static string? ScreenshotFolder
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 显示主窗口快捷键
+    /// </summary>
+    public static string? ShowMainWindowHotkey
+    {
+        // Alt + H
+        get => GetValue("1+72");
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 手柄控制
+    /// </summary>
+    public static bool EnableGamepadSimulateInput
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+
+    public static int GamepadGuideButtonMode
+    {
+        get => GetValue<int>();
+        set => SetValue(value);
+    }
+
+
+    public static string? GamepadShareButtonMapKeys
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    public static string? GamepadGuideButtonMapKeys
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    public static int GamepadShareButtonMode
+    {
+        get => GetValue<int>();
+        set => SetValue(value);
+    }
+
+
+    public static bool AutoConvertScreenshotToSDR
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    public static bool AutoCopyScreenshotToClipboard
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 0: PNG, 1: AVIF, 2: JPEG XL
+    /// </summary>
+    public static int ScreenCaptureSavedFormat
+    {
+        get => GetValue(0);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 0: Middle, 1: High, 2: Lossless
+    /// </summary>
+    public static int ScreenCaptureEncodeQuality
+    {
+        get => GetValue(1);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 使用 CMD 启动游戏 <see href="https://github.com/Scighost/HoYoShadeHub/issues/1634"/>
+    /// </summary>
+    public static bool StartGameWithCMD
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 原神Blender/留影机插件路径
+    /// </summary>
+    public static string? GenshinBlenderPluginPath
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 绝区零Blender/留影机插件路径
+    /// </summary>
+    public static string? ZZZBlenderPluginPath
+    {
+        get => GetValue<string>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>
+    /// 使用Starward启动器启动公开客户端游戏
+    /// </summary>
+    public static bool UseStarwardLauncher
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+    /// <summary>
+    /// HoYoShade框架 - 加入预览版更新渠道
+    /// </summary>
+    public static bool EnableHoYoShadePreviewChannel
+    {
+        get => GetValue<bool>();
+        set => SetValue(value);
+    }
+
+    /// <summary>
+    /// 远端目录（插件 + OptiScaler）的地址前缀，形如
+    /// <c>https://raw.githubusercontent.com/&lt;owner&gt;/&lt;repo&gt;/main/catalog/</c>。
+    /// 换仓库只改这一处（或用户在设置里改）。
+    /// </summary>
+    public static string CatalogBaseUrl
+    {
+        get => GetValue(HoYoShadeHub.Features.Plugins.RemoteCatalogDefaults.BaseUrl);
+        set => SetValue(value);
+    }
+
+    /// <summary>上次成功拉取远端目录的时间（UTC，空 = 从没拉过）</summary>
+    public static DateTimeOffset LastCatalogFetchUtc
+    {
+        get
+        {
+            string raw = GetValue(string.Empty);
+            return DateTimeOffset.TryParse(raw, out DateTimeOffset parsed) ? parsed : DateTimeOffset.MinValue;
+        }
+        set => SetValue(value.ToUniversalTime().ToString("O"));
+    }
+
+    /// <summary>
+    /// 启动时自动检测 HoYoShade 框架更新
+    /// </summary>
+    public static bool AutoCheckFrameworkUpdateOnStartup
+    {
+        get => GetValue(true);
+        set => SetValue(value);
+    }
+
+    /// <summary>
+    /// 启动器更新下载服务器选择 (-1=Auto Select, 1=Cloudflare, 2=Tencent, 3=Alibaba)
+    /// </summary>
+    public static int LauncherUpdateDownloadServer
+    {
+        get => GetValue(-1, "LauncherUpdateDownloadServer_V2");
+        set => SetValue(value, "LauncherUpdateDownloadServer_V2");
+    }
+
+    /// <summary>
+    /// HoYoShade框架下载服务器选择 (-1=Auto Select, 0=GitHub Direct, 1=Cloudflare, 2=Tencent, 3=Alibaba)
+    /// </summary>
+    public static int HoYoShadeFrameworkDownloadServer
+    {
+        get => GetValue(-1, "HoYoShadeFrameworkDownloadServer_V2");
+        set => SetValue(value, "HoYoShadeFrameworkDownloadServer_V2");
+    }
+
+
+    #endregion
+
+
+
+
+
+    #region Dynamic Setting
+
+
+    public static string? GetBg(GameBiz biz)
+    {
+        return GetValue<string>(default, $"bg_{biz}");
+    }
+
+    public static void SetBg(GameBiz biz, string? value)
+    {
+        SetValue(value, $"bg_{biz}");
+    }
+
+
+
+    public static bool GetUseVersionPoster(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"use_version_poster_{biz}");
+    }
+
+    public static void SetUseVersionPoster(GameBiz biz, bool value)
+    {
+        SetValue(value, $"use_version_poster_{biz}");
+    }
+
+
+
+    public static string? GetVersionPoster(GameBiz biz)
+    {
+        return GetValue<string>(default, $"version_poster_{biz}");
+    }
+
+    public static void SetVersionPoster(GameBiz biz, string? value)
+    {
+        SetValue(value, $"version_poster_{biz}");
+    }
+
+
+
+    public static string? GetCustomBg(GameBiz biz)
+    {
+        return GetValue<string>(default, $"custom_bg_{biz}");
+    }
+
+    public static void SetCustomBg(GameBiz biz, string? value)
+    {
+        SetValue(value, $"custom_bg_{biz}");
+    }
+
+
+
+    /// <summary>
+    /// 这个 dll 类（dlssnr / streamline / …）**我们装的是哪一个变体**。
+    /// PE 版本号里没有 <c>SF</c> / <c>SF-v2</c> / <c>RTX40</c> 这种信息，只靠读盘分不出来
+    /// （用户反馈：装了 310.8.SF-v2 却显示成 SF），所以装的时候记一笔。
+    /// </summary>
+    public static string? GetInstalledDllVariant(string familyId)
+    {
+        return GetValue<string>(default, $"dll_variant_{familyId}");
+    }
+
+    public static void SetInstalledDllVariant(string familyId, string? version)
+    {
+        SetValue(version, $"dll_variant_{familyId}");
+    }
+
+
+
+    /// <summary>额外注入的 DLL（OptiScaler / DLSS Enabler 那套），每个游戏记一个路径</summary>
+    public static string? GetExtraInjectDll(GameBiz biz)
+    {
+        return GetValue<string>(default, $"extra_inject_dll_{biz}");
+    }
+
+    public static void SetExtraInjectDll(GameBiz biz, string? value)
+    {
+        SetValue(value, $"extra_inject_dll_{biz}");
+    }
+
+
+
+    /// <summary>OptiScaler 本地库根目录：&lt;用户数据目录&gt;\OptiScaler</summary>
+    public static string OptiScalerRootPath
+    {
+        get
+        {
+            string? userData = UserDataFolder;
+            return string.IsNullOrWhiteSpace(userData)
+                ? string.Empty
+                : Path.Combine(userData, "OptiScaler");
+        }
+    }
+
+    /// <summary>当前选中的 OptiScaler 主 DLL（没装 / 没选 / 包里没有 dll → null）</summary>
+    public static string? GetSelectedOptiScalerDll()
+    {
+        try
+        {
+            string root = OptiScalerRootPath;
+            return root.Length == 0 ? null : new Extensions.Services.OptiScalerLibrary(root).SelectedDllPath;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+
+
+    /// <summary>「启动游戏时强制 off」—— 启动/注入之前把 hook 点写 0（用户要求，按游戏）</summary>
+    public static bool GetForceHookOffOnLaunch(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"force_hook_off_{biz}");
+    }
+
+    public static void SetForceHookOffOnLaunch(GameBiz biz, bool value)
+    {
+        SetValue(value, $"force_hook_off_{biz}");
+    }
+
+
+
+    public static bool GetEnableCustomBg(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"enable_custom_bg_{biz}");
+    }
+
+    public static void SetEnableCustomBg(GameBiz biz, bool value)
+    {
+        SetValue(value, $"enable_custom_bg_{biz}");
+    }
+
+
+
+    public static string? GetGameInstallPath(GameBiz biz)
+    {
+        return GetValue<string>(default, $"install_path_{biz}");
+    }
+
+    public static void SetGameInstallPath(GameBiz biz, string? value)
+    {
+        SetValue(value, $"install_path_{biz}");
+    }
+
+
+    public static bool GetGameInstallPathRemovable(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"install_path_removable_{biz}");
+    }
+
+    public static void SetGameInstallPathRemovable(GameBiz biz, bool value)
+    {
+        SetValue(value, $"install_path_removable_{biz}");
+    }
+
+
+    public static bool GetEnableThirdPartyTool(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"enable_third_party_tool_{biz}");
+    }
+
+    public static void SetEnableThirdPartyTool(GameBiz biz, bool value)
+    {
+        SetValue(value, $"enable_third_party_tool_{biz}");
+    }
+
+
+
+    public static string? GetThirdPartyToolPath(GameBiz biz)
+    {
+        return GetValue<string>(default, $"third_party_tool_path_{biz}");
+    }
+
+    public static void SetThirdPartyToolPath(GameBiz biz, string? value)
+    {
+        SetValue(value, $"third_party_tool_path_{biz}");
+    }
+
+
+
+    public static string? GetStartArgument(GameBiz biz)
+    {
+        return GetValue<string>(default, $"start_argument_{biz}");
+    }
+
+    public static void SetStartArgument(GameBiz biz, string? value)
+    {
+        SetValue(value, $"start_argument_{biz}");
+    }
+
+
+    /// <summary>
+    /// 无边框窗口
+    /// </summary>
+    /// <param name="biz"></param>
+    /// <returns></returns>
+    private static string BuildLaunchOptionKey(GameId gameId, string optionName)
+    {
+        return $"launch_option_{optionName}_{gameId.GameBiz}_{gameId.Id}";
+    }
+
+    public static bool GetEnableGameLaunchOption(GameId gameId)
+    {
+        return GetValue(true, BuildLaunchOptionKey(gameId, "enable_game_launch"));
+    }
+
+    public static void SetEnableGameLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "enable_game_launch"));
+    }
+
+    public static bool GetUseStarwardLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_starward"));
+    }
+
+    public static void SetUseStarwardLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_starward"));
+    }
+
+    public static bool GetUseHoYoShadeLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_hoyoshade"));
+    }
+
+    public static void SetUseHoYoShadeLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_hoyoshade"));
+    }
+
+    public static bool GetUseOpenHoYoShadeLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_open_hoyoshade"));
+    }
+
+    public static void SetUseOpenHoYoShadeLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_open_hoyoshade"));
+    }
+
+    /// <summary>启动时注入 OptiScaler（全局插件页里选中的那个构建），按游戏记</summary>
+    public static bool GetUseOptiScalerLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_optiscaler"));
+    }
+
+    public static void SetUseOptiScalerLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_optiscaler"));
+    }
+
+    public static bool GetLaunchGenshinBlenderPluginOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "genshin_blender_plugin"));
+    }
+
+    public static void SetLaunchGenshinBlenderPluginOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "genshin_blender_plugin"));
+    }
+
+    public static bool GetLaunchZZZBlenderPluginOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "zzz_blender_plugin"));
+    }
+
+    public static void SetLaunchZZZBlenderPluginOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "zzz_blender_plugin"));
+    }
+
+    public static bool GetUsePopupWindow(GameBiz biz)
+    {
+        return GetValue<bool>(false, $"use_popup_window_{biz}");
+    }
+
+    /// <summary>
+    /// 无边框窗口
+    /// </summary>
+    /// <param name="biz"></param>
+    /// <param name="value"></param>
+    public static void SetUsePopupWindow(GameBiz biz, bool value)
+    {
+        SetValue(value, $"use_popup_window_{biz}");
+    }
+
+
+
+    [Obsolete("已不用")]
+    public static GameBiz GetLastRegionOfGame(GameBiz game)
+    {
+        return GetValue<GameBiz>(default, $"last_region_of_{game}");
+    }
+
+
+    [Obsolete("已不用")]
+    public static void SetLastRegionOfGame(GameBiz game, GameBiz value)
+    {
+        SetValue(value, $"last_region_of_{game}");
+    }
+
+
+    /// <summary>
+    /// 外部截图文件夹
+    /// </summary>
+    /// <param name="biz"></param>
+    /// <returns></returns>
+    public static string? GetExternalScreenshotFolder(GameBiz biz)
+    {
+        return GetValue<string>(default, $"external_screenshot_folder_{biz}");
+    }
+
+    /// <summary>
+    /// 外部截图文件夹
+    /// </summary>
+    /// <param name="biz"></param>
+    /// <param name="value"></param>
+    public static void SetExternalScreenshotFolder(GameBiz biz, string? value)
+    {
+        SetValue(value, $"external_screenshot_folder_{biz}");
+    }
+
+
+    public static string? GetGameBackgroundIds(GameBiz biz)
+    {
+        return GetValue<string>(default, $"game_background_ids_{biz}");
+    }
+
+
+    public static void SetGameBackgroundIds(GameBiz biz, string? value)
+    {
+        SetValue(value, $"game_background_ids_{biz}");
+    }
+
+    /// <summary>
+    /// 获取游戏的多个安装路径列表（用|分隔）
+    /// </summary>
+    public static string? GetGameInstallPaths(GameBiz biz)
+    {
+        return GetValue<string>(default, $"install_paths_{biz}");
+    }
+
+    /// <summary>
+    /// 设置游戏的多个安装路径列表（用|分隔）
+    /// </summary>
+    public static void SetGameInstallPaths(GameBiz biz, string? value)
+    {
+        SetValue(value, $"install_paths_{biz}");
+    }
+
+    /// <summary>
+    /// 获取当前选中的游戏安装路径索引
+    /// </summary>
+    public static int GetSelectedGameInstallPathIndex(GameBiz biz)
+    {
+        return GetValue(0, $"selected_install_path_index_{biz}");
+    }
+
+    /// <summary>
+    /// 设置当前选中的游戏安装路径索引
+    /// </summary>
+    public static void SetSelectedGameInstallPathIndex(GameBiz biz, int value)
+    {
+        SetValue(value, $"selected_install_path_index_{biz}");
+    }
+
+
+    /// <summary>
+    /// 获取是否启用 DX12 开关
+    /// </summary>
+    public static bool GetEnableDX12(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"enable_dx12_{biz}");
+    }
+
+    /// <summary>
+    /// 设置是否启用 DX12 开关
+    /// </summary>
+    public static void SetEnableDX12(GameBiz biz, bool value)
+    {
+        SetValue(value, $"enable_dx12_{biz}");
+    }
+
+
+    /// <summary>
+    /// 获取是否忽略 DX12 兼容性检测
+    /// </summary>
+    public static bool GetIgnoreDX12Check(GameBiz biz)
+    {
+        return GetValue<bool>(default, $"ignore_dx12_check_{biz}");
+    }
+
+    /// <summary>
+    /// 设置是否忽略 DX12 兼容性检测
+    /// </summary>
+    public static void SetIgnoreDX12Check(GameBiz biz, bool value)
+    {
+        SetValue(value, $"ignore_dx12_check_{biz}");
+    }
+
+
+    #endregion
+
+
+
+
+
+    #region Setting Method
+
+
+
+    private static Dictionary<string, string?> _settingCache;
+
+
+    private static void InitializeSettingProvider()
+    {
+        try
+        {
+            if (_settingCache is null)
+            {
+                using var dapper = DatabaseService.CreateConnection();
+                _settingCache = dapper.Query<(string Key, string? Value)>("SELECT Key, Value FROM Setting;").ToDictionary(x => x.Key, x => x.Value);
+            }
+        }
+        catch { }
+    }
+
+
+
+    public static T? GetValue<T>(T? defaultValue = default, [CallerMemberName] string? key = null)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return defaultValue;
+        }
+        if (string.IsNullOrWhiteSpace(UserDataFolder))
+        {
+            return defaultValue;
+        }
+        InitializeSettingProvider();
+        if (_settingCache is null)
+        {
+            return defaultValue;
+        }
+        try
+        {
+            if (_settingCache.TryGetValue(key, out string? value))
+            {
+                return ConvertFromString(value, defaultValue);
+            }
+            using var dapper = DatabaseService.CreateConnection();
+            value = dapper.QueryFirstOrDefault<string>("SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
+            _settingCache[key] = value;
+            return ConvertFromString(value, defaultValue);
+        }
+        catch
+        {
+            return defaultValue;
+        }
+    }
+
+
+    private static T? ConvertFromString<T>(string? value, T? defaultValue = default)
+    {
+        if (value is null)
+        {
+            return defaultValue;
+        }
+        var converter = TypeDescriptor.GetConverter(typeof(T));
+        if (converter == null)
+        {
+            return defaultValue;
+        }
+        return (T?)converter.ConvertFromString(value);
+    }
+
+
+    public static void SetValue<T>(T? value, [CallerMemberName] string? key = null)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(UserDataFolder))
+        {
+            return;
+        }
+        InitializeSettingProvider();
+        if (_settingCache is null)
+        {
+            return;
+        }
+        try
+        {
+            string? val = value?.ToString();
+            if (_settingCache.TryGetValue(key, out string? cacheValue) && cacheValue == val)
+            {
+                return;
+            }
+            _settingCache[key] = val;
+            using var dapper = DatabaseService.CreateConnection();
+            dapper.Execute("INSERT OR REPLACE INTO Setting (Key, Value) VALUES (@key, @val);", new { key, val });
+        }
+        catch { }
+    }
+
+
+
+    public static void DeleteAllSettings()
+    {
+        try
+        {
+            using var dapper = DatabaseService.CreateConnection();
+            dapper.Execute("DELETE FROM Setting WHERE TRUE;");
+        }
+        catch { }
+    }
+
+
+
+    public static void ClearCache()
+    {
+        _settingCache.Clear();
+    }
+
+
+
+    #endregion
+
+
+
+
+
+    #region Emoji
+
+
+    public static Uri EmojiPaimon = new Uri("ms-appx:///Assets/Image/UI_EmotionIcon5.png");
+
+    public static Uri EmojiPom = new Uri("ms-appx:///Assets/Image/20008.png");
+
+    public static Uri EmojiAI = new Uri("ms-appx:///Assets/Image/bdfd19c3bdad27a395890755bb60b162.png");
+
+    public static Uri EmojiBangboo = new Uri("ms-appx:///Assets/Image/pamu.db6c2c7b.png");
+
+
+    #endregion
+
+
+
+
+}

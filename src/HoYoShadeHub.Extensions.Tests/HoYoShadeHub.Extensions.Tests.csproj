@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>HoYoShadeHub.Extensions.Tests</RootNamespace>
+    <AssemblyName>HoYoShadeHub.Extensions.Tests</AssemblyName>
+    <!-- 这是一个自测宿主，不是单元测试项目：不需要 xunit，直接 dotnet run 看结果 -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HoYoShadeHub.Extensions\HoYoShadeHub.Extensions.csproj" />
+  </ItemGroup>
+
+</Project>
