@@ -475,6 +475,77 @@ if (args.Contains("--online"))
             Check(false, $"{id}: {ex.GetType().Name} {ex.Message}");
         }
     }
+
+    Console.WriteLine();
+    Console.WriteLine("== 11.2 联网：远端目录（catalog/）逐条解析（--online + 环境变量 HYSX_CATALOG_DIR）==");
+    string? catalogDir = Environment.GetEnvironmentVariable("HYSX_CATALOG_DIR");
+    if (string.IsNullOrWhiteSpace(catalogDir))
+    {
+        Console.WriteLine("  （设 HYSX_CATALOG_DIR=<仓库>/catalog 才会跑这一段）");
+    }
+    else
+    {
+        string pluginsFile = Path.Combine(catalogDir, "plugins.json");
+        if (File.Exists(pluginsFile))
+        {
+            ExtensionCatalogDocument? remoteDoc = System.Text.Json.JsonSerializer.Deserialize<ExtensionCatalogDocument>(
+                File.ReadAllText(pluginsFile),
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true,
+                });
+
+            foreach (ExtensionManifest remoteEntry in remoteDoc?.Extensions ?? [])
+            {
+                Check(remoteEntry.IsValid, $"[远端] {remoteEntry.Id} 清单完整（id / source / rules）");
+                if (!remoteEntry.IsValid || remoteEntry.Source.Type != ExtensionSourceType.GithubRelease)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    GithubArtifact? remoteArtifact = await resolver.ResolveAsync(remoteEntry.Source, default);
+                    if (remoteArtifact is null)
+                    {
+                        Check(false, $"[远端] {remoteEntry.Id} 没解析到 release（tagPattern={remoteEntry.Source.TagPattern}）");
+                        continue;
+                    }
+
+                    Check(true, $"[远端] {remoteEntry.Id}: tag={remoteArtifact.Tag} asset={remoteArtifact.AssetName}");
+
+                    if (!ExtensionPackageFetcher.IsArchive(remoteArtifact.AssetName))
+                    {
+                        Check(remoteEntry.Rules.Any(r => GlobMatcher.IsMatch(r.Match, remoteArtifact.AssetName)),
+                            $"[远端] {remoteEntry.Id} 规则能命中资产 {remoteArtifact.AssetName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Check(false, $"[远端] {remoteEntry.Id}: {ex.GetType().Name} {ex.Message}");
+                }
+            }
+        }
+
+        string optiFile = Path.Combine(catalogDir, "optiscaler.json");
+        List<OptiScalerSource>? remoteSources = OptiScalerCatalog.LoadFile(optiFile);
+        Check(remoteSources is not null && remoteSources.Count > 0, $"[远端] optiscaler.json 读得到（{remoteSources?.Count ?? 0} 条）");
+
+        foreach (OptiScalerSource remoteSource in OptiScalerCatalog.MergeWithBuiltin(remoteSources))
+        {
+            try
+            {
+                GithubArtifact? remoteArtifact = await resolver.ResolveAsync(remoteSource.ToExtensionSource(), default);
+                Check(remoteArtifact is not null, $"[远端] OptiScaler {remoteSource.Id}: tag={remoteArtifact?.Tag} asset={remoteArtifact?.AssetName}");
+            }
+            catch (Exception ex)
+            {
+                Check(false, $"[远端] OptiScaler {remoteSource.Id}: {ex.GetType().Name} {ex.Message}");
+            }
+        }
+    }
 }
 
 Console.WriteLine();

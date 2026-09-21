@@ -2,17 +2,11 @@
   "schema": 1,
   "updatedAt": "2026-09-18T00:00:00Z",
   "_readme": [
-    "内置扩展目录。这个文件会被嵌进 HoYoShadeHub.Extensions.dll，改内容需要重新发版。",
-    "想加条目：复制下面任意一项，改 id / source / rules 即可。",
-    "source.type:",
-    "  github-release  -> 从某个 GitHub 仓库的 Release 里挑一个资产下载（repository + assetPattern + tagPattern）",
-    "  direct          -> 直接给一个下载地址（url），支持 codeload 打包的 zip",
-    "rules 语义：",
-    "  match   : 相对压缩包根的 glob（** 跨层级，* 单层）",
-    "  to      : 落到 HoYoShade 目录下的相对路径",
-    "  flatten : true 只保留文件名；false 保留 match 里第一个通配符之前的字面前缀之下的目录结构",
-    "  optional: 匹配不到时是否忽略（默认 true）",
-    "conflictsWith: 互斥的扩展 id，装了就不让装，避免两个实现抢同一个进程",
+    "远端插件目录：不重新发版也能加/改插件条目（按 id 覆盖内置的同 id 条目，新 id 直接追加）。",
+    "字段语义见仓库 docs/OPEN-SOURCE-PLAN.md；改完务必跑一遍扩展自测的 --online（会逐条解析 tag/资产、并检查规则能不能命中资产名）。",
+    "source.type: github-release（repository + assetName/assetPattern + tagPattern）| direct（url）| local",
+    "rules: match（包内 glob）/ to（HoYoShade 目录下的相对路径）/ flatten / optional / rename",
+    "兼容性：旧客户端读到不认识的字段会忽略，清单不完整的条目会被跳过；整个文件解析不了时会静默回退到内置目录，不会报错。",
     "注意：同一个 GitHub 仓库里可能有多个插件族，用 tagPattern 区分（例如 RankFTW/rhi-repo 有 96 个 release、十几族）"
   ],
   "extensions": [
@@ -157,6 +151,26 @@
         "assetName": "dlss5-bridge.addon64"
       },
       "addonPatterns": ["dlss5-bridge*"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
+      "id": "renodx.mfgunlock",
+      "name": "RenoDX MFG Unlock（RTX 40 系多帧生成解锁）",
+      "version": "latest",
+      "author": "ImDreamt",
+      "description": "让 RTX 40 系把 DLSS 多帧生成开到 3x/4x/6x（NVIDIA 默认只给 50 系开），并修正插帧的时间中点，让多出来的帧带新运动而不是重复帧。纯内存改，不落地、不重分发 NVIDIA 文件。要求：40 系卡 + 游戏本身走 Streamline 的 DLSS 帧生成，且 nvngx_dlssg.dll 是 310.x；作者公开测过的是 Cyberpunk 2077 / Deep Rock Galactic / GTA V Enhanced —— 原神/星铁/绝区零这类没有 DLSS 帧生成的游戏装了不会有任何效果。装好后到 ReShade 叠加层的 Add-ons 里找「MFG Unlock」。",
+      "homepage": "https://github.com/ImDreamt/MFGAdaUnlock-RenoDx/releases",
+      "tags": ["mfg", "framegen", "renodx"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "ImDreamt/MFGAdaUnlock-RenoDx",
+        "tagPattern": "^\\d",
+        "assetName": "renodx-mfgunlock.addon64"
+      },
+      "addonPatterns": ["renodx-mfgunlock*"],
       "rules": [
         { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
       ]
