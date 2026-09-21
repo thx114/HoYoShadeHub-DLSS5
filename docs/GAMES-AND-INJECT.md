@@ -1048,8 +1048,83 @@ StartExtraDllInjection → InjectExtraDllsAsync（一个进程只等一次，两
   这个功能是给「干净机器」和「新下载的构建目录」兜底的。
 
 
-**还没做完的**：GitHub 更新渠道（把 App 自身的更新渠道切到我们仓库的 Release + 一键更新 + 退回旧版本），
-设计写在 docs/OPEN-SOURCE-PLAN.md §5，需要先定仓库地址。
+（GitHub 更新渠道已经在 1.0.23 落地，设计见 docs/OPEN-SOURCE-PLAN.md §5。）
+
+
+### 10 插件界面汉化：把 addon 里的英文原地换成中文（开发中）
+
+ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UTF-8 字符串常量**（`.rdata`），
+没有 i18n 机制，也不能从外面塞语言包。实测 ReShade 自己的 UI 能显示中文 → 共享的 ImGui 字体图集里已经有 CJK 字形，
+所以「直接改 DLL 里的字面量」这条路走得通。
+
+- **只做原地替换**（方案 A）：新串的 UTF-8 字节数 ≤ 旧串时，覆盖末尾字节不足的用空格补齐（NUL 结尾不变）。
+  放不下的就跳过并计数（比如 `Reset`(5 字节) 装不下 `重置`(6 字节)）。长句子要换得往 PE 里加节并改指针（方案 B），暂时不做。
+- `AddonLocalizer`（Extensions 层，`I18n/AddonLocalizer.cs`，有 11 个自测）：
+  - 内置表 `Resources/i18n.builtin.json`（嵌入资源）：`renodx-dlss5` / `renodx-dlss` / `dlss5-bridge` 三张，
+    条目形如 `{ "en": "Ultra Performance", "zh": "极致性能" }`。
+  - `LoadTables(extraDirectory)` = 内置 + `<用户数据目录>\.hysx\i18n\*.json`（用户可自己加 / 覆盖）。
+  - `SelectTable(tables, 插件文件名)`：按**最长的 slug 前缀**匹配，所以 `renodx-dlss-super-anus` 会命中 `renodx-dlss` 这张。
+  - `Apply(dllPath, table, backupDirectory)`：先备份到 `<用户数据目录>\.hysx\i18n-backup\<名字>.bak`，
+    再在内存里替换所有出现（含同一个字面量出现多次），最后临时文件 + 原子替换；失败不动原文件。
+  - `Restore(dllPath, backupDirectory)`：从备份还原；返回 `Applied / SkippedTooLong / Missing / Message / BackupPath`。
+- **界面入口**：全局插件页 →「插件文件」每一行有「汉化」和「还原」两个按钮；有备份的行才显示「还原」。
+  点完在页面底部写状态提示，重启游戏生效。
+- 采集工具：`tools/addon-i18n/harvest-strings.ps1`（扫 `.rdata` 里的可打印 ASCII 串，输出到 `tools/addon-i18n/out/`）；
+  目前覆盖：`renodx-dlss5-super-anus` 22 条标签里挑的、`renodx-dlss` 25 条、`dlss5-bridge` 9 条。
+
+**还差的**：① 表只覆盖了一小部分界面文本（`out/*.labels.txt` 里还有没翻的）；② 放不下的长句需要方案 B（PE 加节 + 重定位指针）。
+
+**入口已按用户要求收起**（2026-09-21）：插件页那两个「汉化 / 还原」按钮和「全部汉化」都隐藏了，现在入口在
+**「设置 → 实验性功能 → 汉化插件（实验性）」**；实现上多了一个不依赖页面状态的 `AddonLocalizationJob.LocalizeAllAsync()`。
+
+### 10.1 短标签根本不在 .rdata 里 —— 代码立即数（踩坑记录）
+
+用真文件对照才发现，这个插件里**很多界面文本不是字符串**，而是编译器把常量写成 `mov` 立即数、运行时在栈上拼出来：
+
+```
+48 B8 55 70 73 63 61 6C 65 64    mov rax, "Upscaled"
+48 BE 53 74 72 65 6E 67 74 68    mov rsi, "Strength"     ← 「Skin Structure Strength」的尾巴
+48 89 70 1E                      mov [rax+0x1E], rsi
+```
+
+所以只改 `.rdata` 时会出现「中文头 + 英文尾」（头从 `.rdata` 读、尾是这个立即数）。现在的做法：
+
+1. **ModRM/SIB 解码器**（`TryParseImmediate`）认出所有「写常量」的指令：`B8+r imm32/imm64`、`C6/C7 /0` 的各种
+   ModRM+SIB+disp8/disp32（含 r12 基址、RIP 相对），并且按整条指令长度跳字节；
+2. **全局分配**：每个立即数只归一条串。轮次 = 优先级：`长串的一块` > `整条串就在这一个立即数里` > `接在串尾的短块`。
+   为什么必须这样：实测 `"Scaling "` + `"g Domain"` 两条立即数拼出的是 `Scaling Domain`，若被短的 `Scaling` 抢走一块，
+   重叠区就对不上、中文被切成半个 UTF-8 → 界面显示 `?握采` 这种怪字；
+3. **串尾判定只认 NUL**（空格说明后面还接着内容，不能当"整条串结束"）；
+4. **单字节尾巴用位移精确接**：某块的位移是 `0x80`、窗口 0、长 8 → 下一字节必须落在位移 `0x88` 的那个
+   `mov byte ptr [...], imm8` 上（早期版本靠"附近找字节值对得上的 store"，会认错、偏移错一位就把中文写坏）；
+5. 备份按**路径哈希**分开存（`<名字>.<hash>.bak`），同一个插件在多个 HoYoShade 目录里各有各的备份；
+6. 点过汉化的插件会记账，**启动游戏前自动重打一遍**（HoYoShade 启动时会把自己的插件部署回原版）。
+
+仍然换不了的：中文比英文长的短词（`On`/`Auto`/`Model`/`About`/`Debug`/`Links`/`Never`/`Reset`/`Area`/`Bicubic`/`Build`）
+和 `sRGB`/`PQ`/`scRGB`/`BT.2100` 这类标准名 —— 要全中文只能上方案 B（PE 加新节 + 改引用）。
+
+
+### 11 XXMI 注入（实验性启动选项）
+
+用户问「能不能像 XXMI 那样做模型替换」。查了 [SpectrumQT/XXMI-Launcher](https://github.com/SpectrumQT/XXMI-Launcher)：
+
+- XXMI 的本质是**把 3DMigoto 的 `d3d11.dll` 注入游戏进程**（`DllInjector`，两种方式：Hook / Inject，默认 Hook = 挂起进程再注入）；
+- 每游戏一个实例：GIMI（原神）/ SRMI（星铁）/ ZZMI（绝区零）/ HIMI（崩 3），包体是 `XXMI-Libs-Package`；
+- 启动时走 `MigotoManager.StartAndInject(game_exe_path, start_exe_path, start_args, work_dir, use_hook)`；Mods 放在实例目录的 `Mods\`。
+
+我们的实现（`XxmiInjector` + 启动页「启用 XXMI 注入（实验性）」）：
+
+- 复用已有的「等游戏进程出现 → LoadLibrary 指定 DLL」那条路（`DllInjector` + `StartExtraDllInjection`），
+  只是把要注的 DLL 换成 XXMI 实例里的 `d3d11.dll`；
+- 自动找 XXMI：`<用户配置 hysx_xxmi_root>` → `%AppData%\XXMI Launcher` → `%LocalAppData%\XXMI Launcher` →
+  各固定盘浅层目录（目录里有 `XXMI Launcher Config.json` 或 `Resources\Bin\XXMI Launcher.exe` 才算）；
+- 找实例：`<根>\ZZMI|SRMI|GIMI|HIMI\d3d11.dll`，退一步认 `<根>\Resources\Packages\XXMI\d3d11.dll`；
+- 按游戏记开关（`AppConfig.Get/SetUseXxmiInjectLaunchOption`）。
+
+**已知限制**：我们这条是「进程起来之后再注入」，而 3DMigoto 正常要在 D3D 设备创建前加载（XXMI 用 Hook 挂起进程就是为了这个），
+所以对某些游戏可能不生效或崩。要做稳的话下一步是：启动时挂起进程 → 注入 → 恢复（对应 XXMI 的 Hook 方式），
+或者干脆只用 XXMI 的注入器来起游戏。
+
 
 
 

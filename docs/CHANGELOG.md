@@ -96,6 +96,20 @@
   - 「下载并安装」一键装：下载 `HoYoShadeHub_Portable_<版本>_x64.zip` → 解压到便携包根目录（多出 `app-<版本>\` 并改写 `version.ini`）→「重启生效」；
   - **退回**：在版本列表里选一个比当前旧的 tag 装即可；旧版本目录原样留着，装前还会把当前 `version.ini` 备份到 `<用户数据目录>\.hysx\update-backup\`。
 
+## 1.1.0（app-9.9.64）· 模型替换（XXMI）+ 一批整理
+
+- 新增**左侧「模型替换（XXMI）」页**：MI 实例路径（自动查找顺序：手动指定 → `%AppData%`/`%LocalAppData%\XXMI Launcher`
+  → 开始菜单快捷方式 → 注册表卸载项 → 各盘浅层目录；标题与左侧导航按当前游戏显示 ZZMI/GIMI/SRMI…）
+  ＋ **Mods 管理**（列出 `<MI>\Mods` 一级目录，启用/禁用按 3DMigoto 约定改名字加/去 DISABLED，打开/删除/导入文件夹/导入 zip）。
+- 新增启动选项**「启用XXMI」**：按 XXMI 的方式启动游戏 —— 后台静默调用 `XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n`
+  完成模型替换注入（不弹 XXMI 界面）；**ReShade 仍由本启动器的注入器负责**，两者顺序处理好，不再互相抢 d3d11。
+- **插件汉化**（实验性，入口在「设置 → 实验性功能」，插件页那两颗按钮已隐藏）：把 addon DLL 里的英文界面文本原地换成中文。
+  除了 `.rdata` 字面量，还会改**代码里的立即数**（短标签在代码里是 mov 常量）和**单字节 store 的尾巴**；
+  改前自动备份（按路径哈希分开存），启动游戏前自动重打一遍。详见 GAMES-AND-INJECT.md §10。
+- **更新检查改成一天一次**（「关于」页手动检查不受限）；「更新内容」窗口只在便携版 + 官方渠道才弹，开发实例不再打扰。
+- 删掉「显示主窗口」全局快捷键（不再注册 Alt+H，设置页那个输入框已隐藏）。
+- 修体验问题：用 XXMI 启动时不再弹控制台黑窗（`inject.exe` 改为隐藏窗口启动）。
+
 ## 1.0.24（app-9.9.34）· 给 OptiScaler 自动补 nvngx_dlssnr.dll
 
 - 各 OptiScaler 分支的手册都要求把 **`nvngx_dlssnr.dll`** 放在包旁边（wilsjo2 的 INSTALL-DLSSNR.md 第 3 步等）；

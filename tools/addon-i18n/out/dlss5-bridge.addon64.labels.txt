@@ -1,0 +1,15 @@
+﻿Color
+Direction X
+Direction Y
+HDR contract
+Motion (replacement only)
+NOT enabled
+NVIDIA optical flow
+Output B
+Reset
+SDR contract
+Unknown exception
+VK CreateFeature
+VK EvaluateFeature
+VK EvaluateFeature_C
+Vulkan import

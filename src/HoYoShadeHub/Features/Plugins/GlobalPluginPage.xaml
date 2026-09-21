@@ -287,6 +287,7 @@
                          Message="这里的开关是「重命名 .addon64 ↔ .addon64x」，ReShade 会直接扫不到这个文件 —— 影响所有游戏。只想对某个游戏关掉，请到左侧「插件」里按游戏设置。"
                          Severity="Warning"
                          Title="全局开关会影响所有游戏" />
+                <!--  汉化入口已按用户要求隐藏（挪到「设置 → 实验性功能」）；要恢复就把下面那段 ActionButton 放回来  -->
 
                 <Grid Grid.Row="1">
                     <ListView x:Name="AddonFileList" Padding="0,0,0,8" SelectionMode="None">
@@ -347,6 +348,29 @@
                                                           OffContent="全局关"
                                                           OnContent="全局开"
                                                           ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64 ↔ .addon64x）" />
+                                            <!--  汉化 / 还原这个插件文件（已按用户要求隐藏，入口挪到设置里的实验性功能）  -->
+                                            <Button MinWidth="0"
+                                                    Padding="8,3"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="Collapsed"
+                                                    Click="Button_LocalizeAddon_Click"
+                                                    ToolTipService.ToolTip="用翻译表把这行插件界面里的英文文本原地换成中文（只会换放得下的；换之前先自动备份，游戏重启后生效）">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <FontIcon FontSize="13" Glyph="&#xE8C1;" />
+                                                    <TextBlock FontSize="12" Text="汉化" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button MinWidth="0"
+                                                    Padding="8,3"
+                                                    VerticalAlignment="Center"
+                                                    Click="Button_RestoreAddon_Click"
+                                                    Visibility="Collapsed"
+                                                    ToolTipService.ToolTip="从备份还原成原版插件">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <FontIcon FontSize="13" Glyph="&#xE7A7;" />
+                                                    <TextBlock FontSize="12" Text="还原" />
+                                                </StackPanel>
+                                            </Button>
                                             <!--  删除这个插件文件（有二级确认）  -->
                                             <Button MinWidth="0"
                                                     Padding="8,3"

@@ -1,0 +1,220 @@
+﻿[RenoDX] DLSS-NR direct: {}
+Added {} to ADDON.LoadFromDllMain in ReShade.ini. Restart required.
+ADDON.LoadFromDllMain is configured; the Streamline API generation is not detected yet.
+address family not supported
+address in use
+address not available
+already connected
+Ancillary owned resources
+argument list too long
+Argument not found.
+argument out of domain
+attached snippet {}
+auto
+backend-owned NVIDIA NGX core initialization succeeded for the D3D12 device
+backend-owned NVIDIA NGX core shutdown returned {:#010x}
+bad address
+bad allocation
+bad array new length
+bad cast
+bad exception
+bad file descriptor
+bad function call
+bad locale name
+bad message
+Bad optional access
+bad variant access
+BindDevice rejected unavailable runtime state
+broken pipe
+Can not switch from automatic to manual indexing
+Can not switch from manual to automatic indexing
+cannot destroy feature parameters because the NVIDIA allocator is unavailable
+Color
+Color input
+connection aborted
+connection already in progress
+connection refused
+connection reset
+could not force-load a complete NVIDIA parameter provider from {}
+could not locate an installed NVIDIA NGX core to force-load
+could not prepare NGX application-data directory ({})
+CreateSwapChainForComposition/DirectComposition binding
+cross device link
+custom_command_list: quarantined unretired execution resources
+dddd, MMMM dd, yyyy
+destination address required
+detached signed snippet after {} successful evaluations
+detour export module is null
+detour export range is empty
+detour function range is empty
+device or resource busy
+Diagnostic: submit NULL HUDLess Color tags to Streamline instead of the game's resources.
+Diffuse White (nits)
+directory not empty
+DLSS base
+DLSS evaluation
+DLSS Internal Automatic Exposure
+Downsample Filter
+Enable Streamline v2 Early Load
+feature evaluation
+file exists
+file too large
+filename too long
+Format specifier requires numeric argument.
+Format specifier requires numeric or pointer argument.
+function not supported
+Hash/sign modifier requires an arithmetic presentation type
+host unreachable
+identifier removed
+illegal byte sequence
+inappropriate io control operation
+Init_Ext succeeded for device {}
+integral cannot be stored in char
+is a directory
+legacy constants
+legacy feature enabled
+legacy feature evaluation
+legacy ReShade proxy
+legacy resource tag
+Legacy Streamline v1 detected; ADDON.LoadFromDllMain early ordering is not required
+LoadFromDllMain was not changed because the Streamline API generation is unknown.
+Local Tone Intensity
+map/set too long
+message size
+Missing '}' in format string.
+Missing precision specifier.
+missing upgrade-target view format remap
+Negative precision.
+Negative width.
+network down
+network reset
+network unreachable
+Neural Rendering Debug
+NGX feature: {}
+NGX lifecycle: backend D3D12 Init end device={} module={} result={:#010x}
+NGX lifecycle: backend D3D12 Shutdown1 begin device={} module={}
+NGX lifecycle: backend D3D12 Shutdown1 end device={} module={} result={:#010x}
+NGX lifecycle: intercepted D3D12 Init begin device=
+NGX lifecycle: intercepted D3D12 Init end device=
+NGX lifecycle: intercepted D3D12 Init_with_ProjectID begin device=
+NGX lifecycle: intercepted D3D12 Init_with_ProjectID end device=
+NGX lifecycle: intercepted D3D12 Shutdown1 begin device=
+NGX lifecycle: intercepted D3D12 Shutdown1 end device=
+NGX parameter acquisition
+no buffer space
+no child process
+no link
+no loaded NVIDIA NGX core exports a complete D3D12 parameter allocator
+no lock available
+no message
+no message available
+no protocol option
+no space on device
+no stream resources
+no such device
+no such device or address
+no such file or directory
+no such process
+none
+non-proxied present
+not a directory
+not a socket
+not a stream
+not connected
+not enough memory
+not supported
+NR feature generations
+NR input preparation
+NR output restoration
+NR vendor evaluation
+Number is too big
+Number is too big.
+NVNGX DLSS is not loaded yet: 
+NVNGX DLSSG is not loaded yet: 
+NVNGX parameter module is not loaded yet: 
+Off
+Off: Disabled
+Open Neural Rendering Debug
+operation canceled
+operation in progress
+operation not permitted
+operation not supported
+operation would block
+operator co_await
+Overall Intensity
+owner dead
+permission denied
+PipelineLayoutUtil attached.
+PipelineUtil attached.
+Precision is not an integer.
+Precision not allowed for this argument type.
+Present temporal staging
+Processing: {} x {}, color: {} x {}, passes: {}
+protocol not supported
+proxy device present
+read only file system
+Reference-white balance used by the selected Neural Rendering signal bridge.
+regex_error(error_badrepeat): One of *?+{ was not preceded by a valid regular expression.
+regex_error(error_brace): The expression contained mismatched { and }.
+regex_error(error_brack): The expression contained mismatched [ and ].
+regex_error(error_paren): The expression contained mismatched ( and ).
+RenoDX DLSS
+RenoDX DLSS attached.
+RenoDX DLSS controller
+RenoDX DLSS detaching.
+Reset
+ReShade proxy
+Resolution Scale
+resource deadlock would occur
+resource tag
+resource unavailable try again
+ResourceUtil attached.
+result out of range
+runtime unknown (host SDK {}.{}.{})
+Scale Reconstruction
+ShortFuse's Ko-Fi
+Shutdown1 returned {:#010x}
+Skin Structure Strength
+snippet is missing a required lifecycle export or caller-identity hook
+State attached.
+state not recoverable
+stream timeout
+Streamline API generation is not detected; v2 early loading is not being recommended yet.
+Streamline interposer not found: 
+StreamlineList creation returned=
+StreamlineList: CreateCommandList hook installed
+StreamlineList: CreateCommandList1 hook installed
+StreamlineList: game creation queue=
+StreamlineList: observed device=
+StreamlineSwapchain: awaiting observed outer swapchain COM object; hooks not ready
+StreamlineSwapchain: creation queue captured swapchain=
+StreamlineSwapchain: export installation installed=
+StreamlineSwapchain: ResizeBuffers succeeded; queue association unchanged
+string too long
+Structure Intensity
+Temporal buffer {} depth: {}
+Temporal buffer {} motion: {}
+text file busy
+timed out
+too many files open
+too many files open in system
+too many links
+too many symbolic link levels
+Ultra Performance
+Ultra Quality
+Unknown exception
+Unknown format specifier.
+Unmatched '}' in format string.
+Use DLSS Upscaling Resources
+Use Exposure Value
+using {} NVIDIA parameter provider {}
+value too large
+vector too long
+vtable is null
+vtable slot changed during replacement
+vtable slot is already installed
+vtable slot is not installed
+Waiting for the selected resource preview.
+Width is not an integer.
+wrong protocol type
+Zero modifier requires an arithmetic or pointer presentation type

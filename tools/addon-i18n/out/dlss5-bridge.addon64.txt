@@ -1,0 +1,375 @@
+﻿### CRASH RECORDED ###
+############# bridge: session open #############
+############# NGX probe done #############
+################ bridge: opening D3D12 session ################
+################ NGX probe (probe=1) ################
+[bridge]   *** Output has no UAV flag on the D3D12 side: DLSS cannot write it ***
+[bridge]   dlss5-dx11-bridge.cfg is left in place and ignored; it can be deleted.
+[bridge]   fault has been reported with every copy on the machine matching.
+[bridge]   it faulted in %ls
+[bridge]   NGX loads its feature snippets from the game folder before the
+[bridge]   no faulting address was recorded, so the module cannot be named.
+[bridge]   removing as a test. It is not established as the cause: the same
+[bridge]   TdrDdiDelay = %lu s
+[bridge]   TdrDelay = %lu s
+[bridge]   the fault was at %p, inside %ls
+[bridge] %ld frames delivered so far.
+[bridge] add-ons loaded at this point, with their bases:
+[bridge] could not start a command list
+[bridge] depth conversion shader ready (cs_5_0)
+[bridge] depth will be converted to R32_FLOAT for DLSS
+[bridge] disabled. Game rendering is untouched.
+[bridge] DRED is off by config; a GPU reset will not be explained.
+[bridge] DRED is on: if the GPU is reset, what it was executing will be recorded here.
+[bridge] DRED is unavailable on this Windows and driver combination.
+[bridge] feature creation did not complete within 4 s; giving up.
+[bridge] frame %llu buffer contents:
+[bridge] ID3D11Device1 unavailable
+[bridge] ID3D11DeviceContext4 unavailable
+[bridge] MSAA is off now; rebuilding. Further changes of sample count are not reported.
+[bridge] MV conversion shader ready (cs_5_0)
+[bridge] NGX capabilities:
+[bridge] NGX D3D12 entry points taken from %ls
+[bridge] NGX D3D12 exports not present
+[bridge] NGX D3D12 session initialised
+[bridge] NGX data path: %ls
+[bridge] NGX raised an exception opening its D3D12 session, so the
+[bridge] no configuration file beside this add-on; defaults are in force.
+[bridge] no D3D12CreateDevice
+[bridge] no NGX D3D12 init entry point was accepted by this driver
+[bridge] output hash: the copy did not complete
+[bridge] rebuilding feature for new creation flags
+[bridge] releasing the game's queue from fence %llu on the way out.
+[bridge] required NGX exports missing
+[bridge] shader compiler: %ls
+[bridge] stall_test: the hold is released.
+[bridge] the driver's NGX loader is registered at %ls but did not load (%lu).
+[bridge] the game's real depth is not crossing; image quality will suffer
+[bridge] the HDR10 pass could not get a command list
+[bridge] the HDR10 pass could not get a fence
+[bridge] timed out draining the queue before teardown
+[probe] no D3D12CreateDevice export
+[probe] no NGX loader is present
+[probe] no NVSDK_NGX_D3D12_Init_Ext export
+[synth]     shape: matches the back buffer at R16G16_FLOAT
+[synth]   it faulted in %ls
+[synth] ----- could a synthetic DLSS contract be built here? -----
+[synth] ----- end of report -----
+[synth] could not create the command list, fence or event
+[synth] could not start a command list
+[synth] depth unpack shader ready (cs_5_0)
+[synth] NGX data path: %ls
+[synth] no NGX D3D12 init entry point was accepted by this driver
+[synth] no shader resource view could be made over the present pass's texture.
+[synth] optical flow conversion shaders ready (cs_5_0)
+[synth] optical flow: the session could not be rebuilt for the new size, so this stops.
+[synth] required NGX D3D12 exports missing
+[synth] the depth staging buffer could not be backed with memory
+[synth] the effect runtime reports no native VkDevice
+[synth] the HDR10 decode did not run, so this frame is not evaluated.
+[synth] the private D3D12 device would not create a graphics queue
+[synth] the transport's worker thread would not start.
+[synth] vkCreateBuffer refused the %llu-byte depth staging buffer
+[synth] vkCreateEvent refused, so the frame cannot be parked.
+a status this build has no name for
+a texMotionVectors provider (DRME, qUINT_of)
+a version before 1.4.0
+Add-ons in this folder:
+address family not supported
+address in use
+address not available
+after opening the optical flow session
+already connected
+an API this add-on has no name for
+an API this build does not name
+an image view
+an older build
+argument list too long
+argument out of domain
+at session open
+at the moment the device was lost
+auto
+bad address
+bad allocation
+bad array new length
+bad exception
+bad file descriptor
+bad message
+before opening the optical flow session
+broken pipe
+building shared textures
+clamped rather than tone-mapped, so all eight bits of the engine's input carry signal
+Color
+colour format changed
+command list
+connection aborted
+connection already in progress
+connection refused
+connection reset
+copied from the game
+creating the D3D12 DLSS feature
+creating the D3D12 DLSS feature for the synthetic contract
+creating the DLSS feature crashed
+cross device link
+D3D11 bridge
+D3D11 to this add-on's D3D12 device
+D3D12, no copy
+dddd, MMMM dd, yyyy
+default 2 s
+default 5 s
+DEFERRED  <== blocks a simple bridge
+depth packing changed
+destination address required
+device or resource busy
+Direction X
+Direction Y
+directory not empty
+Disregard the note above: DLSS has now called through these entry points.
+DLSS 5 Bridge
+DLSS 5 Bridge 1.4.13-pre7
+dlss out
+DLSS runs on a deferred context here
+dlss5-bridge.cfg could not be written in full
+E_FAIL, not an NV_OF_STATUS
+executed code
+file exists
+file too large
+filename too long
+forwarding the game's DLSS create
+forwarding the game's DLSS evaluate
+forwarding the game's Vulkan DLSS create
+forwarding the game's Vulkan DLSS create1
+forwarding the game's Vulkan DLSS evaluate
+function not supported
+game in
+HDR contract
+HDR10 decode
+host unreachable
+identifier removed
+illegal byte sequence
+iMMERSE Launchpad
+inappropriate io control operation
+initialising NGX on D3D12
+initialising NGX on the game's D3D12 device
+initialising NGX on the private D3D12 device
+is a directory
+it is a VkBuffer and not an image view
+its image view carries no VkImage
+Leave on auto. Flip an axis only if the picture smears that way.
+loader notifications unavailable; NGX will only be found if it is already loaded
+Lower quality than a game's own DLSS. Same resolution in and out.
+measured 2026-09-02: neural rendering changes the picture through this bridge
+MEASURED TO WRITE NOTHING
+measured working
+message size
+mirrored to D3D12 so both sides run the same contract
+mode
+Motion (replacement only)
+motion vector
+network down
+network reset
+network unreachable
+newer still
+NGX D3D11 entry points never appeared while this add-on was loaded.
+ngx evaluate
+NGX layer %ld: %ls (base=%p)
+NGX raised an exception inside the D3D12 evaluate
+no buffer space
+no child process
+no contract yet
+no depth buffer is bound
+no device
+no feature yet
+No frames delivered yet.
+no link
+no lock available
+no message
+no message available
+No motion source found.
+no motion vector texture is bound
+no protocol option
+no space on device
+no stream resources
+no such device
+no such device or address
+no such file or directory
+no such process
+no version resource
+none
+not a directory
+not a socket
+not a stream
+not an NGX result
+not bound
+not connected
+NOT enabled
+not enough memory
+not opened yet
+not present, so the ReShade.fxh default applies
+not sampleable
+not set
+not supported
+NVIDIA optical flow
+NVIDIA optical flow. Sharp; a slight drift when almost still.
+off
+Off. Only the game's own DLSS is used; nothing is added.
+on (locking per frame)
+On. Lower quality than the game's own DLSS: text softens, foliage smears.
+open on the game's own device
+open on this add-on's own device
+opening the D3D12 session
+opening the D3D12 synthetic session
+opening the Vulkan side of the synthetic transport
+operation canceled
+operation in progress
+operation not permitted
+operation not supported
+operation would block
+operator co_await
+Optical flow did not start; the log says why.
+Optical flow is not available on D3D12.
+Optical flow is off. Set Detail to normal to use it.
+Optical flow starts with the first replaced frame.
+Output B
+output or exposure format/shape changed
+output size changed
+owner dead
+permission denied
+present beside the game
+present, not loaded
+private D3D12
+protocol not supported
+read only file system
+refused later; the log says why
+REFUSED; effect_runtime has a different vtable below that
+render size changed
+Replace DLSS when the game isn't using its own
+Reset
+resource build
+resource deadlock would occur
+resource unavailable try again
+result out of range
+running the D3D12 evaluate
+running the D3D12 evaluate for the synthetic contract
+sample in a shader
+Saved, not read yet: no frame has been through.
+Saved. Applies on the next frame.
+SDR contract
+sent to D3D12, built by the synthetic contract
+sent to D3D12, copied from the game
+sent to D3D12, forced by config
+set by hand
+set in the preset or the global config
+setting up the MV conversion pass
+Settings cannot be saved: no dlss5-bridge.cfg beside this add-on.
+shared in
+shut down cleanly.
+shutdown: closing the optical flow session
+shutdown: destroying the imported Vulkan images
+shutdown: destroying the park's Vulkan events
+shutdown: done
+shutdown: releasing and stopping the transport's park
+shutdown: releasing the depth compute
+shutdown: releasing the present pass
+shutdown: releasing the private D3D12 textures and feature
+shutdown: stopping the Vulkan mirror worker
+shutdown: taking the bridge lock
+shutdown: the mirror's worker did not join, so nothing is released
+shutdown: the park's worker did not join, so nothing is released
+shutdown: the runtime teardown returned
+shutdown: waiting the game's Vulkan queue idle
+source is not synth or auto
+stage
+stage is below 3, so no evaluate is run at all
+starting up
+state not recoverable
+stream timeout
+string too long
+text file busy
+That address is inside this add-on, so this one is on me.
+That address is not in this add-on.
+the colour copy
+the config file could not be read just now; try again
+the configured delay has not elapsed
+the current frame
+the D3D12 device was removed
+the D3D12 feature could not be built
+the D3D12 side keeps stalling
+the D3D12 side never caught up after a stall
+the D3D12 textures could not be imported into the game's VkDevice
+The defaults suit almost everyone.
+the depth binding did not resolve to a texture
+the depth buffer is multisampled
+the depth buffer is not the size of the back buffer
+the depth buffer is upside down and NGX has no way to be told
+the depth encoding is logarithmic and NGX has no way to be told
+the driver's own optical flow engine (measured)
+The entry points were hooked but nothing ever called DLSS through them.
+the evaluate runs on the game's own D3D12 device and no frame data crosses between devices
+the flow field
+the frame is copied onto a private D3D12 device and the evaluate runs there
+the game has already used DLSS itself
+the game replaced its own feature
+the game set none, so 2 is used
+the game's create
+the game's D3D12 device
+the game's MV format cannot be read
+the game's output is smaller than its input
+the game's own create
+the game's own D3D11 device
+the game's own device
+the game's parameter block does not carry it
+the game's queue
+The mirror takes it.
+the mirrored contract's create
+the mirror's worker thread would not start
+the motion vector binding did not resolve to a texture
+the motion vectors
+the motion vectors are multisampled
+the motion vectors are not R16G16_FLOAT
+the motion vectors are not the size of the back buffer
+the output region exceeds its texture; no output is copied back
+the previous frame
+The previous run crashed. What it recorded at the time:
+the private D3D12 session could not be opened; the lines above say why
+the render shape never settles
+the render thread
+the source changed hands
+the source latch was released
+the synthetic contract's create
+the Vulkan side of the transport could not be opened; the lines above say why
+there is no transport for it and nothing below can be measured
+this add-on started
+this add-on's own D3D12 device
+this file is larger than the panel will rewrite; change it in a text editor
+timed out
+tone-mapped with l/(l+1) before the 8-bit conversion
+too many files open
+too many files open in system
+too many links
+too many symbolic link levels
+unknown access
+Unknown exception
+unordered_map/set too long
+unsigned int
+unsigned long long
+untested build
+Using the built-in replacement: the game has no DLSS of its own.
+Using the built-in replacement: the game switched its own DLSS off.
+Using the game's own DLSS. Full quality.
+value too large
+view feature creation
+VK CreateFeature
+VK CreateFeature1
+VK EvaluateFeature
+VK EvaluateFeature_C
+vk_sync=0 parks instead, which is the default and does not stop the render thread.
+vkCreateEvent refused, so the frame cannot be parked
+vort_Shaders vort_Motion.fx (MIT)
+Vulkan import
+Vulkan, imported D3D12 textures
+Waiting for the game to use DLSS.
+Waiting: the game switched its DLSS off. Turning it back on resumes at once.
+write through a typed UAV
+wrong protocol type
+wrong size

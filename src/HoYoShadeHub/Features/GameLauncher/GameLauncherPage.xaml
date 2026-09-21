@@ -739,6 +739,15 @@
                       Margin="0,4"
                       ToolTipService.ToolTip="启动游戏时把选中的 OptiScaler 注入游戏进程（内容是 OptiScaler.dll）。选哪个构建在「全局插件 → OptiScaler」里，同一时间只能启用一个。只影响这一个游戏。" />
 
+            <!--  XXMI 注入（实验性）：把 XXMI 实例里的 3DMigoto d3d11.dll 注入游戏进程  -->
+            <!--  模型替换：交给 XXMI Launcher 的命令行在后台启动（XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n），
+                  注入由它完成（它那份 d3d11.dll 是受控版，只有它能驱动）；我们只管 ReShade 那一头。  -->
+            <CheckBox x:Name="CheckBox_UseXxmiInject"
+                      Content="启用XXMI"
+                      IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
+                      Margin="0,4"
+                      ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
+
             <CheckBox x:Name="CheckBox_LaunchGenshinBlenderPlugin"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchGenshinBlenderPlugin}"
                       IsChecked="{x:Bind LaunchGenshinBlenderPlugin, Mode=TwoWay}"

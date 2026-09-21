@@ -11,6 +11,7 @@ using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.Plugins;
+using HoYoShadeHub.Features.Xxmi;
 using HoYoShadeHub.Features.RPC;
 using HoYoShadeHub.Features.Screenshot;
 using HoYoShadeHub.Features.Setting;
@@ -82,7 +83,8 @@ public sealed partial class MainView : UserControl
     private void MainView_Loaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         CheckSystemProxy();
-        HotkeyManager.InitializeHotkey(this.XamlRoot.GetWindowHandle());
+        // 「显示主窗口」全局快捷键按用户要求删掉了（不再注册；设置页里那个输入框也隐藏了）
+        // HotkeyManager.InitializeHotkey(this.XamlRoot.GetWindowHandle());
         _ = CheckUpdateOrShowRecentUpdateContentAsync();
         _ = CheckFrameworkUpdatesOnStartupAsync();
         AppConfig.GetService<RpcService>().TrySetEnviromentAsync();
@@ -185,6 +187,10 @@ public sealed partial class MainView : UserControl
         NavigationViewItem_GameSetting.Visibility = CurrentGameFeatureConfig.SupportedPages.Contains(nameof(GameSettingPage)).ToVisibility();
         NavigationViewItem_Screenshot.Visibility = CurrentGameFeatureConfig.SupportedPages.Contains(nameof(ScreenshotPage)).ToVisibility();
 
+        // 「模型替换」跟着游戏显示对应的 MI 实例名（绝区零 → ZZMI）
+        string? importer = CurrentGameId is null ? null : Features.Xxmi.XxmiLocator.ImporterFor(CurrentGameId.GameBiz);
+        TextBlock_XxmiNav.Text = importer is null ? "模型替换" : $"模型替换（{importer}）";
+
         if (CurrentGameId is null)
         {
             NavigateTo(typeof(BlankPage));
@@ -224,6 +230,8 @@ public sealed partial class MainView : UserControl
                         nameof(DllConfigPage) => typeof(DllConfigPage),
                         // 左下角的全局插件页
                         nameof(GlobalPluginPage) => typeof(GlobalPluginPage),
+                        // 模型替换（XXMI）：MI 实例 + Mods 管理
+                        nameof(XxmiPage) => typeof(XxmiPage),
                         _ => null,
                     };
                     NavigateTo(type);
@@ -246,6 +254,7 @@ public sealed partial class MainView : UserControl
                  and not nameof(GamePluginPage)
                  and not nameof(DllConfigPage)
                  and not nameof(GlobalPluginPage)
+                 and not nameof(XxmiPage)
                  && !CurrentGameFeatureConfig.SupportedPages.Contains(page.Name))
         {
             page = typeof(GameLauncherPage);
@@ -317,7 +326,9 @@ public sealed partial class MainView : UserControl
                 _ = NuGetVersion.TryParse(AppConfig.LastAppVersion, out var lastVersion);
                 if (appVersion != lastVersion)
                 {
-                    if (AppConfig.ShowUpdateContentAfterUpdateRestart)
+                    // 只在「便携版 + 官方更新渠道」才弹更新内容窗口：
+                    // 开发实例（非便携）每次换版本号都会走到这里，其实并没有更新，弹出来只会烦人（用户反馈过）。
+                    if (AppConfig.ShowUpdateContentAfterUpdateRestart && AppConfig.IsPortable && AppConfig.UpdateChannel == 0)
                     {
                         new UpdateWindow().Activate();
                     }
@@ -334,7 +345,16 @@ public sealed partial class MainView : UserControl
                 return;
             }
 
+            // 自动检查「一天一次」：24 小时内查过就直接跳过（手动检查在「关于」页，不受这个限制）。
+            // 只有真查到东西、并且确实有新版本时才会弹窗口。
+            if (DateTimeOffset.UtcNow - AppConfig.LastUpdateCheckUtc < TimeSpan.FromHours(24))
+            {
+                return;
+            }
+
             var release = await AppConfig.GetService<UpdateService>().CheckUpdateAsync(false);
+            AppConfig.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
+
             if (release != null)
             {
                 new UpdateWindow { NewVersion = release }.Activate();

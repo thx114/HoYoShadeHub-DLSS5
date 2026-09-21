@@ -18,6 +18,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\catalog.builtin.json" />
+    <!-- 插件（ReShade addon）汉化的内置翻译表，见 I18n/AddonLocalizer.cs -->
+    <EmbeddedResource Include="Resources\i18n.builtin.json" />
   </ItemGroup>
 
 </Project>

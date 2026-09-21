@@ -1,0 +1,32 @@
+﻿Ancillary owned resources
+Bad optional access
+Color
+Color input
+Diffuse White (nits)
+DLSS base
+DLSS evaluation
+Downsample Filter
+Local Tone Intensity
+Neural Rendering Debug
+NGX parameter acquisition
+NR feature generations
+NR input preparation
+NR output restoration
+NR vendor evaluation
+Off
+Off: Disabled
+Overall Intensity
+Present temporal staging
+RenoDX DLSS
+RenoDX DLSS controller
+Reset
+ReShade proxy
+Resolution Scale
+Scale Reconstruction
+ShortFuse's Ko-Fi
+Skin Structure Strength
+Structure Intensity
+Ultra Performance
+Ultra Quality
+Unknown exception
+Use Exposure Value

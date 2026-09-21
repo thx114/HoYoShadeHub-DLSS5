@@ -225,6 +225,43 @@
             </Grid>
 
 
+            <!--  实验性功能：插件汉化（入口从插件页挪过来；默认不宣传）  -->
+            <TextBlock Margin="0,20,0,0"
+                       FontSize="20"
+                       Text="实验性功能" />
+            <Grid Margin="0,12,0,0" ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Height="40"
+                        Padding="12,0,16,0"
+                        BorderThickness="0"
+                        Click="Button_LocalizeAllAddons_Click"
+                        CornerRadius="4"
+                        ToolTipService.ToolTip="【实验性】把各个 HoYoShade 目录里的插件（addon64）按内置翻译表原地改成中文；改之前自动备份，再点一次会先还原重打，随时可以还原成原版。重启游戏生效。">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8C1;" />
+                        <TextBlock Text="汉化插件（实验性）" />
+                    </StackPanel>
+                </Button>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            Spacing="8"
+                            VerticalAlignment="Center">
+                    <ProgressRing Width="20"
+                                  Height="20"
+                                  IsIndeterminate="{x:Bind IsLocalizingAddons, Mode=OneWay}"
+                                  Visibility="{x:Bind IsLocalizingAddons, Mode=OneWay}" />
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="{x:Bind AddonLocalizeText, Mode=OneWay}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
             <!--  相关链接  -->
             <TextBlock Margin="0,20,0,0"
                        FontSize="20"

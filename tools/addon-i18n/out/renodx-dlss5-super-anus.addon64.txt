@@ -1,0 +1,258 @@
+﻿[RenoDX] DLSS-NR direct: {}
+Added {} to ADDON.LoadFromDllMain in ReShade.ini. Restart required.
+ADDON.LoadFromDllMain is configured; the Streamline API generation is not detected yet.
+address family not supported
+address in use
+address not available
+After Streamline
+all 8 bridge reservations are live or quarantined
+Allows independent control of characters via automatic masking (UseAutoMask).
+already connected
+another matching viewport is active
+another upscaling evaluation is in flight
+argument list too long
+Argument not found.
+argument out of domain
+At SL Common: application frame %llu, DLAA/SR %llu, RR %llu
+AttachAddon ignored for module 
+AttachAddon ignored; already initialized.
+attached snippet {}
+Auto
+backend-owned NVIDIA NGX core initialization succeeded for the D3D12 device
+backend-owned NVIDIA NGX core shutdown returned {:#010x}
+bad address
+bad allocation
+bad array new length
+bad cast
+bad exception
+bad file descriptor
+bad function call
+bad locale name
+bad message
+Bad optional access
+BindDevice rejected unavailable runtime state
+broken pipe
+Can not switch from automatic to manual indexing
+Can not switch from manual to automatic indexing
+cannot destroy feature parameters because the NVIDIA allocator is unavailable
+Color
+common={} evaluated={}
+connection aborted
+connection already in progress
+connection refused
+connection reset
+Controls structure intensity of detected characters (SkinStructureStrength).
+could not force-load a complete NVIDIA parameter provider from {}
+could not locate an installed NVIDIA NGX core to force-load
+could not prepare NGX application-data directory ({})
+CreateFeature(Reserved18) succeeded: handle={} size={}x{} performance={} preset={}
+CreateSwapChainForComposition/DirectComposition binding
+cross device link
+d3d11_swapchain.command_list.get.end command_list={}
+d3d11_swapchain.context4.query.end result={:#010x} context={}
+d3d11_swapchain.end shared={} synchronized={} evaluated={}
+d3d11_swapchain.evaluate.end evaluated={}
+d3d11_swapchain.host_signal.end result={:#010x}
+d3d11_swapchain.host_wait.end result={:#010x}
+d3d11_swapchain.proxy_context.access.end submitted={}
+d3d11_swapchain.proxy_context.ready device={} queue={} reshade_queue={}
+d3d11_swapchain.proxy_signal.end result={:#010x}
+d3d11_swapchain.proxy_source.device.end result={:#010x} device={}
+d3d11_swapchain.proxy_wait.end result={:#010x}
+d3d11_upscaling.capture.end captured={}
+d3d9_swapchain.end shared={} synchronized={} evaluated={} copied_back={}
+d3d9_swapchain.evaluate.end evaluated={}
+dddd, MMMM dd, yyyy
+destination address required
+detour export range is empty
+detour function range is empty
+device or resource busy
+device={} removed=0x{:08X}
+device={}; presentation evaluation requires one live swapchain per device
+Diffuse White (nits)
+directory not empty
+DLSS base
+DLSS evaluation
+DLSS Internal Automatic Exposure
+DLSS-G Backbuffer resource ID: 0x%016llX
+DLSS-G HUDLess resource ID: 0x%016llX
+Enable Streamline v2 Early Load
+EvaluateFeature succeeded: evaluation={} options_revision={} result={:#010x}
+evaluation is missing resource provenance
+Extra DLSS-G outputs (inferred): %llu
+feature evaluation
+file exists
+file too large
+filename too long
+format lacks shader load or typed UAV store support
+Format specifier requires numeric argument.
+Format specifier requires numeric or pointer argument.
+function not supported
+Global Tone Intensity
+Hash/sign modifier requires an arithmetic presentation type
+host unreachable
+identifier removed
+illegal byte sequence
+inappropriate io control operation
+Incremented addon module ref count to avoid unload.
+Init_Ext succeeded for device {}
+Input ID list retains at most 64 evaluations per frame; counts are not capped.
+input={} bridge={} input-state=NON_PIXEL_SHADER_RESOURCE(0x40) source-flags=0x{:X}
+integral cannot be stored in char
+integral cannot be stored in wchar_t
+is a directory
+learning whether a later RR evaluation fires
+legacy feature evaluation
+legacy ReShade proxy
+legacy resource tag
+Legacy Streamline v1 detected; ADDON.LoadFromDllMain early ordering is not required
+legacy viewport tags were not refreshed
+LoadFromDllMain was not changed because the Streamline API generation is unknown.
+Local Tone Intensity
+map/set too long
+message size
+Missing '}' in format string.
+missing mapped command-list submission tracking
+missing mapped recording
+Missing precision specifier.
+missing upgrade-target view format remap
+Negative precision.
+Negative width.
+network down
+network reset
+network unreachable
+NGX parameter acquisition
+no buffer space
+no child process
+no link
+no loaded NVIDIA NGX core exports a complete D3D12 parameter allocator
+no lock available
+no message
+no message available
+no protocol option
+no space on device
+no stream resources
+no such device
+no such device or address
+no such file or directory
+no such process
+None
+non-proxied present
+not a directory
+not a socket
+not a stream
+not connected
+not enough memory
+not supported
+NR DRED: {} allocation={} object={} type={} name='{}' (name cap=96)
+NR DRED: allocation limit=32 (truncated).
+NR DRED: breadcrumbs hr=0x{:08X} head={}
+NR DRED: frame={} thread={} device={} removed=0x{:08X} query=0x{:08X}
+NR DRED: node limit=32 (truncated).
+NR DRED: node={} op[{}]={}
+NR DRED: node={} queue={} list={} completed={}/{} last-value-present={}
+NR DRED: page-fault hr=0x{:08X} va=0x{:X}
+NR FG control: 
+NR startup: event={} frame={} thread={} tick={} hr=0x{:08X} {}
+Number is too big
+Number is too big.
+NVNGX DLSS is not loaded yet: 
+NVNGX DLSSG is not loaded yet: 
+NVNGX parameter module is not loaded yet: 
+Off
+operation canceled
+operation in progress
+operation not permitted
+operation not supported
+operation would block
+operator co_await
+output does not match a current swapchain target
+output={} output-state=UNORDERED_ACCESS(0x8) passes={}
+Overall Intensity
+owner dead
+owner={} queue={}
+owner={} queue={}; retaining invalidated GPU state
+permission denied
+Pinned addon module to avoid unload.
+PipelineLayoutUtil attached.
+Precision is not an integer.
+Precision not allowed for this argument type.
+protocol not supported
+proxy device present
+read only file system
+recent RR evaluation has priority over DLSS
+regex_error(error_badrepeat): One of *?+{ was not preceded by a valid regular expression.
+regex_error(error_brace): The expression contained mismatched { and }.
+regex_error(error_brack): The expression contained mismatched [ and ].
+regex_error(error_paren): The expression contained mismatched ( and ).
+RenoDX DLSS attached; ReShade logical unload will be ignored.
+RenoDX DLSS controller
+RenoDX DLSS destroy_device begin: device={}
+RenoDX DLSS destroy_device end.
+RenoDX DLSS destroy_swapchain begin: swapchain={}, resize={}
+RenoDX DLSS destroy_swapchain end.
+RenoDX DLSS first present: queue={}, native={}, swapchain={}, api={}
+RenoDX DLSS init_device begin: device={}, native={}, api={}
+RenoDX DLSS init_device end.
+RenoDX DLSS init_swapchain begin: swapchain={}, native={}, device={}, api={}, resize={}
+RenoDX DLSS init_swapchain end: color_space={}
+RenoDX DLSS-NR 
+RenoDX DLSS-NR copied the first D3D12 NR replacement to the native D3D11 DLSS output.
+Reset
+ReShade Presents (raw): %llu
+ReShade proxy
+resource deadlock would occur
+resource tag
+resource unavailable try again
+ResourceUtil attached.
+result out of range
+retained feature {} for safe reuse; retained count={}
+retained feature cache exhausted at {} entries; preserving the native path
+Retained owned snapshot motion 0x%016llX, depth 0x%016llX
+reused retained feature: handle={} size={}x{} performance={} preset={}
+runtime unknown (host SDK {}.{}.{})
+seh-code=0x{:08X} queue={} device={} (exception payload not inspected)
+ShortFuse's Ko-Fi
+short-lived depth tag was not copied when tagged
+short-lived motion tag was not copied when tagged
+short-lived output was not supplied locally
+Shutdown1 returned {:#010x}
+signed snippet threw during feature creation
+signed snippet threw during feature evaluation
+Skin Structure Strength
+snippet is missing a required lifecycle export or caller-identity hook
+source denies shader-resource access
+State attached.
+state not recoverable
+stream timeout
+Streamline API generation is not detected; v2 early loading is not being recommended yet.
+Streamline interposer not found: 
+Streamline outer Presents (raw): %llu
+String pointer is null.
+string too long
+Structure Intensity
+swapchain={} previous={} current={}; waiting for teardown
+swapchain={} queue={}
+swapchain={}; waiting for downstream queue
+temporal and source devices do not match
+temporal producer recording was discarded without submission
+text file busy
+thread={} frame={} list={} handle={} parameters={} fg-nr-selected=false result=0x{:X}
+timed out
+too many files open
+too many files open in system
+too many links
+too many symbolic link levels
+Ultra Performance
+Unknown exception
+Unknown format specifier.
+Unmatched '}' in format string.
+unordered_map/set too long
+Upscaled resource ID: 0x%016llX
+upscaling target already selected for frame
+using {} NVIDIA parameter provider {}
+value too large
+vector too long
+Width is not an integer.
+wrong protocol type
+Zero modifier requires an arithmetic or pointer presentation type

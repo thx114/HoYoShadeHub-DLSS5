@@ -114,6 +114,19 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
+                <!--  模型替换（XXMI）：MI 实例 + Mods 管理  -->
+                <NavigationViewItem Name="NavigationViewItem_Xxmi"
+                                    Tag="XxmiPage"
+                                    ToolTipService.ToolTip="模型替换（XXMI）">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE7B8;" />
+                    </NavigationViewItem.Icon>
+                    <NavigationViewItem.Content>
+                        <Border Height="40">
+                            <TextBlock x:Name="TextBlock_XxmiNav" VerticalAlignment="Center" Text="模型替换" />
+                        </Border>
+                    </NavigationViewItem.Content>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
 
             <!--  左下角（设置上方）：全局视角 —— 装/删扩展包 + 重命名式全局开关  -->

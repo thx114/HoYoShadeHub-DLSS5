@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
@@ -456,7 +457,183 @@ public sealed partial class GlobalPluginPage : PageBase
 
     #endregion
 
+    /// <summary>汉化备份目录：&lt;用户数据目录&gt;.hysxi18n-backup</summary>
+    internal static string I18nBackupDirectory => string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
+        ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-i18n-backup")
+        : Path.Combine(AppConfig.UserDataFolder, ".hysx", AddonLocalizer.BackupFolderName);
+
+    /// <summary>用户 / 远端翻译表目录：&lt;用户数据目录&gt;.hysxi18n</summary>
+    internal static string I18nTableDirectory => string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
+        ? string.Empty
+        : Path.Combine(AppConfig.UserDataFolder, ".hysx", "i18n");
+
     #region 插件文件（全局开关）
+
+    /// <summary>插件汉化：按翻译表把这行插件里的英文界面文本原地换成中文（先自动备份）</summary>
+    private async void Button_LocalizeAddon_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: AddonFileItemViewModel item })
+        {
+            return;
+        }
+
+        List<AddonI18nTable> tables = AddonLocalizer.LoadTables(I18nTableDirectory);
+        AddonI18nTable? table = AddonLocalizer.SelectTable(tables, item.FileName);
+
+        if (table is null)
+        {
+            ShowInfo("没有这个插件的翻译表",
+                $"{item.FileName} 还没有对应翻译表。可以自己往 {I18nTableDirectory} 放一个 json（和内置的 i18n.builtin.json 同格式，slug 填插件文件名前缀）。",
+                InfoBarSeverity.Warning);
+            return;
+        }
+
+        try
+        {
+            // 已经汉化过：先还原成原文再按当前表来一遍 —— 否则英文原文已经被换掉了，
+            // 第二次点会大面积「DLL 里没有」，用户看到的还是上一版翻译。
+            string prefix = string.Empty;
+            if (AddonLocalizer.BackupPathOf(item.FullPath, I18nBackupDirectory) is not null)
+            {
+                AddonLocalizeResult undo = AddonLocalizer.Restore(item.FullPath, I18nBackupDirectory);
+                prefix = undo.Ok ? "已还原上次的汉化，" : string.Empty;
+            }
+
+            // 同一份插件在别的 HoYoShade 目录里可能还有副本（便携版 / 默认装各一份），
+            // 游戏读哪一份取决于它用哪个启动器 —— 所以一起打上。
+            TextBlock_Status.Text = $"正在找 {item.FileName} 的副本…";
+            List<string> copies = await Task.Run(() => AddonLocalizationJob.FindCopies(item.FileName));
+            List<string> targets =
+            [
+                item.FullPath,
+                .. copies.Where(p => !string.Equals(p, item.FullPath, StringComparison.OrdinalIgnoreCase)),
+            ];
+
+            List<string> details = [];
+            int total = 0;
+
+            foreach (string target in targets)
+            {
+                AddonLocalizeResult one = AddonLocalizer.Apply(target, table, I18nBackupDirectory);
+                AddonLocalizationJob.Remember(target);
+                total += one.Applied;
+                details.Add($"{target} → {one.Applied} 条");
+            }
+
+            TextBlock_Status.Text = $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条（读取中：{string.Join("；", details)}）。重启游戏生效，随时可以「还原」";
+            _logger.LogInformation("Localize addon {File}: {Prefix}{Total} 条 / {Count} 份 → {Paths}", item.FileName, prefix, total, targets.Count, string.Join(" | ", targets));
+        }
+        catch (Exception ex)
+        {
+            // 插件正被游戏加载时文件是锁着的，Move/替换会抛 IOException —— 提示清楚，别让用户以为点过了
+            ShowInfo("汉化失败",
+                $"{item.FileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。{ex.Message}",
+                InfoBarSeverity.Error);
+            _logger.LogWarning(ex, "Localize addon {File} failed", item.FileName);
+        }
+
+        RefreshAddonFiles();
+    }
+
+    /// <summary>把插件还原成备份里的原版</summary>
+    private void Button_RestoreAddon_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: AddonFileItemViewModel item })
+        {
+            return;
+        }
+
+        try
+        {
+            List<string> targets =
+            [
+                item.FullPath,
+                .. AddonLocalizationJob.FindCopies(item.FileName)
+                    .Where(p => !string.Equals(p, item.FullPath, StringComparison.OrdinalIgnoreCase)),
+            ];
+
+            List<string> details = [];
+
+            foreach (string target in targets)
+            {
+                AddonLocalizeResult one = AddonLocalizer.Restore(target, I18nBackupDirectory);
+                AddonLocalizationJob.Forget(target);
+                details.Add($"{Path.GetFileName(target)} → {one.Message}");
+            }
+
+            TextBlock_Status.Text = $"{item.FileName}：{string.Join("；", details)}";
+        }
+        catch (Exception ex)
+        {
+            ShowInfo("还原失败",
+                $"{item.FileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。{ex.Message}",
+                InfoBarSeverity.Error);
+            _logger.LogWarning(ex, "Restore addon {File} failed", item.FileName);
+        }
+
+        RefreshAddonFiles();
+    }
+
+    /// <summary>把这个页面上所有「能对上翻译表」的插件都汉化一遍（含别的 HoYoShade 目录里的同名副本）</summary>
+    private async void Button_LocalizeAllAddons_Click(object sender, RoutedEventArgs e)
+    {
+        List<AddonI18nTable> tables = AddonLocalizer.LoadTables(I18nTableDirectory);
+        List<AddonFileItemViewModel> targets = [.. AddonFiles.Where(f => AddonLocalizer.SelectTable(tables, f.FileName) is not null)];
+
+        if (targets.Count == 0)
+        {
+            ShowInfo("没有可汉化的插件", "这个目录里没有能对上翻译表的插件文件。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        // 一个插件可能有好几个 HoYoShade 目录各一份，而且界面可能是两个插件叠着画的
+        // （用户实测：renodx-dlss 汉化了、dlss5-super-anus 没有 → 中文下面漏出英文），所以一次全打。
+        TextBlock_Status.Text = $"正在汉化 {targets.Count} 个插件…";
+
+        int copies = 0;
+        int entries = 0;
+        List<string> details = [];
+
+        foreach (AddonFileItemViewModel item in targets)
+        {
+            AddonI18nTable table = AddonLocalizer.SelectTable(tables, item.FileName)!;
+            List<string> found = await Task.Run(() => AddonLocalizationJob.FindCopies(item.FileName));
+            List<string> paths =
+            [
+                item.FullPath,
+                .. found.Where(p => !string.Equals(p, item.FullPath, StringComparison.OrdinalIgnoreCase)),
+            ];
+
+            int applied = 0;
+
+            foreach (string path in paths)
+            {
+                try
+                {
+                    if (AddonLocalizer.BackupPathOf(path, I18nBackupDirectory) is not null)
+                    {
+                        AddonLocalizer.Restore(path, I18nBackupDirectory);
+                    }
+
+                    applied += AddonLocalizer.Apply(path, table, I18nBackupDirectory).Applied;
+                    AddonLocalizationJob.Remember(path);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Localize addon {Path} failed", path);
+                }
+            }
+
+            copies += paths.Count;
+            entries += applied;
+            details.Add($"{item.FileName} → {applied} 条");
+        }
+
+        TextBlock_Status.Text = $"全部汉化完成：{targets.Count} 个插件 / {copies} 份副本 / {entries} 条。{string.Join("；", details)}（重启游戏生效，可逐个「还原」）";
+        _logger.LogInformation("Localize all addons: {Detail}", string.Join(" | ", details));
+
+        RefreshAddonFiles();
+    }
 
     private void RefreshAddonFiles()
     {
@@ -1837,6 +2014,12 @@ public partial class AddonFileItemViewModel : ObservableObject
     }
 
     public Visibility DisabledVisibility => GloballyDisabled ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>汉化过（有备份）才显示「还原」</summary>
+    public Visibility RestoreVisibility
+        => AddonLocalizer.BackupPathOf(FullPath, GlobalPluginPage.I18nBackupDirectory) is not null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     /// <summary>全局开/关（= 文件名后缀有没有那个 x）</summary>
     [ObservableProperty]

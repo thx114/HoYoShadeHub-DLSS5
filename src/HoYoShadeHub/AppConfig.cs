@@ -507,6 +507,13 @@ public static class AppConfig
     /// <summary>
     /// 启动时自动检测启动器更新
     /// </summary>
+    /// <summary>上次「自动」检查启动器更新的时间（自动检查一天只做一次；手动点检查不受限制）</summary>
+    public static DateTimeOffset LastUpdateCheckUtc
+    {
+        get => GetValue(DateTimeOffset.MinValue, "last_update_check_utc");
+        set => SetValue(value, "last_update_check_utc");
+    }
+
     public static bool AutoCheckLauncherUpdateOnStartup
     {
         get => GetValue(true);
@@ -1311,6 +1318,49 @@ public static class AppConfig
     public static void SetUseOptiScalerLaunchOption(GameId gameId, bool value)
     {
         SetValue(value, BuildLaunchOptionKey(gameId, "use_optiscaler"));
+    }
+
+    /// <summary>启动时注入 XXMI（3DMigoto 的 d3d11.dll），按游戏记</summary>
+    public static bool GetUseXxmiInjectLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_xxmi_inject"));
+    }
+
+    public static void SetUseXxmiInjectLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_xxmi_inject"));
+    }
+
+    /// <summary>用户手动指定的这个游戏的 MI 实例目录（空 = 自动找）</summary>
+    public static string? GetXxmiInstance(string gameBiz)
+    {
+        return GetValue<string>(null, $"hysx_xxmi_instance_{gameBiz}");
+    }
+
+    public static void SetXxmiInstance(string gameBiz, string? path)
+    {
+        SetValue(path, $"hysx_xxmi_instance_{gameBiz}");
+    }
+
+    /// <summary>最近一次 XXMI 启动的结果（「模型替换」页显示用）</summary>
+    public static string? XxmiLastLaunch
+    {
+        get => GetValue<string>(null, "hysx_xxmi_last_launch");
+        set => SetValue(value, "hysx_xxmi_last_launch");
+    }
+
+    /// <summary>最近一次把 XXMI 加载器铺到哪个游戏目录（「从游戏目录移除」用）</summary>
+    public static string? XxmiDeployedGameDir
+    {
+        get => GetValue<string>(null, "hysx_xxmi_deployed_game_dir");
+        set => SetValue(value, "hysx_xxmi_deployed_game_dir");
+    }
+
+    /// <summary>用户手动指定的 XXMI 安装根目录（便携版可能在任意盘；空 = 自动找）</summary>
+    public static string? XxmiRoot
+    {
+        get => GetValue<string>(null, "hysx_xxmi_root");
+        set => SetValue(value, "hysx_xxmi_root");
     }
 
     public static bool GetLaunchGenshinBlenderPluginOption(GameId gameId)

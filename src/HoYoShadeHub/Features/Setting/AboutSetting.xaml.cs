@@ -209,6 +209,42 @@ public sealed partial class AboutSetting : PageBase
 
     public Visibility IsGithubRestartVisible { get; set => SetProperty(ref field, value); } = Visibility.Collapsed;
 
+    // ---------------- 实验性功能（本 fork）----------------
+
+    /// <summary>实验性：插件汉化正在跑</summary>
+    public bool IsLocalizingAddons { get; set => SetProperty(ref field, value); }
+
+    /// <summary>实验性：插件汉化的进度 / 结果文字</summary>
+    public string AddonLocalizeText { get; set => SetProperty(ref field, value); } = string.Empty;
+
+    /// <summary>
+    /// 实验性功能：把各个 HoYoShade 目录里的插件按内置翻译表改成中文。
+    /// （插件页那两个按钮已按用户要求隐藏，入口挪到这里。）
+    /// </summary>
+    private async void Button_LocalizeAllAddons_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsLocalizingAddons)
+        {
+            return;
+        }
+
+        IsLocalizingAddons = true;
+        AddonLocalizeText = "正在找插件并汉化…";
+
+        try
+        {
+            AddonLocalizeText = await Features.Plugins.AddonLocalizationJob.LocalizeAllAsync();
+        }
+        catch (Exception ex)
+        {
+            AddonLocalizeText = "汉化失败：" + ex.Message;
+        }
+        finally
+        {
+            IsLocalizingAddons = false;
+        }
+    }
+
     /// <summary>刷新 GitHub 仓库里的版本列表（含「当前 / 比当前新 / 比当前旧」标注）</summary>
     [RelayCommand]
     private async Task RefreshGithubVersionsAsync()

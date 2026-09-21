@@ -491,6 +491,20 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
+    /// <summary>启动时注入 XXMI（3DMigoto 的 d3d11.dll，模型替换那套）。按游戏记</summary>
+    private bool _useXxmiInject;
+    public bool UseXxmiInject
+    {
+        get => _useXxmiInject;
+        set
+        {
+            if (SetProperty(ref _useXxmiInject, value))
+            {
+                NotifyLaunchModeChanged();
+            }
+        }
+    }
+
     /// <summary>全局插件页里有没有「启用了的 OptiScaler 构建」（没有就点不了这个勾）</summary>
     private bool _isOptiScalerAvailable;
     public bool IsOptiScalerAvailable
@@ -792,6 +806,7 @@ public sealed partial class GameLauncherPage : PageBase
             bool launchGenshinBlenderPlugin = AppConfig.GetLaunchGenshinBlenderPluginOption(CurrentGameId);
             bool launchZZZBlenderPlugin = AppConfig.GetLaunchZZZBlenderPluginOption(CurrentGameId);
             bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(CurrentGameId);
+            bool useXxmiInject = AppConfig.GetUseXxmiInjectLaunchOption(CurrentGameId);
 
             if (useHoYoShade && useOpenHoYoShade)
             {
@@ -816,6 +831,7 @@ public sealed partial class GameLauncherPage : PageBase
             _launchGenshinBlenderPlugin = launchGenshinBlenderPlugin;
             _launchZZZBlenderPlugin = launchZZZBlenderPlugin;
             _useOptiScaler = useOptiScaler;
+            _useXxmiInject = useXxmiInject;
 
             OnPropertyChanged(nameof(EnableGameLaunch));
             OnPropertyChanged(nameof(UseStarwardLauncher));
@@ -824,6 +840,7 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(LaunchGenshinBlenderPlugin));
             OnPropertyChanged(nameof(LaunchZZZBlenderPlugin));
             OnPropertyChanged(nameof(UseOptiScaler));
+            OnPropertyChanged(nameof(UseXxmiInject));
 
             UpdateGameLaunchCheckboxState();
 
@@ -852,6 +869,7 @@ public sealed partial class GameLauncherPage : PageBase
         AppConfig.SetLaunchGenshinBlenderPluginOption(CurrentGameId, _launchGenshinBlenderPlugin);
         AppConfig.SetLaunchZZZBlenderPluginOption(CurrentGameId, _launchZZZBlenderPlugin);
         AppConfig.SetUseOptiScalerLaunchOption(CurrentGameId, _useOptiScaler);
+        AppConfig.SetUseXxmiInjectLaunchOption(CurrentGameId, _useXxmiInject);
     }
 
     private bool _isStarwardProtocolAvailable;
@@ -1730,6 +1748,19 @@ public sealed partial class GameLauncherPage : PageBase
             }
         }
 
+        // ③ XXMI：照 XXMI 自己的流程（参考它自己的日志）：
+        //      SetupHook(d3d11.dll) → 启动游戏（ZZZ 还要带 -use-d3d12）→ 额外注入实例里配的 Extra Libraries
+        //      （用户 ZZMI 里那个「d3d12.dll」其实是 OptiScaler）→ WaitForInjection 校验 → Unhook。
+        //    现状：3dmloader 的 HookLibrary 需要先把 MI 的 d3d11.dll LoadLibrary 进"注入器进程"找 CBTProc
+        //    入口，而 3DMigoto 那份 d3d11.dll 在普通进程里 LoadLibrary 会 ERROR_DLL_INIT_FAILED(1114)，
+        //    所以这条路在我们 App 进程里必然返回 200。要在我们这边走通，得把这一步放到一个"干净"的辅助进程里
+        //    （见 docs/GAMES-AND-INJECT.md §11 的待办），先不接线，避免误导用户。
+        if (UseXxmiInject && CurrentGameId is { } xxmiGameId)
+        {
+            _logger.LogInformation("XXMI 注入已勾选（{Game}）：当前实现还未接上 Hook（3dmloader 的 HookLibrary 在 App 进程里会 200）",
+                xxmiGameId.GameBiz);
+        }
+
         if (specs.Count == 0)
         {
             return;
@@ -1914,6 +1945,60 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 「启动游戏时强制 off」：启动/注入之前把 hook 点写 0（按游戏开关）
             ApplyForceHookOffOnLaunch();
+
+            // 「启用 XXMI 注入」：**按 XXMI 的方式启动** —— 挂起起进程 → 往进程里 Inject 3DMigoto 的
+            // d3d11.dll → 恢复线程（注入发生在 D3D 初始化前，且 DllMain 在游戏进程里跑，不会踩 1114）。
+            // 这条会自己把游戏起起来（跟 XXMI Launcher 一样），所以后面的正常启动流程直接跳过。
+            if (UseXxmiInject && CurrentGameId is { } xxmiGameId
+                && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
+            {
+                string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);
+                string xxmiExe = Path.Combine(GameInstallPath, xxmiExeName);
+
+                if (!File.Exists(xxmiExe))
+                {
+                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI",
+                        $"游戏目录里找不到 {xxmiExeName}", 10000));
+                }
+                else
+                {
+                    // XXMI 有命令行：[XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n]（-n = 不开界面）。
+                    // 注入全交给它（ZZMI 那份 d3d11.dll 是受控版，只有它能驱动），我们只负责 ReShade 这头：
+                    // 先按用户勾的 HoYoShade 挂上它的注入器，再由 XXMI 在后台把游戏起起来并注入模型替换。
+                    if (UseHoYoShade)
+                    {
+                        await LaunchShaderInjectorOnlyAsync(Path.Combine(AppConfig.UserDataFolder, "HoYoShade"), "HoYoShade");
+                    }
+                    else if (UseOpenHoYoShade)
+                    {
+                        await LaunchShaderInjectorOnlyAsync(Path.Combine(AppConfig.UserDataFolder, "OpenHoYoShade"), "OpenHoYoShade");
+                    }
+
+                    XxmiInjector.XxmiLaunchResult xxmi = XxmiInjector.LaunchViaXxmiCli(xxmiGameId, xxmiExe);
+
+                    AppConfig.XxmiLastLaunch = xxmi.Message;
+                    _logger.LogInformation("XXMI launch: {Message}", xxmi.Message);
+
+                    if (xxmi.Injected)
+                    {
+                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success("XXMI", xxmi.Message, 8000));
+                    }
+                    else
+                    {
+                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI", xxmi.Message, 12000));
+                    }
+
+                    // 我们自己的其它注入（OptiScaler / 额外注入 DLL）照旧挂上
+                    string? xxmiProcess = await ResolveTargetProcessNameAsync();
+
+                    if (!string.IsNullOrWhiteSpace(xxmiProcess))
+                    {
+                        StartExtraDllInjection(xxmiProcess);
+                    }
+
+                    return;
+                }
+            }
 
             // 「额外注入 DLL」不依赖注入模式：普通模式下 Hub 自己起游戏，进程一出现就注（用户要求）
             if (!UseInjectMode)
@@ -2158,6 +2243,15 @@ public sealed partial class GameLauncherPage : PageBase
     {
         try
         {
+            // HoYoShade 会在启动游戏时把插件重新部署回原版 —— 汉化过的在这儿再打一遍，
+            // 不然进游戏就是半中半英 / 全英文（用户实测）。
+            string? i18nNote = await Features.Plugins.AddonLocalizationJob.ReapplyAsync();
+
+            if (i18nNote is not null)
+            {
+                _logger.LogInformation("Addon i18n before launch: {Note}", i18nNote);
+            }
+
             // 一个 HoYoShade 都没勾：**不要**默认注 HoYoShade（用户报过「没勾也被注入了 HoYoShade」）。
             // 这时注入模式只干一件事：等游戏进程出现，把「额外注入 DLL」/ OptiScaler 注进去。
             if (!UseHoYoShade && !UseOpenHoYoShade)
@@ -2396,7 +2490,11 @@ public sealed partial class GameLauncherPage : PageBase
                 FileName = injectExePath,
                 Arguments = gameExeName,
                 WorkingDirectory = shadePath,
-                UseShellExecute = true
+                // inject.exe 是控制台程序：以前 UseShellExecute = true 会冒一个黑框（用户反馈过），
+                // 改成不经过 shell + 隐藏窗口。
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
             };
 
             Process? process = Process.Start(startInfo);

@@ -1,0 +1,22 @@
+﻿After Streamline
+Auto
+Bad optional access
+Color
+Diffuse White (nits)
+DLSS base
+DLSS evaluation
+Global Tone Intensity
+Local Tone Intensity
+NGX parameter acquisition
+None
+Off
+Overall Intensity
+RenoDX DLSS controller
+RenoDX DLSS-NR 
+Reset
+ReShade proxy
+ShortFuse's Ko-Fi
+Skin Structure Strength
+Structure Intensity
+Ultra Performance
+Unknown exception

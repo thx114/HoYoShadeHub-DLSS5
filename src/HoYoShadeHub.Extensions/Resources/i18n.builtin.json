@@ -1,0 +1,449 @@
+{
+  "schema": 1,
+  "note": "ReShade addon 汉化白名单：只替换「中文 UTF-8 字节数 <= 英文」的条目；其余跳过。slug 用前缀匹配插件文件名。",
+  "tables": [
+    {
+      "slug": "renodx-dlss5",
+      "entries": [
+        {
+          "en": "Auto",
+          "zh": "自动"
+        },
+        {
+          "en": "Off",
+          "zh": "关"
+        },
+        {
+          "en": "None",
+          "zh": "无"
+        },
+        {
+          "en": "Reset",
+          "zh": "重置"
+        },
+        {
+          "en": "After Streamline",
+          "zh": "Streamline 之后"
+        },
+        {
+          "en": "Global Tone Intensity",
+          "zh": "全局色调强度"
+        },
+        {
+          "en": "Local Tone Intensity",
+          "zh": "局部色调强度"
+        },
+        {
+          "en": "Overall Intensity",
+          "zh": "总体强度"
+        },
+        {
+          "en": "Structure Intensity",
+          "zh": "结构强度"
+        },
+        {
+          "en": "Skin Structure Strength",
+          "zh": "皮肤结构强度"
+        },
+        {
+          "en": "Diffuse White (nits)",
+          "zh": "漫反射白 (nits)"
+        },
+        {
+          "en": "DLSS base",
+          "zh": "DLSS 基础"
+        },
+        {
+          "en": "DLSS evaluation",
+          "zh": "DLSS 评估"
+        },
+        {
+          "en": "RenoDX DLSS controller",
+          "zh": "RenoDX DLSS 控制器"
+        },
+        {
+          "en": "Ultra Performance",
+          "zh": "极致性能"
+        },
+        {
+          "en": "Ultra Quality",
+          "zh": "极致质量"
+        },
+        {
+          "en": "Options Mode",
+          "zh": "选项模式"
+        },
+        {
+          "en": "Upscaled",
+          "zh": "放大"
+        },
+        {
+          "en": "Present",
+          "zh": "呈现"
+        },
+        {
+          "en": "Hook Method",
+          "zh": "Hook 方法"
+        },
+        {
+          "en": "UI Correction",
+          "zh": "UI 校正"
+        },
+        {
+          "en": "Model A",
+          "zh": "模型A"
+        },
+        {
+          "en": "Model B",
+          "zh": "模型B"
+        },
+        {
+          "en": "Model C",
+          "zh": "模型C"
+        },
+        {
+          "en": "Character Mask",
+          "zh": "角色遮罩"
+        },
+        {
+          "en": "Nearest",
+          "zh": "最近"
+        },
+        {
+          "en": "Pass Count",
+          "zh": "通道数"
+        },
+        {
+          "en": "More Mods",
+          "zh": "更多"
+        },
+        {
+          "en": "Preset",
+          "zh": "预设"
+        },
+        {
+          "en": "Preset #1",
+          "zh": "预设 #1"
+        },
+        {
+          "en": "Preset #2",
+          "zh": "预设 #2"
+        },
+        {
+          "en": "Preset #3",
+          "zh": "预设 #3"
+        },
+        {
+          "en": "Advanced",
+          "zh": "高级"
+        },
+        {
+          "en": "Bilinear",
+          "zh": "双线"
+        },
+        {
+          "en": "Global Tone Intensity",
+          "zh": "全局色调强度"
+        },
+        {
+          "en": "Toggle Neural Rendering",
+          "zh": "开关神经渲染"
+        },
+        {
+          "en": "Neural Rendering Performance",
+          "zh": "神经渲染性能"
+        },
+        {
+          "en": "Neural Rendering Resolution",
+          "zh": "神经渲染分辨率"
+        },
+        {
+          "en": "Neural Rendering Enabled On Launch",
+          "zh": "启动时启用神经渲染"
+        },
+        {
+          "en": "Diffuse White (nits)",
+          "zh": "漫反射白 (nits)"
+        },
+        {
+          "en": "DLSS evaluation",
+          "zh": "DLSS 评估"
+        },
+        {
+          "en": "RenoDX DLSS controller",
+          "zh": "RenoDX DLSS 控制器"
+        },
+        {
+          "en": "None",
+          "zh": "无"
+        }
+      ]
+    },
+    {
+      "slug": "renodx-dlss",
+      "entries": [
+        {
+          "en": "Auto",
+          "zh": "自动"
+        },
+        {
+          "en": "Off",
+          "zh": "关"
+        },
+        {
+          "en": "None",
+          "zh": "无"
+        },
+        {
+          "en": "Reset",
+          "zh": "重置"
+        },
+        {
+          "en": "Off: Disabled",
+          "zh": "关:禁用"
+        },
+        {
+          "en": "Neural Rendering Debug",
+          "zh": "神经渲染调试"
+        },
+        {
+          "en": "Resolution Scale",
+          "zh": "分辨率缩放"
+        },
+        {
+          "en": "Downsample Filter",
+          "zh": "降采样滤镜"
+        },
+        {
+          "en": "Scale Reconstruction",
+          "zh": "缩放重建"
+        },
+        {
+          "en": "NR input preparation",
+          "zh": "NR 输入准备"
+        },
+        {
+          "en": "NR output restoration",
+          "zh": "NR 输出还原"
+        },
+        {
+          "en": "NR feature generations",
+          "zh": "NR 特征生成"
+        },
+        {
+          "en": "NR vendor evaluation",
+          "zh": "NR 供应商评估"
+        },
+        {
+          "en": "Present temporal staging",
+          "zh": "呈现 时域缓存"
+        },
+        {
+          "en": "Ancillary owned resources",
+          "zh": "附属自有资源"
+        },
+        {
+          "en": "Overall Intensity",
+          "zh": "总体强度"
+        },
+        {
+          "en": "Local Tone Intensity",
+          "zh": "局部色调强度"
+        },
+        {
+          "en": "Structure Intensity",
+          "zh": "结构强度"
+        },
+        {
+          "en": "Skin Structure Strength",
+          "zh": "皮肤结构强度"
+        },
+        {
+          "en": "Diffuse White (nits)",
+          "zh": "漫反射白 (nits)"
+        },
+        {
+          "en": "DLSS base",
+          "zh": "DLSS 基础"
+        },
+        {
+          "en": "DLSS evaluation",
+          "zh": "DLSS 评估"
+        },
+        {
+          "en": "Ultra Performance",
+          "zh": "极致性能"
+        },
+        {
+          "en": "Ultra Quality",
+          "zh": "极致质量"
+        },
+        {
+          "en": "RenoDX DLSS controller",
+          "zh": "RenoDX DLSS 控制器"
+        },
+        {
+          "en": "Options Mode",
+          "zh": "选项模式"
+        },
+        {
+          "en": "Render",
+          "zh": "渲染"
+        },
+        {
+          "en": "Upscaled",
+          "zh": "放大"
+        },
+        {
+          "en": "Present",
+          "zh": "呈现"
+        },
+        {
+          "en": "Hook Method",
+          "zh": "Hook 方法"
+        },
+        {
+          "en": "Use DLSS Upscaling Resources",
+          "zh": "使用 DLSS 上采样资源"
+        },
+        {
+          "en": "UI Correction",
+          "zh": "UI 校正"
+        },
+        {
+          "en": "Model A",
+          "zh": "模型A"
+        },
+        {
+          "en": "Model B",
+          "zh": "模型B"
+        },
+        {
+          "en": "Model C",
+          "zh": "模型C"
+        },
+        {
+          "en": "Character Mask",
+          "zh": "角色遮罩"
+        },
+        {
+          "en": "Scaling",
+          "zh": "缩放"
+        },
+        {
+          "en": "Scaling Domain",
+          "zh": "缩放空间"
+        },
+        {
+          "en": "Linear",
+          "zh": "线性"
+        },
+        {
+          "en": "Nearest",
+          "zh": "最近"
+        },
+        {
+          "en": "Upsample Filter",
+          "zh": "上采样滤镜"
+        },
+        {
+          "en": "RGB residual",
+          "zh": "RGB 残差"
+        },
+        {
+          "en": "Processed image",
+          "zh": "处理后图像"
+        },
+        {
+          "en": "Pass Count",
+          "zh": "通道数"
+        },
+        {
+          "en": "Block Hudless",
+          "zh": "阻止无HUD"
+        },
+        {
+          "en": "Inverse",
+          "zh": "反转"
+        },
+        {
+          "en": "Use Exposure Value",
+          "zh": "使用曝光值"
+        },
+        {
+          "en": "More Mods",
+          "zh": "更多"
+        },
+        {
+          "en": "Open Neural Rendering Debug",
+          "zh": "打开神经渲染调试"
+        },
+        {
+          "en": "Preset",
+          "zh": "预设"
+        },
+        {
+          "en": "Preset #1",
+          "zh": "预设 #1"
+        },
+        {
+          "en": "Preset #2",
+          "zh": "预设 #2"
+        },
+        {
+          "en": "Preset #3",
+          "zh": "预设 #3"
+        },
+        {
+          "en": "Advanced",
+          "zh": "高级"
+        },
+        {
+          "en": "Bilinear",
+          "zh": "双线"
+        }
+      ]
+    },
+    {
+      "slug": "dlss5-bridge",
+      "entries": [
+        {
+          "en": "Direction X",
+          "zh": "方向 X"
+        },
+        {
+          "en": "Direction Y",
+          "zh": "方向 Y"
+        },
+        {
+          "en": "Output B",
+          "zh": "输出 B"
+        },
+        {
+          "en": "NOT enabled",
+          "zh": "未启用"
+        },
+        {
+          "en": "NVIDIA optical flow",
+          "zh": "NVIDIA 光流"
+        },
+        {
+          "en": "HDR contract",
+          "zh": "HDR 约定"
+        },
+        {
+          "en": "SDR contract",
+          "zh": "SDR 约定"
+        },
+        {
+          "en": "Reset",
+          "zh": "重置"
+        },
+        {
+          "en": "Color",
+          "zh": "配色"
+        }
+      ]
+    }
+  ]
+}

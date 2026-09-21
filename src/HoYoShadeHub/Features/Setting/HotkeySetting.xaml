@@ -29,7 +29,9 @@
                 <TextBlock MinWidth="200"
                            VerticalAlignment="Center"
                            Text="{x:Bind lang:Lang.HotkeySetting_OpenMainWindow}" />
+                <!--  按用户要求删掉快捷键功能：输入框隐藏（代码保留，方便以后恢复）  -->
                 <local:HotkeyInput x:Name="HotkeyInput_ShowMainWindow"
+                                   Visibility="Collapsed"
                                    MinWidth="200"
                                    HotkeyDeleted="HotkeyInput_HotkeyDeleted"
                                    HotkeyEditFinished="HotkeyInput_HotkeyEditFinished"
