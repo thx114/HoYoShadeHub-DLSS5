@@ -96,6 +96,14 @@
   - 「下载并安装」一键装：下载 `HoYoShadeHub_Portable_<版本>_x64.zip` → 解压到便携包根目录（多出 `app-<版本>\` 并改写 `version.ini`）→「重启生效」；
   - **退回**：在版本列表里选一个比当前旧的 tag 装即可；旧版本目录原样留着，装前还会把当前 `version.ini` 备份到 `<用户数据目录>\.hysx\update-backup\`。
 
+## 1.0.24（app-9.9.34）· 给 OptiScaler 自动补 nvngx_dlssnr.dll
+
+- 各 OptiScaler 分支的手册都要求把 **`nvngx_dlssnr.dll`** 放在包旁边（wilsjo2 的 INSTALL-DLSSNR.md 第 3 步等）；
+  现在装完 OptiScaler 会自动从「DLL 配置」装好的插件目录**复制一份到构建目录**（已经有一份同样大小的就不动，
+  不覆盖你自己换的版本；找不到就提示去 DLL 配置装一个）。
+- OptiScaler 页签的构建卡片：缺运行时的那行会标黄 **「缺 nvngx_dlssnr.dll」**，并多一个 **「放入 nvngx_dlssnr.dll」**按钮。
+
+
 
 
 

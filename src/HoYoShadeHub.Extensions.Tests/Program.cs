@@ -1064,6 +1064,35 @@ File.WriteAllText(Path.Combine(bothDir, "version.dll"), "fake");
 File.WriteAllText(Path.Combine(bothDir, "OptiScaler.dll"), "fake");
 Check(Path.GetFileName(OptiScalerLibrary.FindDll(bothDir)!) == "OptiScaler.dll", "正主 OptiScaler.dll 优先于代理名");
 
+Console.WriteLine("-- OptiScaler 的 nvngx_dlssnr.dll（各分支手册都要求放在包旁边）--");
+string nrdllAddonsDir = Path.Combine(root, "fake-addons");
+Directory.CreateDirectory(nrdllAddonsDir);
+File.WriteAllText(Path.Combine(nrdllAddonsDir, OptiScalerRuntime.NeuralRuntimeFileName), "nr-runtime-payload");
+string nrdllBuildDir = library.DirectoryFor("wilsjo2", "v0.8.9");
+Directory.CreateDirectory(nrdllBuildDir);
+File.WriteAllText(Path.Combine(nrdllBuildDir, "OptiScaler.dll"), "fake");
+
+Check(!OptiScalerRuntime.HasNrdll(nrdllBuildDir), "一开始构建目录里没有运行时");
+
+NrdllPlaceResult nrdllPlaced = OptiScalerRuntime.EnsureNrdll(nrdllBuildDir, nrdllAddonsDir);
+Check(nrdllPlaced.Status == NrdllPlaceStatus.Copied && nrdllPlaced.Ok, "从插件目录复制过来：" + nrdllPlaced.Message);
+Check(OptiScalerRuntime.HasNrdll(nrdllBuildDir), "复制完构建目录里就有了");
+Check(File.ReadAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName)) == "nr-runtime-payload", "内容一致");
+
+NrdllPlaceResult nrdllAgain = OptiScalerRuntime.EnsureNrdll(nrdllBuildDir, nrdllAddonsDir);
+Check(nrdllAgain.Status == NrdllPlaceStatus.AlreadyPresent, "已有同样大小的一份就不重复拷（别乱覆盖用户自己换的版本）");
+
+File.WriteAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName), "a-much-longer-user-supplied-runtime");
+NrdllPlaceResult nrdllFixedUp = OptiScalerRuntime.EnsureNrdll(nrdllBuildDir, nrdllAddonsDir);
+Check(nrdllFixedUp.Status == NrdllPlaceStatus.Copied && File.ReadAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName)) == "nr-runtime-payload",
+    "目录里那份大小不对时会被插件目录里的覆盖回去");
+
+string nrdllNoSourceBuild = library.DirectoryFor("neurotic", "alpha-9.9");
+Directory.CreateDirectory(nrdllNoSourceBuild);
+File.WriteAllText(Path.Combine(nrdllNoSourceBuild, "OptiScaler.dll"), "fake");
+NrdllPlaceResult nrdllMissing = OptiScalerRuntime.EnsureNrdll(nrdllNoSourceBuild, Path.Combine(root, "nope"));
+Check(nrdllMissing.Status == NrdllPlaceStatus.NotFound && !nrdllMissing.Ok, "找不到源头时明确报 NotFound（界面据此提示去 DLL 配置装一个）");
+
 Console.WriteLine("-- 下载器的纯逻辑（不联网）--");
 string[] assets = ["OptiScaler-NR-v0.8.3.zip", "OptiScaler-NR-v0.8.3-rtx40-mfg.zip", "OptiScaler-NR-v0.8.3-SHA256SUMS.txt", "NeuRotic-Patch.zip"];
 Check(OptiScalerDownloader.IsUsableAsset(assets[0]) && !OptiScalerDownloader.IsUsableAsset(assets[2]),

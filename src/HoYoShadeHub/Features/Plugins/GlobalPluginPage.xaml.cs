@@ -689,6 +689,36 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
+    /// <summary>
+    /// 把 nvngx_dlssnr.dll 从「DLL 配置」装好的插件目录复制到构建目录。
+    /// 各分支手册（wilsjo2 的 INSTALL-DLSSNR.md 第 3 步等）都要求它躺在包旁边。
+    /// </summary>
+    private void Button_PlaceOptiScalerNrdll_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: OptiScalerBuildItemViewModel item })
+        {
+            return;
+        }
+
+        NrdllPlaceResult result = OptiScalerRuntime.EnsureNrdll(
+            item.Build.Directory,
+            _manager?.Host.AddonsPath,
+            OptiScalerBuilds
+                .Where(v => !string.Equals(v.Id, item.Id, StringComparison.OrdinalIgnoreCase))
+                .Select(v => v.Build.Directory));
+
+        TextBlock_Status.Text = result.Message;
+        _logger.LogInformation("OptiScaler nrdll: {Status} ({Source} -> {Target})",
+            result.Status, result.SourcePath, result.TargetPath);
+
+        if (!result.Ok)
+        {
+            ShowInfo("缺 nvngx_dlssnr.dll", result.Message, InfoBarSeverity.Warning);
+        }
+
+        RefreshOptiScaler();
+    }
+
     private void Button_OpenOptiScalerBuild_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: OptiScalerBuildItemViewModel item })
@@ -856,6 +886,12 @@ public sealed partial class GlobalPluginPage : PageBase
                         return run;
                     });
 
+                // 各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边 —— 装完顺手从插件目录补一份
+                NrdllPlaceResult nrdll = OptiScalerRuntime.EnsureNrdll(
+                    build.Directory,
+                    _manager?.Host.AddonsPath,
+                    OptiScalerBuilds.Select(v => v.Build.Directory));
+
                 // 之前一个都没启用、而且这个构建里真有 dll 时，装完直接启用它（省一步）
                 if (library.GetSelected() is null && build.DllPath is not null)
                 {
@@ -867,7 +903,7 @@ public sealed partial class GlobalPluginPage : PageBase
                         ? $"安装程序已下载（{build.SizeBytes / 1024d / 1024d:F1} MB），还没运行 —— 点「打开目录」可以自己双击它。"
                         : build.DllPath is null
                             ? "安装程序跑完了，但没在目录里找到可注入的 dll（version.dll / dxgi.dll 之类）。"
-                            : $"装好了：注入目标 = {Path.GetFileName(build.DllPath)}。到启动器页勾「启动 OptiScaler」即可。"
+                            : $"装好了：注入目标 = {Path.GetFileName(build.DllPath)}。{nrdll.Message}到启动器页勾「启动 OptiScaler」即可。"
                     : $"已装好 {build.Id}（{build.SizeBytes / 1024d / 1024d:F1} MB）。" +
                       (build.DllPath is null ? "注意：包里没找到 OptiScaler.dll。" : string.Empty);
                 TextBlock_Status.Text = $"OptiScaler「{build.Id}」安装完成：{build.Directory}";
@@ -1881,6 +1917,13 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
     public Visibility EnabledVisibility => Enabled == true ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility NoDllVisibility => Build.DllPath is null && !InstallerOnly ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>构建目录里有没有神经渲染运行时（各 OptiScaler 分支的手册都要求放在包旁边）</summary>
+    public bool HasNrdll => OptiScalerRuntime.HasNrdll(Build.Directory);
+
+    /// <summary>有可注入的 dll、但缺 nvngx_dlssnr.dll → 黄字提示 + 「放入」按钮</summary>
+    public Visibility MissingNrdllVisibility
+        => Build.DllPath is not null && !HasNrdll ? Visibility.Visible : Visibility.Collapsed;
 
     public bool CanOpenFolder => Directory.Exists(Build.Directory);
 

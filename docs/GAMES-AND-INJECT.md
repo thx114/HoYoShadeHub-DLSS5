@@ -1034,6 +1034,20 @@ StartExtraDllInjection → InjectExtraDllsAsync（一个进程只等一次，两
 5. OptiScaler 侧：OptiScalerCatalog.MergeWithBuiltin(OptiScalerCatalog.LoadFile(缓存))；
 6. 手动拉：设置 → 关于 → **「拉取插件目录」**（RemoteCatalogService.RefreshAsync(force: true)）。
 
+### 9.9 给 OptiScaler 补 nvngx_dlssnr.dll（各分支手册要求的「放在包旁边」）
+
+各分支的手册（wilsjo2 的 INSTALL-DLSSNR.md 第 2/3 步、NeuRotic、DLSS NR on AMD）都写着：解压完整包之后，
+**把 `nvngx_dlssnr.dll` 放到同一个目录**。我们这边是注入不是铺游戏目录，所以「同一个目录」= 构建目录
+`<用户数据目录>\OptiScaler\<来源>\<版本>\`。
+
+- `OptiScalerRuntime.EnsureNrdll(buildDirectory, addonsDirectory, extraSearchDirectories)`（Extensions 层，有自测）：
+  从**插件目录**（「DLL 配置」把运行时装在这儿）或其它构建目录里找一份复制过去；已经有**同样大小**的就什么都不做
+  （用户可能自己换过版本，不覆盖）；找不到 → `NotFound`，界面提示去 DLL 配置装一个。
+- 触发点：① 装完 OptiScaler（zip / 安装程序）自动补一次；② 卡片上缺运行时的行标黄「缺 nvngx_dlssnr.dll」+「放入 nvngx_dlssnr.dll」按钮。
+- 实测背景：用户机器上 `nvngx_dlssnr.dll`（158 MB）本来就在各游戏目录和插件目录里，所以注入的 OptiScaler 直接就能用 ——
+  这个功能是给「干净机器」和「新下载的构建目录」兜底的。
+
+
 **还没做完的**：GitHub 更新渠道（把 App 自身的更新渠道切到我们仓库的 Release + 一键更新 + 退回旧版本），
 设计写在 docs/OPEN-SOURCE-PLAN.md §5，需要先定仓库地址。
 

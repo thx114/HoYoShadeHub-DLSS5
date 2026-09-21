@@ -424,6 +424,14 @@
                                                             Visibility="{x:Bind NoDllVisibility, Mode=OneWay}">
                                                         <TextBlock FontSize="11" Text="包里没找到 OptiScaler.dll" />
                                                     </Border>
+                                                    <!--  各分支手册都要求 nvngx_dlssnr.dll 躺在包旁边  -->
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                            CornerRadius="3"
+                                                            Visibility="{x:Bind MissingNrdllVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11" Text="缺 nvngx_dlssnr.dll" />
+                                                    </Border>
                                                 </StackPanel>
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
@@ -441,6 +449,10 @@
                                                              Content="启用"
                                                              GroupName="OptiScalerBuild"
                                                              IsChecked="{x:Bind Enabled, Mode=TwoWay}" />
+                                                <Button Click="Button_PlaceOptiScalerNrdll_Click"
+                                                        Content="放入 nvngx_dlssnr.dll"
+                                                        ToolTipService.ToolTip="wilsjo2 / NeuRotic / DLSS NR on AMD 的手册都要求把 nvngx_dlssnr.dll 放在包旁边。这里从「DLL 配置」装好的插件目录复制一份到构建目录（已经有一份同样大小的就不动）。"
+                                                        Visibility="{x:Bind MissingNrdllVisibility, Mode=OneWay}" />
                                                 <Button Click="Button_OpenOptiScalerBuild_Click"
                                                         Content="打开目录"
                                                         IsEnabled="{x:Bind CanOpenFolder, Mode=OneWay}" />
