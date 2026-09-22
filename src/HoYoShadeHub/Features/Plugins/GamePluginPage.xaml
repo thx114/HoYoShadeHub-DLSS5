@@ -208,6 +208,11 @@
                                   Content="启动游戏时强制 off"
                                   ToolTipService.ToolTip="勾上后，每次从这里启动/注入这个游戏之前，先把 hook 点写成 0（免得忘了改回来导致游戏起不来）"
                                   Unchecked="CheckBox_ForceHookOff_Changed" />
+                        <CheckBox x:Name="CheckBox_HookStreamline"
+                                  Checked="CheckBox_HookStreamline_Changed"
+                                  Content="HookStreamline（跳过 Streamline Present 钩子）"
+                                  ToolTipService.ToolTip="外部注入时 Streamline 已先挂好 Present 钩子。勾上后往 [INSTALL] 写 HookStreamline=1，让 DLSS 插件跳过 Streamline 的 Present 钩子，避免双重 hook / 顺序错乱（ShortFuse 给的兜底）。"
+                                  Unchecked="CheckBox_HookStreamline_Changed" />
 
                         <MenuFlyoutSeparator Margin="0,4,0,0" />
 

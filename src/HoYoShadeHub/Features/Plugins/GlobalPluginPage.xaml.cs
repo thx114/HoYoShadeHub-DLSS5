@@ -1077,6 +1077,23 @@ public sealed partial class GlobalPluginPage : PageBase
         _logger.LogInformation("OptiScaler nrdll: {Status} ({Source} -> {Target})",
             result.Status, result.SourcePath, result.TargetPath);
 
+        // 同时补 FGOutput=DLSSG 需要的 Streamline 整套
+        if (!OptiScalerRuntime.HasStreamline(item.Build.Directory))
+        {
+            List<string> sl = OptiScalerRuntime.EnsureStreamline(
+                item.Build.Directory,
+                _manager?.Host.AddonsPath);
+            if (sl.Count > 0)
+            {
+                TextBlock_Status.Text += $" 已补 Streamline：{string.Join("、", sl)}。";
+            }
+        }
+
+        if (OptiScalerRuntime.EnsureConfigDllPath(item.Build.Directory))
+        {
+            _logger.LogInformation("OptiScaler ini: OptiDllPath pinned to absolute path under {Directory}", item.Build.Directory);
+        }
+
         if (!result.Ok)
         {
             ShowInfo("缺 nvngx_dlssnr.dll", result.Message, InfoBarSeverity.Warning);
@@ -1263,6 +1280,17 @@ public sealed partial class GlobalPluginPage : PageBase
                 build.Directory,
                 _manager?.Host.AddonsPath,
                 OptiScalerBuilds.Select(v => v.Build.Directory));
+
+            // FGOutput=DLSSG 还需要 OptiScaler/streamline 整套 + nvngx_dlssg.dll，一并补齐
+            List<string> streamline = OptiScalerRuntime.EnsureStreamline(
+                build.Directory,
+                _manager?.Host.AddonsPath);
+
+            // ini 默认 OptiDllPath=auto 按游戏 exe 目录解析，外部注入要钉成数据目录的绝对路径
+            if (OptiScalerRuntime.EnsureConfigDllPath(build.Directory))
+            {
+                _logger.LogInformation("OptiScaler ini: OptiDllPath pinned under {Directory}", build.Directory);
+            }
 
             finalStatus = installer
                 ? setupDeclined

@@ -420,6 +420,10 @@ public sealed partial class GamePluginPage : PageBase
             bool forceOff = CurrentGameId is { } gameId && AppConfig.GetForceHookOffOnLaunch(gameId.GameBiz);
             CheckBox_ForceHookOff.IsChecked = forceOff;
             CheckBox_ForceHookOff.IsEnabled = canEdit;
+
+            bool hookStreamline = _plugins?.Profile?.IsHookStreamlineEnabled() == true;
+            CheckBox_HookStreamline.IsChecked = hookStreamline;
+            CheckBox_HookStreamline.IsEnabled = canEdit;
         }
         finally
         {
@@ -448,6 +452,24 @@ public sealed partial class GamePluginPage : PageBase
         TextBlock_Status.Text = value
             ? "已开启：以后从这里启动/注入这个游戏之前，会自动把 hook 点写成 0。"
             : "已关闭：启动前不再动 hook 点。";
+    }
+
+    private void CheckBox_HookStreamline_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isApplying || _plugins is { HasReShadeIni: false })
+        {
+            return;
+        }
+
+        bool value = CheckBox_HookStreamline.IsChecked == true;
+        if (_plugins?.Profile is { } profile)
+        {
+            profile.SetHookStreamline(value);
+            profile.Save();
+            TextBlock_Status.Text = value
+                ? "已写入 [INSTALL] HookStreamline=1：DLSS 插件会跳过 Streamline 的 Present 钩子。"
+                : "已写入 HookStreamline=0。";
+        }
     }
 
     private void ComboBox_HookPoint_SelectionChanged(object sender, SelectionChangedEventArgs e)

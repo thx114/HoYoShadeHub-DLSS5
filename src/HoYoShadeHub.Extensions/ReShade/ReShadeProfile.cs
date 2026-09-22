@@ -232,6 +232,14 @@ public sealed class ReShadeProfile
     /// </summary>
     public const string RenoDlssSection = "RENODX-DLSS";
 
+    /// <summary>
+    /// ShortFuse 的安装配置段。<c>HookStreamline=1</c> 让 DLSS 插件知道无需理会 Streamline
+    /// 的 Present 钩子（外部注入时 Streamline 已先挂好，避免双重 Present hook / 顺序错乱）。
+    /// </summary>
+    public const string InstallSection = "INSTALL";
+
+    public const string HookStreamlineKey = "HookStreamline";
+
     public const string DisabledAddonsKey = "DisabledAddons";
     public const string LoadFromDllMainKey = "LoadFromDllMain";
 
@@ -480,6 +488,20 @@ public sealed class ReShadeProfile
         _ini.RemoveKey(RenoDlssSection, HookStageKey);
         _ini.RemoveKey(AddonSection, HookPointKey);
         _ini.RemoveKey(AddonSection, HookStageKey);
+    }
+
+    #endregion
+
+    #region HookStreamline
+
+    /// <summary>[INSTALL] HookStreamline 是否打开；键不存在 / 值不是 1 都算关</summary>
+    public bool IsHookStreamlineEnabled() =>
+        string.Equals(_ini.GetValue(InstallSection, HookStreamlineKey)?.Trim(), "1", StringComparison.Ordinal);
+
+    /// <summary>写 HookStreamline（开=1，关=0；键始终保留，addon 靠它识别）</summary>
+    public void SetHookStreamline(bool enabled)
+    {
+        _ini.SetValue(InstallSection, HookStreamlineKey, enabled ? "1" : "0");
     }
 
     #endregion
