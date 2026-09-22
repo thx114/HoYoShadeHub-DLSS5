@@ -17,6 +17,7 @@ using HoYoShadeHub.RPC.Update.Metadata;
 using HoYoShadeHub.Helpers;
 using HoYoShadeHub.Core.Networking;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
@@ -387,7 +388,7 @@ public sealed partial class UpdateWindow : WindowEx
                 {
                     "release" => NewVersion.DisableAutoUpdate && !string.IsNullOrEmpty(NewVersion.PackageUrl)
                         ? NewVersion.PackageUrl  // For framework updates, use PackageUrl directly
-                        : $"https://github.com/DuolaD/HoYoShade-Hub/releases/tag/{NewVersion.Version}",
+                        : $"https://github.com/{GithubUpdateService.Repository}/releases/tag/{NewVersion.Version}",
                     "package" => NewVersion.PackageUrl,
                     _ => null,
                 };
@@ -892,8 +893,8 @@ public sealed partial class UpdateWindow : WindowEx
             }
             else
             {
-                // For Hub updates, redirect to Hub repository
-                webview.Source = new Uri($"https://github.com/DuolaD/HoYoShade-Hub/releases/tag/{tag}");
+                // For Hub updates, redirect to our fork repository
+                webview.Source = new Uri($"https://github.com/{GithubUpdateService.Repository}/releases/tag/{tag}");
             }
             
             webview.Visibility = Visibility.Visible;
@@ -908,6 +909,41 @@ public sealed partial class UpdateWindow : WindowEx
             StackPanel_Loading.Visibility = Visibility.Collapsed;
             StackPanel_Error.Visibility = Visibility.Visible;
         }
+    }
+
+    private static System.Net.Http.HttpClient CreateGithubApiClient()
+    {
+        var client = new System.Net.Http.HttpClient();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("HoYoShadeHub-DLSS5/1.0");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        return client;
+    }
+
+    /// <summary>从本 fork 仓库读 GitHub release（更新日志走我们仓库，不经过官方上游元数据）</summary>
+    private static async Task<List<GithubRelease>> GetForkReleasesAsync(
+        int perPage, System.Threading.CancellationToken cancellationToken = default)
+    {
+        using System.Net.Http.HttpClient client = CreateGithubApiClient();
+        string url = $"https://api.github.com/repos/{GithubUpdateService.Repository}/releases?page=1&per_page={perPage}";
+        using System.Net.Http.HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync(cancellationToken);
+        return System.Text.Json.JsonSerializer.Deserialize<List<GithubRelease>>(json) ?? new List<GithubRelease>();
+    }
+
+    /// <summary>从本 fork 仓库读指定 tag 的 release；找不到返回 null</summary>
+    private static async Task<GithubRelease?> GetForkReleaseAsync(
+        string tag, System.Threading.CancellationToken cancellationToken = default)
+    {
+        using System.Net.Http.HttpClient client = CreateGithubApiClient();
+        string url = $"https://api.github.com/repos/{GithubUpdateService.Repository}/releases/tags/{Uri.EscapeDataString(tag)}";
+        using System.Net.Http.HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+        string json = await response.Content.ReadAsStringAsync(cancellationToken);
+        return System.Text.Json.JsonSerializer.Deserialize<GithubRelease>(json);
     }
 
     private async Task<string> GetReleaseContentMarkdownAsync()
@@ -1019,7 +1055,7 @@ public sealed partial class UpdateWindow : WindowEx
             }
         }
 
-        var releases = await _metadataClient.GetGithubReleaseAsync(1, 20);
+        var releases = await GetForkReleasesAsync(20);
         var markdown = new StringBuilder();
         int count = 0;
         foreach (var release in releases)
@@ -1054,7 +1090,7 @@ public sealed partial class UpdateWindow : WindowEx
         {
             try
             {
-                var r = await _metadataClient.GetGithubReleaseAsync(NewVersion?.Version ?? AppConfig.AppVersion);
+                var r = await GetForkReleaseAsync(NewVersion?.Version ?? AppConfig.AppVersion);
                 if (r is not null)
                 {
                     AppendReleaseToStringBuilder(r, markdown);

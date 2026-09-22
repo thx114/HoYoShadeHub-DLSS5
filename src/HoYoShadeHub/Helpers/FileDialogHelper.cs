@@ -26,6 +26,39 @@ internal static class FileDialogHelper
     /// </remarks>
     private const int ERROR_CANCELLED = 0x000004C7;
 
+    /// <summary>
+    /// 把过滤后缀归一化成 WinRT FileOpenPicker 认的写法。
+    /// 调用方经常写「所有文件 = .*」，而 <c>FileTypeFilter.Add(".*")</c> 会直接抛
+    /// ArgumentException（不是 COMException，兜底那条路也接不住）——统一改成 "*"。
+    /// </summary>
+    private static List<string> NormalizeExtensions(IEnumerable<(string Name, string Extension)> fileTypeFilter)
+    {
+        var result = new List<string>();
+
+        foreach ((_, string extension) in fileTypeFilter)
+        {
+            string value = (extension ?? string.Empty).Trim();
+            if (value.Length == 0)
+            {
+                continue;
+            }
+
+            value = value is ".*" or "*.*" ? "*" : value;
+
+            if (!result.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                result.Add(value);
+            }
+        }
+
+        if (result.Count == 0)
+        {
+            result.Add("*");
+        }
+
+        return result;
+    }
+
     public static async Task<string?> PickSingleFileAsync(nint parentWindow, params (string Name, string Extension)[] fileTypeFilter)
     {
         try
@@ -34,9 +67,9 @@ internal static class FileDialogHelper
             {
                 SuggestedStartLocation = PickerLocationId.ComputerFolder
             };
-            foreach (var filter in fileTypeFilter)
+            foreach (string extension in NormalizeExtensions(fileTypeFilter))
             {
-                picker.FileTypeFilter.Add(filter.Extension);
+                picker.FileTypeFilter.Add(extension);
             }
             InitializeWithWindow.Initialize(picker, parentWindow);
             var file = await picker.PickSingleFileAsync();
@@ -91,9 +124,9 @@ internal static class FileDialogHelper
             {
                 SuggestedStartLocation = PickerLocationId.ComputerFolder
             };
-            foreach (var filter in fileTypeFilter)
+            foreach (string extension in NormalizeExtensions(fileTypeFilter))
             {
-                picker.FileTypeFilter.Add(filter.Extension);
+                picker.FileTypeFilter.Add(extension);
             }
             InitializeWithWindow.Initialize(picker, parentWindow);
             IReadOnlyList<StorageFile> files = await picker.PickMultipleFilesAsync();

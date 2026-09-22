@@ -138,10 +138,12 @@
                 <NavigationViewItem Content="{x:Bind lang:Lang.GameLauncherSettingDialog_ThirdPartyIntegration}"
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                     Tag="3" />
-                <!--  额外注入 DLL（OptiScaler / DLSS Enabler 那类）：跟 HoYoShade 的注入器并行  -->
+                <!--  额外注入 DLL：搬到左侧「模块」页了（在那儿可以启用多个模块）—— 这里留着条目占位，
+                      免得 FlipView 的序号跟着变；界面上不再显示。  -->
                 <NavigationViewItem Content="额外注入 DLL"
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    Tag="4" />
+                                    Tag="4"
+                                    Visibility="Collapsed" />
             </NavigationView.MenuItems>
 
 

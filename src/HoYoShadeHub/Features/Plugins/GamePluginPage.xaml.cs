@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Messaging;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
@@ -476,6 +476,44 @@ public sealed partial class GamePluginPage : PageBase
     #region 顶部按钮
 
     private async void Button_Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
+
+    /// <summary>
+    /// 右上角「DLSS5 兼容性检测」：弹窗列 15 条（显卡 / 启动器 / 游戏目录 / XXMI），
+    /// 7/9/10/11/12/13/14/15 带自动修复。
+    ///
+    /// <para>
+    /// 用页面已经解析好的当前游戏 + HoYoShade 宿主，不再重新探测一遍（避免和列表显示的不是同一份）。
+    /// </para>
+    /// </summary>
+    private async void Button_Dlss5CompatCheck_Click(object sender, RoutedEventArgs e)
+    {
+        ShadeHost? host = _host ?? PluginHostLocator.Resolve(out _);
+
+        if (host is null)
+        {
+            ShowInfo("DLSS5 兼容性检测", "还没找到 HoYoShade 目录  先到「全局插件」页点「指定目录」。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        var context = new Dlss5CompatContext
+        {
+            ShadeHost = host,
+            Game = _entry,
+            GameId = CurrentGameId,
+            Profile = _plugins?.Profile,
+            ProfileError = _plugins?.ProfileError,
+            AddonStates = _plugins?.GetAddons(),
+            HookPoint = _plugins?.GetHookPoint() ?? 0,
+            PluginService = _plugins,
+        };
+
+        var dialog = new Dlss5CompatDialog(context)
+        {
+            XamlRoot = XamlRoot,
+        };
+
+        await dialog.ShowAsync();
+    }
 
     private async void Button_PickExe_Click(object sender, RoutedEventArgs e)
     {

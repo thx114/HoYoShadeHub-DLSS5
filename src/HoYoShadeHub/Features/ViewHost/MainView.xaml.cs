@@ -10,6 +10,8 @@ using HoYoShadeHub.Core.HoYoShade;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.GameSetting;
+using HoYoShadeHub.Features.Modules;
+using HoYoShadeHub.Features.OptiScaler;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Features.Xxmi;
 using HoYoShadeHub.Features.RPC;
@@ -18,6 +20,8 @@ using HoYoShadeHub.Features.Setting;
 using HoYoShadeHub.Features.Update;
 using HoYoShadeHub.Helpers;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -232,6 +236,10 @@ public sealed partial class MainView : UserControl
                         nameof(GlobalPluginPage) => typeof(GlobalPluginPage),
                         // 模型替换（XXMI）：MI 实例 + Mods 管理
                         nameof(XxmiPage) => typeof(XxmiPage),
+                        // 模块：要注入游戏进程的独立 DLL（DLSS-NR on AMD 那类）
+                        nameof(ModulesPage) => typeof(ModulesPage),
+                        // OptiScaler：总开关 + 每个游戏选一个构建
+                        nameof(OptiScalerPage) => typeof(OptiScalerPage),
                         _ => null,
                     };
                     NavigateTo(type);
@@ -255,6 +263,8 @@ public sealed partial class MainView : UserControl
                  and not nameof(DllConfigPage)
                  and not nameof(GlobalPluginPage)
                  and not nameof(XxmiPage)
+                 and not nameof(ModulesPage)
+                 and not nameof(OptiScalerPage)
                  && !CurrentGameFeatureConfig.SupportedPages.Contains(page.Name))
         {
             page = typeof(GameLauncherPage);
@@ -326,9 +336,15 @@ public sealed partial class MainView : UserControl
                 _ = NuGetVersion.TryParse(AppConfig.LastAppVersion, out var lastVersion);
                 if (appVersion != lastVersion)
                 {
-                    // 只在「便携版 + 官方更新渠道」才弹更新内容窗口：
-                    // 开发实例（非便携）每次换版本号都会走到这里，其实并没有更新，弹出来只会烦人（用户反馈过）。
-                    if (AppConfig.ShowUpdateContentAfterUpdateRestart && AppConfig.IsPortable && AppConfig.UpdateChannel == 0)
+                    // 只在「便携版」才弹更新内容窗口（渠道不限：GitHub 是我们默认的渠道）：
+                    // 开发实例每次换版本号都会走到这里，其实并没有更新，弹出来只会烦人（用户反馈过）。
+                    // 开发实例的版本号约定是 9.9.x（发布版是 1.x），所以大版本 ≥ 9 的一律当开发实例，
+                    // 不弹（否则 build\HoYoShadeHub\ 里因为有个 launcher exe，会被认成便携版）。
+                    bool isDevInstance = appVersion.Major >= 9;
+
+                    if (!isDevInstance
+                        && AppConfig.ShowUpdateContentAfterUpdateRestart
+                        && AppConfig.IsPortable)
                     {
                         new UpdateWindow().Activate();
                     }
@@ -352,6 +368,14 @@ public sealed partial class MainView : UserControl
                 return;
             }
 
+            // 渠道决定问谁：GitHub 渠道绝对不能拿官方（上游）的元数据来提示 ——
+            // 上游版本号比我们高，会一路劝用户换成上游包。官方渠道才走 RPC 元数据。
+            if (AppConfig.UpdateChannel == 1)
+            {
+                await CheckGithubUpdateAsync();
+                return;
+            }
+
             var release = await AppConfig.GetService<UpdateService>().CheckUpdateAsync(false);
             AppConfig.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
 
@@ -368,6 +392,33 @@ public sealed partial class MainView : UserControl
 
 
 
+
+    /// <summary>
+    /// GitHub 渠道的启动检查：查本仓库的 release，有比当前新的就提示一句，
+    /// 一键更新/退回在「设置 → 关于 → 更新渠道（GitHub）」里（那条路已经有版本列表和安装器）。
+    /// </summary>
+    private async Task CheckGithubUpdateAsync()
+    {
+        try
+        {
+            List<GithubVersionInfo> versions = await new GithubUpdateService().ListVersionsAsync();
+            AppConfig.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
+
+            GithubVersionInfo? newer = versions.FirstOrDefault(v => v.Note.Contains("比当前新", StringComparison.Ordinal));
+            if (newer is null)
+            {
+                return;
+            }
+
+            _logger.LogInformation("GitHub update available: {Version}", newer.Tag);
+            InAppToast.MainWindow?.Information("有新版本",
+                $"{newer.Tag}（本仓库）—— 到「设置 → 关于」里一键更新（那里也能退回旧版本）。", 15000);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Check GitHub update");
+        }
+    }
 
     private async void CheckSystemProxy()
     {

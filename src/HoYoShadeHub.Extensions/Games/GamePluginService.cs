@@ -1,6 +1,7 @@
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
+using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Games;
 
@@ -65,6 +66,9 @@ public sealed class GamePluginService
     /// <summary>addon 文件名 → 这个插件的 tags（来自扩展目录，用来判断要不要 DLSS5 那套 dll）</summary>
     private readonly Func<string, IEnumerable<string>?>? _tagsOfAddon;
 
+    /// <summary>扩展账本缓存：addon 文件名 → hub 装的时候那个版本 tag</summary>
+    private Dictionary<string, string>? _ledgerVersions;
+
     public GamePluginService(
         GameEntry game,
         ShadeHost? host,
@@ -87,6 +91,76 @@ public sealed class GamePluginService
 
     /// <summary>这个游戏读 ReShade.ini 的地方（= exe 旁边）</summary>
     public string? ReShadeIniPath => Game.ReShadeIniPath;
+
+    /// <summary>
+    /// 账本里这个 addon 文件对应的版本（&lt;HoYoShade&gt;\.hysx\installed.json 的
+    /// <c>resolvedTag</c>，没有就用 <c>version</c>）。读不到就返回 null。
+    /// </summary>
+    private string? VersionFromLedger(AddonFileInfo file)
+    {
+        try
+        {
+            Dictionary<string, string> map = LedgerVersions();
+
+            if (map.TryGetValue(file.FileName, out string? version))
+            {
+                return version;
+            }
+
+            // 全局禁用是改名（.addon64 ↔ .addon64x），账本里记的是原名
+            string normalized = Path.GetFileNameWithoutExtension(file.FileName) + ".addon64";
+            return map.TryGetValue(normalized, out string? byNormalized) ? byNormalized : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private Dictionary<string, string> LedgerVersions()
+    {
+        if (_ledgerVersions is not null)
+        {
+            return _ledgerVersions;
+        }
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            string? path = Host?.LedgerPath;
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                InstalledExtensionLedger? ledger = JsonSerializer.Deserialize<InstalledExtensionLedger>(
+                    File.ReadAllText(path), InstalledExtensionLedger.JsonOptions);
+
+                foreach (InstalledExtension extension in ledger?.Extensions ?? [])
+                {
+                    string? version = string.IsNullOrWhiteSpace(extension.ResolvedTag) ? extension.Version : extension.ResolvedTag;
+                    if (string.IsNullOrWhiteSpace(version))
+                    {
+                        continue;
+                    }
+
+                    foreach (InstalledExtension.InstalledExtensionFile installed in extension.Files)
+                    {
+                        string name = Path.GetFileName(installed.Path);
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            map[name] = version!.Trim();
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 账本读不出来不影响别的功能
+        }
+
+        _ledgerVersions = map;
+        return map;
+    }
 
     public bool HasReShadeIni => Profile is not null;
 
@@ -165,7 +239,10 @@ public sealed class GamePluginService
                 DisplayName = ResolveName(file),
                 // 版本要从**盘上真实那个文件**读：全局禁用是改名（.addon64 → .addon64x），
                 // 按 file.FileName 拼路径会找不到文件，于是「版本未知」（用户报过：全局页有版本、每游戏页没有）
-                Version = AddonVersionResolver.Resolve(ResolveActualPath(file), file.Version),
+                // 文件名和 PE 都读不出来时，退回**扩展账本**里 hub 装的时候那个版本 tag
+                // （有些 addon 文件不带版本、PE 里写的又是时间戳，只有账本知道装的是哪一版）
+                Version = AddonVersionResolver.Resolve(ResolveActualPath(file), file.Version)
+                          ?? VersionFromLedger(file),
                 Enabled = Profile?.IsDisabled(file.FileName) != true,
                 LoadFromDllMain = Profile?.IsLoadFromDllMain(file.FileName) == true,
                 IsHookPointCapable = file.IsHookPointCapable,

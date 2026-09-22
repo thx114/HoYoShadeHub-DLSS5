@@ -9,6 +9,56 @@
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
+    <Page.Resources>
+        <!--  插件 / OptiScaler / 模块 三个标签页共用的一整套视觉（卡片 / 紧凑行 / 标签 chip） -->
+        <Style x:Key="CatalogCardStyle" TargetType="Border">
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+
+        <!--  「当前」卡片：直接复用上面的 CatalogCardStyle，只统一补一个最小高度，三个标签页同高 -->
+        <Style x:Key="CatalogCurrentCardStyle"
+               BasedOn="{StaticResource CatalogCardStyle}"
+               TargetType="Border">
+            <Setter Property="MinHeight" Value="60" />
+        </Style>
+
+        <Style x:Key="CatalogHeaderButtonStyle" TargetType="Button">
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <Style x:Key="CatalogRowButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="CatalogTagBorderStyle" TargetType="Border">
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Background" Value="{ThemeResource ControlFillColorSecondaryBrush}" />
+            <Setter Property="CornerRadius" Value="3" />
+        </Style>
+
+        <!--  tags 的小圆角标签：三个标签页共用  -->
+        <DataTemplate x:Key="CatalogTagTemplate" x:DataType="x:String">
+            <Border Style="{StaticResource CatalogTagBorderStyle}">
+                <TextBlock FontSize="11"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Text="{x:Bind}" />
+            </Border>
+        </DataTemplate>
+    </Page.Resources>
+
     <Grid Padding="36,4,36,12" RowSpacing="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -18,409 +68,290 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!--  标题 + 操作（搜索框放在「本地安装」左边）  -->
-        <Grid Grid.Row="0" ColumnSpacing="12">
+        <!--  标题 + 操作（搜索框放在「本地安装」左边）+ 顶部状态 -->
+        <StackPanel Grid.Row="0" Spacing="8">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Spacing="0">
+                    <TextBlock Style="{ThemeResource TitleTextBlockStyle}" Text="全局插件" />
+                    <TextBlock x:Name="TextBlock_TargetPath"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Text="正在检测 HoYoShade…"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            Spacing="8"
+                            VerticalAlignment="Center">
+                    <Button x:Name="Button_Refresh" Click="Button_Refresh_Click" ToolTipService.ToolTip="重新检测">
+                        <FontIcon FontSize="14" Glyph="&#xE72C;" />
+                    </Button>
+                    <Button x:Name="Button_PickFolder" Click="Button_PickFolder_Click" Content="指定目录" />
+                    <Button x:Name="Button_OpenFolder" Click="Button_OpenFolder_Click" Content="打开目录" />
+                    <TextBox x:Name="TextBox_Search"
+                             Width="200"
+                             VerticalAlignment="Center"
+                             PlaceholderText="搜索…"
+                             TextChanged="TextBox_Search_TextChanged" />
+                    <Button x:Name="Button_CleanStale"
+                            Click="Button_CleanStaleReferences_Click"
+                            Content="清理失效条目"
+                            ToolTipService.ToolTip="扫一遍所有游戏的 ReShade.ini，把 DisabledAddons / LoadFromDllMain 里指向「已经不存在的插件文件」的条目删掉" />
+                    <Button x:Name="Button_Dlss5CompatCheck" Click="Button_Dlss5CompatCheck_Click" Content="DLSS5 兼容性检测" Style="{ThemeResource AccentButtonStyle}" ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性" />
+                    <Button x:Name="Button_InstallLocal"
+                            Click="Button_InstallLocal_Click"
+                            Content="本地安装…"
+                            Style="{ThemeResource AccentButtonStyle}" />
+                </StackPanel>
+            </Grid>
+
+            <!--  诊断  -->
+            <InfoBar x:Name="InfoBar_Status"
+                     IsClosable="True"
+                     IsOpen="False"
+                     Severity="Informational" />
+        </StackPanel>
+
+        <!--  一行：左边标签页，右边计数  -->
+        <Grid Grid.Row="1" ColumnSpacing="16">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <StackPanel Grid.Column="0" Spacing="0">
-                <TextBlock Style="{ThemeResource TitleTextBlockStyle}" Text="全局插件" />
-                <TextBlock x:Name="TextBlock_TargetPath"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           Style="{ThemeResource CaptionTextBlockStyle}"
-                           Text="正在检测 HoYoShade…"
-                           TextTrimming="CharacterEllipsis" />
-            </StackPanel>
-
-            <StackPanel Grid.Column="1"
-                        Orientation="Horizontal"
-                        Spacing="8"
-                        VerticalAlignment="Center">
-                <Button x:Name="Button_Refresh" Click="Button_Refresh_Click" ToolTipService.ToolTip="重新检测">
-                    <FontIcon FontSize="14" Glyph="&#xE72C;" />
-                </Button>
-                <Button x:Name="Button_PickFolder" Click="Button_PickFolder_Click" Content="指定目录" />
-                <Button x:Name="Button_OpenFolder" Click="Button_OpenFolder_Click" Content="打开目录" />
-                <TextBox x:Name="TextBox_Search"
-                         Width="200"
-                         VerticalAlignment="Center"
-                         PlaceholderText="搜索插件…"
-                         TextChanged="TextBox_Search_TextChanged" />
-                <Button x:Name="Button_CleanStale"
-                        Click="Button_CleanStaleReferences_Click"
-                        Content="清理失效条目"
-                        ToolTipService.ToolTip="扫一遍所有游戏的 ReShade.ini，把 DisabledAddons / LoadFromDllMain 里指向「已经不存在的插件文件」的条目删掉" />
-                <Button x:Name="Button_InstallLocal"
-                        Click="Button_InstallLocal_Click"
-                        Content="本地安装…"
-                        Style="{ThemeResource AccentButtonStyle}" />
-            </StackPanel>
-        </Grid>
-
-        <!--  诊断  -->
-        <InfoBar x:Name="InfoBar_Status"
-                 Grid.Row="1"
-                 IsClosable="True"
-                 IsOpen="False"
-                 Severity="Informational" />
-
-        <!--  一行：左边视图，右边过滤 + 计数  -->
-        <Grid Grid.Row="2" ColumnSpacing="16">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
+            <!--  插件 / OptiScaler / 模块：三个标签页都是「上 当前、下 可下载」 -->
+            <!--  放在 * 列里让这一排拿到整行可用宽度：RadioButtons 不会因为可用宽度不够而折成 2 列，
+                 第三个标签就不会掉到另一个位置；三个 RadioButton 再统一 MinWidth + 左对齐 + 垂直居中，                 单选框圆圈、文字起始位置一致，整体等距排布  -->
             <RadioButtons x:Name="RadioButtons_View"
                           Grid.Column="0"
+                          HorizontalAlignment="Left"
+                          VerticalAlignment="Center"
                           MaxColumns="3"
                           SelectedIndex="0"
                           SelectionChanged="RadioButtons_View_SelectionChanged">
-                <RadioButton Content="扩展包" Tag="extensions" />
-                <RadioButton Content="插件文件" Tag="files" />
-                <RadioButton Content="OptiScaler" Tag="optiscaler" />
+                <RadioButton MinWidth="132"
+                             HorizontalAlignment="Left"
+                             HorizontalContentAlignment="Left"
+                             VerticalAlignment="Center"
+                             VerticalContentAlignment="Center"
+                             Content="插件"
+                             Tag="plugins" />
+                <RadioButton MinWidth="132"
+                             HorizontalAlignment="Left"
+                             HorizontalContentAlignment="Left"
+                             VerticalAlignment="Center"
+                             VerticalContentAlignment="Center"
+                             Content="OptiScaler"
+                             Tag="optiscaler" />
+                <RadioButton MinWidth="132"
+                             HorizontalAlignment="Left"
+                             HorizontalContentAlignment="Left"
+                             VerticalAlignment="Center"
+                             VerticalContentAlignment="Center"
+                             Content="模块"
+                             Tag="modules" />
             </RadioButtons>
 
-            <StackPanel Grid.Column="2"
-                        Orientation="Horizontal"
-                        Spacing="12"
-                        VerticalAlignment="Center">
-                <RadioButtons x:Name="RadioButtons_Filter"
-                              MaxColumns="3"
-                              SelectedIndex="0"
-                              SelectionChanged="RadioButtons_Filter_SelectionChanged">
-                    <RadioButton Content="全部" Tag="all" />
-                    <RadioButton Content="已安装" Tag="installed" />
-                    <RadioButton Content="可下载" Tag="available" />
-                </RadioButtons>
-                <TextBlock x:Name="TextBlock_Count"
-                           VerticalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           Style="{ThemeResource CaptionTextBlockStyle}" />
-            </StackPanel>
+            <TextBlock x:Name="TextBlock_Count"
+                       Grid.Column="1"
+                       VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Style="{ThemeResource CaptionTextBlockStyle}" />
         </Grid>
 
         <Grid Grid.Row="3">
-            <!--  插件视图：卡片默认一行，点开才展开详情  -->
-            <Grid x:Name="Grid_Extensions">
-                <ListView x:Name="PluginList"
-                          Padding="0,0,0,8"
-                          IsItemClickEnabled="True"
-                          ItemClick="PluginList_ItemClick"
-                          SelectionMode="None">
-                    <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="local:PluginItemViewModel">
-                            <Border Margin="0,0,0,6"
-                                    Padding="14,10"
-                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="4">
-                                <StackPanel Spacing="6">
-                                    <!--  一行：名字 + 标签 + 已安装，右边是操作  -->
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
+            <!--  ===================== 插件 =====================  -->
+            <Grid x:Name="Grid_Plugins">
+                <ScrollViewer Padding="0,0,6,0">
+                    <StackPanel Spacing="6">
+                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
 
-                                        <StackPanel Grid.Column="0"
-                                                    Orientation="Horizontal"
-                                                    Spacing="8">
-                                            <TextBlock VerticalAlignment="Center"
-                                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                       Text="{x:Bind Name, Mode=OneWay}" />
-                                            <ItemsControl VerticalAlignment="Center" ItemsSource="{x:Bind Tags, Mode=OneWay}">
-                                                <ItemsControl.ItemsPanel>
-                                                    <ItemsPanelTemplate>
-                                                        <StackPanel Orientation="Horizontal" Spacing="4" />
-                                                    </ItemsPanelTemplate>
-                                                </ItemsControl.ItemsPanel>
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate x:DataType="x:String">
-                                                        <Border Padding="6,1"
-                                                                Background="{ThemeResource ControlFillColorSecondaryBrush}"
-                                                                CornerRadius="3">
-                                                            <TextBlock FontSize="11"
-                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                                       Text="{x:Bind}" />
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                            <Border Padding="6,1"
-                                                    VerticalAlignment="Center"
-                                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
-                                                    CornerRadius="3"
-                                                    Visibility="{x:Bind InstalledVisibility, Mode=OneWay}">
-                                                <TextBlock FontSize="11"
-                                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                                           Text="已安装" />
-                                            </Border>
-                                            <!--  GitHub 上有更新的版本（点开卡片时会查）  -->
-                                            <Border Padding="6,1"
-                                                    VerticalAlignment="Center"
-                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                    CornerRadius="3"
-                                                    Visibility="{x:Bind UpdateBadgeVisibility, Mode=OneWay}">
-                                                <TextBlock FontSize="11" Text="{x:Bind UpdateBadgeText, Mode=OneWay}" />
-                                            </Border>
-                                            <!--  缺 DLSS5 运行时：红 = 起不来，黄 = 可能不出画面  -->
-                                            <Border Padding="6,1"
-                                                    VerticalAlignment="Center"
-                                                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
-                                                    CornerRadius="3"
-                                                    Visibility="{x:Bind DllRequiredVisibility, Mode=OneWay}">
-                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
-                                            </Border>
-                                            <Border Padding="6,1"
-                                                    VerticalAlignment="Center"
-                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                    CornerRadius="3"
-                                                    Visibility="{x:Bind DllRecommendedVisibility, Mode=OneWay}">
-                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
-                                            </Border>
-                                        </StackPanel>
-
-                                        <StackPanel Grid.Column="1"
-                                                    Orientation="Horizontal"
-                                                    Spacing="8"
-                                                    VerticalAlignment="Center">
-                                            <!--  全局开关：改文件名后缀（.addon64 ↔ .addon64x），影响所有游戏  -->
-                                            <ToggleSwitch MinWidth="0"
-                                                          VerticalAlignment="Center"
-                                                          IsEnabled="{x:Bind CanInteract, Mode=OneWay}"
-                                                          IsOn="{x:Bind GlobalEnabled, Mode=TwoWay}"
-                                                          OffContent="全局关"
-                                                          OnContent="全局开"
-                                                          Visibility="{x:Bind GlobalSwitchVisibility, Mode=OneWay}"
-                                                          ToolTipService.ToolTip="全局开关 = 直接改插件文件名后缀（.addon64 ↔ .addon64x），ReShade 就加载不到它了 —— 影响所有游戏，不只是某一个" />
-                                            <Button Click="Button_Install_Click"
-                                                    Content="{x:Bind ActionText, Mode=OneWay}"
-                                                    IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
-                                            <Button Click="Button_Uninstall_Click"
-                                                    Content="删除"
-                                                    Visibility="{x:Bind InstalledVisibility, Mode=OneWay}" />
-                                        </StackPanel>
-                                    </Grid>
-
-                                    <ProgressBar Height="3"
-                                                 Maximum="100"
-                                                 Visibility="{x:Bind BusyVisibility, Mode=OneWay}"
-                                                 Value="{x:Bind ProgressPercent, Mode=OneWay}" />
-
-                                    <!--  点开才显示  -->
-                                    <StackPanel Spacing="4" Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}">
-                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind Description, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind VersionText, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                        <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind DiskOnlyHint, Mode=OneWay}"
-                                                   TextWrapping="Wrap"
-                                                   Visibility="{x:Bind DiskOnlyHintVisibility, Mode=OneWay}" />
-                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind StatusText, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind FilesText, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                        <!--  版本：下拉选一个装（用户要求「直接下拉选择插件版本」）  -->
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <ComboBox MinWidth="200"
-                                                      Header="版本"
-                                                      ItemsSource="{x:Bind Versions, Mode=OneWay}"
-                                                      PlaceholderText="点开卡片时自动获取"
-                                                      SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
-                                            <Button VerticalAlignment="Bottom"
-                                                    Click="Button_InstallVersion_Click"
-                                                    Content="装这个版本"
-                                                    IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
-                                        </StackPanel>
-                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind VersionsHint, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                        <HyperlinkButton Padding="0"
-                                                         Click="Hyperlink_Homepage_Click"
-                                                         Content="{x:Bind Homepage, Mode=OneWay}"
-                                                         Visibility="{x:Bind HomepageVisibility, Mode=OneWay}" />
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
-
-                <TextBlock x:Name="TextBlock_Empty"
-                           MaxWidth="420"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           Text="没有可管理的插件。"
-                           TextAlignment="Center"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed" />
-            </Grid>
-
-            <!--  插件文件视图：全局开关 = 重命名，影响所有游戏  -->
-            <Grid x:Name="Grid_AddonFiles" Visibility="Collapsed">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <InfoBar Grid.Row="0"
-                         Margin="0,0,0,6"
-                         IsClosable="False"
-                         IsOpen="True"
-                         Message="这里的开关是「重命名 .addon64 ↔ .addon64x」，ReShade 会直接扫不到这个文件 —— 影响所有游戏。只想对某个游戏关掉，请到左侧「插件」里按游戏设置。"
-                         Severity="Warning"
-                         Title="全局开关会影响所有游戏" />
-                <!--  汉化入口已按用户要求隐藏（挪到「设置 → 实验性功能」）；要恢复就把下面那段 ActionButton 放回来  -->
-
-                <Grid Grid.Row="1">
-                    <ListView x:Name="AddonFileList" Padding="0,0,0,8" SelectionMode="None">
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="local:AddonFileItemViewModel">
-                                <Border Margin="0,0,0,6"
-                                        Padding="14,10"
-                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="4">
-                                    <Grid ColumnSpacing="12">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <StackPanel Grid.Column="0" Spacing="2">
-                                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                                <TextBlock VerticalAlignment="Center"
-                                                           Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                           Text="{x:Bind Name, Mode=OneWay}" />
-                                                <Border Padding="6,1"
-                                                        VerticalAlignment="Center"
-                                                        Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                        CornerRadius="3"
-                                                        Visibility="{x:Bind DisabledVisibility, Mode=OneWay}">
-                                                    <TextBlock FontSize="11" Text="全局已禁用" />
-                                                </Border>
-                                                <Border Padding="6,1"
-                                                        VerticalAlignment="Center"
-                                                        Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
-                                                        CornerRadius="3"
-                                                        Visibility="{x:Bind DllRequiredVisibility, Mode=OneWay}">
-                                                    <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
-                                                </Border>
-                                                <Border Padding="6,1"
-                                                        VerticalAlignment="Center"
-                                                        Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                        CornerRadius="3"
-                                                        Visibility="{x:Bind DllRecommendedVisibility, Mode=OneWay}">
-                                                    <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
-                                                </Border>
-                                            </StackPanel>
-                                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                                       Text="{x:Bind MetaText, Mode=OneWay}"
-                                                       TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-
-                                        <StackPanel Grid.Column="1"
-                                                    Orientation="Horizontal"
-                                                    Spacing="8"
-                                                    VerticalAlignment="Center">
-                                            <ToggleSwitch MinWidth="0"
-                                                          VerticalAlignment="Center"
-                                                          IsOn="{x:Bind Enabled, Mode=TwoWay}"
-                                                          OffContent="全局关"
-                                                          OnContent="全局开"
-                                                          ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64 ↔ .addon64x）" />
-                                            <!--  汉化 / 还原这个插件文件（已按用户要求隐藏，入口挪到设置里的实验性功能）  -->
-                                            <Button MinWidth="0"
-                                                    Padding="8,3"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="Collapsed"
-                                                    Click="Button_LocalizeAddon_Click"
-                                                    ToolTipService.ToolTip="用翻译表把这行插件界面里的英文文本原地换成中文（只会换放得下的；换之前先自动备份，游戏重启后生效）">
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <FontIcon FontSize="13" Glyph="&#xE8C1;" />
-                                                    <TextBlock FontSize="12" Text="汉化" />
-                                                </StackPanel>
-                                            </Button>
-                                            <Button MinWidth="0"
-                                                    Padding="8,3"
-                                                    VerticalAlignment="Center"
-                                                    Click="Button_RestoreAddon_Click"
-                                                    Visibility="Collapsed"
-                                                    ToolTipService.ToolTip="从备份还原成原版插件">
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <FontIcon FontSize="13" Glyph="&#xE7A7;" />
-                                                    <TextBlock FontSize="12" Text="还原" />
-                                                </StackPanel>
-                                            </Button>
-                                            <!--  删除这个插件文件（有二级确认）  -->
-                                            <Button MinWidth="0"
-                                                    Padding="8,3"
-                                                    VerticalAlignment="Center"
-                                                    Click="Button_DeleteAddonFile_Click"
-                                                    ToolTipService.ToolTip="把这个插件文件从插件目录里删掉（会先弹一次确认），并清掉各游戏 ini 里指向它的条目">
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <FontIcon FontSize="13" Glyph="&#xE74D;" />
-                                                    <TextBlock FontSize="12" Text="删除" />
-                                                </StackPanel>
-                                            </Button>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-
-                    <TextBlock x:Name="TextBlock_AddonFilesEmpty"
-                               MaxWidth="420"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               Text="插件目录里没有 addon 文件。"
-                               TextAlignment="Center"
-                               TextWrapping="Wrap"
-                               Visibility="Collapsed" />
-                </Grid>
-            </Grid>
-
-            <!--  OptiScaler 视图：下载社区 NR 分支，同一时间只启用一个  -->
-            <Grid x:Name="Grid_OptiScaler" Visibility="Collapsed">
-                <ScrollViewer Padding="0,0,10,0">
-                    <StackPanel Spacing="10">
-                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="已下载" />
-                        <TextBlock x:Name="TextBlock_OptiScalerEmpty"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                   Text="还没有下载任何 OptiScaler。先在下面「可下载」里拉一个。"
-                                   TextWrapping="Wrap" />
-
-                        <ItemsControl x:Name="OptiScalerBuildList" ItemsSource="{x:Bind OptiScalerBuilds}">
+                        <!--  已装的扩展包：全局开关 + 点开改版本（切到别的 tag 就是装那个版本）  -->
+                        <ItemsControl x:Name="InstalledPluginList" ItemsSource="{x:Bind InstalledItems}">
                             <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
-                                    <Border Margin="0,0,0,6"
-                                            Padding="14,10"
-                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="4">
+                                <DataTemplate x:DataType="local:PluginItemViewModel">
+                                    <Border Style="{StaticResource CatalogCurrentCardStyle}">
+                                        <StackPanel Spacing="6">
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <Button Grid.Column="0"
+                                                        MinHeight="40"
+                                                        Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                        Click="Button_PluginHeader_Click"
+                                                        ToolTipService.ToolTip="点一下展开 / 收起（展开后可换版本）">
+                                                    <Grid ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel Grid.Column="0"
+                                                                    Orientation="Horizontal"
+                                                                    Spacing="8">
+                                                            <FontIcon VerticalAlignment="Center"
+                                                                      FontSize="12"
+                                                                      Glyph="{x:Bind ExpandGlyph}" />
+                                                            <TextBlock VerticalAlignment="Center"
+                                                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                       Text="{x:Bind Name}" />
+                                                            <ItemsControl VerticalAlignment="Center"
+                                                                          ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                          ItemsSource="{x:Bind Tags}">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+                                                            </ItemsControl>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind InstalledVisibility}">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                           Text="已安装" />
+                                                            </Border>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind UpdateBadgeVisibility}">
+                                                                <TextBlock FontSize="11" Text="{x:Bind UpdateBadgeText}" />
+                                                            </Border>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind DllRequiredVisibility}">
+                                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
+                                                            </Border>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind DllRecommendedVisibility}">
+                                                                <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
+                                                            </Border>
+                                                        </StackPanel>
+
+                                                        <TextBlock Grid.Column="1"
+                                                                   VerticalAlignment="Center"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                   Text="{x:Bind SummaryText}" />
+                                                    </Grid>
+                                                </Button>
+
+                                                <StackPanel Grid.Column="1"
+                                                            Orientation="Horizontal"
+                                                            Spacing="8"
+                                                            VerticalAlignment="Center">
+                                                    <ToggleSwitch MinWidth="0"
+                                                                  VerticalAlignment="Center"
+                                                                  IsEnabled="{x:Bind CanInteract}"
+                                                                  IsOn="{x:Bind GlobalEnabled, Mode=TwoWay}"
+                                                                  OffContent="全局关"
+                                                                  OnContent="全局开"
+                                                                  ToolTipService.ToolTip="全局开关 = 改这个插件文件名后缀（.addon64  .addon64x）"
+                                                                  Visibility="{x:Bind GlobalSwitchVisibility}" />
+                                                    <Button Click="Button_Install_Click"
+                                                            Content="{x:Bind ActionText}"
+                                                            IsEnabled="{x:Bind CanInteract}" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <ProgressBar Height="3"
+                                                         Maximum="100"
+                                                         Visibility="{x:Bind BusyVisibility}"
+                                                         Value="{x:Bind ProgressPercent}" />
+
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind Description}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind VersionText}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind DiskOnlyHint}"
+                                                           TextWrapping="Wrap"
+                                                           Visibility="{x:Bind DiskOnlyHintVisibility}" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind StatusText}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind FilesText}"
+                                                           TextWrapping="Wrap" />
+                                                <!--  版本：下拉选一个装（默认选中当前装着的那个），切版本 = 重新装那个 tag  -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <ComboBox MinWidth="200"
+                                                              Header="版本"
+                                                              DropDownOpened="ComboBox_PluginVersions_DropDownOpened"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开卡片时自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Bottom"
+                                                            Click="Button_InstallVersion_Click"
+                                                            Content="切换 / 重装这个版本"
+                                                            IsEnabled="{x:Bind CanInteract}" />
+                                                    <Button VerticalAlignment="Bottom"
+                                                            Click="Button_OpenPluginFolder_Click"
+                                                            Content="打开目录" />
+                                                    <Button VerticalAlignment="Bottom"
+                                                            Click="Button_Uninstall_Click"
+                                                            Content="删除" />
+                                                </StackPanel>
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind VersionsHint}"
+                                                           TextWrapping="Wrap" />
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_Homepage_Click"
+                                                                 Content="{x:Bind Homepage}"
+                                                                 Visibility="{x:Bind HomepageVisibility}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_PluginsCurrentEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="插件目录里没有插件。"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+
+                        <!--  用户在别处拿到的、目录条目认领不到的老插件文件：单独一截，保留逐个改名开关） -->
+                        <TextBlock x:Name="TextBlock_OrphanCaption"
+                                   Margin="0,6,0,0"
+                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                   Text="其它插件文件（目录里没匹配到条目）"
+                                   Visibility="Collapsed" />
+
+                        <ItemsControl x:Name="OrphanAddonFileList" ItemsSource="{x:Bind OrphanAddonFiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:AddonFileItemViewModel">
+                                    <Border Style="{StaticResource CatalogCardStyle}">
                                         <Grid ColumnSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -431,35 +362,32 @@
                                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                                     <TextBlock VerticalAlignment="Center"
                                                                Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                               Text="{x:Bind Title, Mode=OneWay}" />
+                                                               Text="{x:Bind Name}" />
                                                     <Border Padding="6,1"
                                                             VerticalAlignment="Center"
-                                                            Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
                                                             CornerRadius="3"
-                                                            Visibility="{x:Bind EnabledVisibility, Mode=OneWay}">
-                                                        <TextBlock FontSize="11"
-                                                                   Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                                                   Text="启用中" />
+                                                            Visibility="{x:Bind DisabledVisibility}">
+                                                        <TextBlock FontSize="11" Text="全局已禁用" />
                                                     </Border>
                                                     <Border Padding="6,1"
                                                             VerticalAlignment="Center"
                                                             Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
                                                             CornerRadius="3"
-                                                            Visibility="{x:Bind NoDllVisibility, Mode=OneWay}">
-                                                        <TextBlock FontSize="11" Text="包里没找到 OptiScaler.dll" />
+                                                            Visibility="{x:Bind DllRequiredVisibility}">
+                                                        <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
                                                     </Border>
-                                                    <!--  各分支手册都要求 nvngx_dlssnr.dll 躺在包旁边  -->
                                                     <Border Padding="6,1"
                                                             VerticalAlignment="Center"
                                                             Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
                                                             CornerRadius="3"
-                                                            Visibility="{x:Bind MissingNrdllVisibility, Mode=OneWay}">
-                                                        <TextBlock FontSize="11" Text="缺 nvngx_dlssnr.dll" />
+                                                            Visibility="{x:Bind DllRecommendedVisibility}">
+                                                        <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
                                                     </Border>
                                                 </StackPanel>
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
-                                                           Text="{x:Bind MetaText, Mode=OneWay}"
+                                                           Text="{x:Bind MetaText}"
                                                            TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
 
@@ -467,20 +395,45 @@
                                                         Orientation="Horizontal"
                                                         Spacing="8"
                                                         VerticalAlignment="Center">
-                                                <RadioButton MinWidth="0"
-                                                             VerticalAlignment="Center"
-                                                             Checked="RadioButton_OptiScalerBuild_Checked"
-                                                             Content="启用"
-                                                             GroupName="OptiScalerBuild"
-                                                             IsChecked="{x:Bind Enabled, Mode=TwoWay}" />
-                                                <Button Click="Button_PlaceOptiScalerNrdll_Click"
-                                                        Content="放入 nvngx_dlssnr.dll"
-                                                        ToolTipService.ToolTip="wilsjo2 / NeuRotic / DLSS NR on AMD 的手册都要求把 nvngx_dlssnr.dll 放在包旁边。这里从「DLL 配置」装好的插件目录复制一份到构建目录（已经有一份同样大小的就不动）。"
-                                                        Visibility="{x:Bind MissingNrdllVisibility, Mode=OneWay}" />
-                                                <Button Click="Button_OpenOptiScalerBuild_Click"
-                                                        Content="打开目录"
-                                                        IsEnabled="{x:Bind CanOpenFolder, Mode=OneWay}" />
-                                                <Button Click="Button_DeleteOptiScalerBuild_Click" Content="删除" />
+                                                <ToggleSwitch MinWidth="0"
+                                                              VerticalAlignment="Center"
+                                                              IsOn="{x:Bind Enabled, Mode=TwoWay}"
+                                                              OffContent="全局关"
+                                                              OnContent="全局开"
+                                                              ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64  .addon64x）" />
+                                                <!--  汉化 / 还原这个插件文件（已按用户要求隐藏，入口挪到设置里的实验性功能）  -->
+                                                <Button MinWidth="0"
+                                                        Padding="8,3"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="Collapsed"
+                                                        Click="Button_LocalizeAddon_Click"
+                                                            ToolTipService.ToolTip="用翻译表把这行插件界面里的英文文本原地换成中文">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <FontIcon FontSize="13" Glyph="&#xE8C1;" />
+                                                        <TextBlock FontSize="12" Text="汉化" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button MinWidth="0"
+                                                        Padding="8,3"
+                                                        VerticalAlignment="Center"
+                                                        Click="Button_RestoreAddon_Click"
+                                                        Visibility="Collapsed"
+                                                        ToolTipService.ToolTip="从备份还原成原版插件">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <FontIcon FontSize="13" Glyph="&#xE7A7;" />
+                                                        <TextBlock FontSize="12" Text="还原" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button MinWidth="0"
+                                                        Padding="8,3"
+                                                        VerticalAlignment="Center"
+                                                        Click="Button_DeleteAddonFile_Click"
+                                                            ToolTipService.ToolTip="把这个插件文件从插件目录里删掉（会先弹一次确认），并清掉各游戏 ini 里指向它的条目）">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                        <TextBlock FontSize="12" Text="删除" />
+                                                    </StackPanel>
+                                                </Button>
                                             </StackPanel>
                                         </Grid>
                                     </Border>
@@ -492,46 +445,565 @@
                                    Style="{ThemeResource BodyStrongTextBlockStyle}"
                                    Text="可下载" />
 
-                        <ItemsControl x:Name="OptiScalerSourceList" ItemsSource="{x:Bind OptiScalerSources}">
+                        <!--  还没装的扩展包：紧凑一行，点开才摊描述 / 安装  -->
+                        <ItemsControl x:Name="PluginList" ItemsSource="{x:Bind VisibleItems}">
                             <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="local:OptiScalerSourceItemViewModel">
-                                    <Border Margin="0,0,0,6"
-                                            Padding="14,10"
-                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="4">
+                                <DataTemplate x:DataType="local:PluginItemViewModel">
+                                    <Border Style="{StaticResource CatalogCardStyle}">
                                         <StackPanel Spacing="6">
-                                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Name, Mode=OneWay}" />
-                                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                                       Text="{x:Bind Description, Mode=OneWay}"
-                                                       TextWrapping="Wrap" />
-                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                    Click="Button_PluginHeader_Click"
+                                                    ToolTipService.ToolTip="点一下展开 / 收起">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="0"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8">
+                                                        <FontIcon VerticalAlignment="Center"
+                                                                  FontSize="12"
+                                                                  Glyph="{x:Bind ExpandGlyph}" />
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                   Text="{x:Bind Name}" />
+                                                        <ItemsControl VerticalAlignment="Center"
+                                                                      ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                      ItemsSource="{x:Bind Tags}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Column="1"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8"
+                                                                VerticalAlignment="Center">
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                   Text="{x:Bind SummaryText}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind Description}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind VersionText}"
+                                                           TextWrapping="Wrap" />
                                                 <ComboBox MinWidth="200"
                                                           Header="版本"
-                                                          DropDownOpened="ComboBox_OptiScalerVersions_DropDownOpened"
-                                                          ItemsSource="{x:Bind Versions, Mode=OneWay}"
-                                                          PlaceholderText="点开下拉自动获取版本"
+                                                          HorizontalAlignment="Left"
+                                                          DropDownOpened="ComboBox_PluginVersions_DropDownOpened"
+                                                          ItemsSource="{x:Bind Versions}"
+                                                          PlaceholderText="点开卡片时自动获取版本"
                                                           SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
-                                                <Button VerticalAlignment="Bottom"
-                                                        Click="Button_DownloadOptiScaler_Click"
-                                                        Content="{x:Bind ActionText, Mode=OneWay}"
-                                                        IsEnabled="{x:Bind CanInteract, Mode=OneWay}"
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind VersionsHint}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind StatusText}"
+                                                           TextWrapping="Wrap" />
+                                                <Button HorizontalAlignment="Left"
+                                                        Click="Button_InstallVersion_Click"
+                                                        Content="{x:Bind ActionText}"
+                                                        IsEnabled="{x:Bind CanInteract}"
                                                         Style="{ThemeResource AccentButtonStyle}" />
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_Homepage_Click"
+                                                                 Content="{x:Bind Homepage}"
+                                                                 Visibility="{x:Bind HomepageVisibility}" />
                                             </StackPanel>
-                                            <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                                       Text="{x:Bind StatusText, Mode=OneWay}"
-                                                       TextWrapping="Wrap" />
-                                            <HyperlinkButton Padding="0"
-                                                             Click="Hyperlink_OptiScalerRepo_Click"
-                                                             Content="{x:Bind Repository, Mode=OneWay}" />
                                         </StackPanel>
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_PluginsAvailableEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="目录里的插件都已经装上了。"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <!--  ===================== OptiScaler =====================  -->
+            <Grid x:Name="Grid_OptiScaler" Visibility="Collapsed">
+                <ScrollViewer Padding="0,0,6,0">
+                    <StackPanel Spacing="6">
+
+                        <TextBlock Margin="0,6,0,0" Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
+
+                        <ItemsControl x:Name="OptiScalerBuildList" ItemsSource="{x:Bind OptiScalerBuilds}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
+                                    <Border Style="{StaticResource CatalogCurrentCardStyle}">
+                                        <StackPanel Spacing="6">
+                                            <!--  标题行：点一下展开 / 收起（默认只占紧凑一行）  -->
+                                            <Button MinHeight="40"
+                                                    Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                    Click="Button_OptiScalerHeader_Click"
+                                                    ToolTipService.ToolTip="点一下展开 / 收起（展开后可换版本）">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="0"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8">
+                                                        <FontIcon VerticalAlignment="Center"
+                                                                  FontSize="12"
+                                                                  Glyph="{x:Bind ExpandGlyph}" />
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                   Text="{x:Bind Title}" />
+                                                        <ItemsControl VerticalAlignment="Center"
+                                                                      ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                      ItemsSource="{x:Bind Tags}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                        </ItemsControl>
+                                                        <Border Padding="6,1"
+                                                                VerticalAlignment="Center"
+                                                                Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                CornerRadius="3"
+                                                                Visibility="{x:Bind EnabledVisibility}">
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                       Text="使用中" />
+                                                        </Border>
+                                                        <Border Padding="6,1"
+                                                                VerticalAlignment="Center"
+                                                                Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                                CornerRadius="3"
+                                                                Visibility="{x:Bind NoDllVisibility}">
+                                                            <TextBlock FontSize="11" Text="包里找到 OptiScaler.dll" />
+                                                        </Border>
+                                                        <Border Padding="6,1"
+                                                                VerticalAlignment="Center"
+                                                                Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                                                CornerRadius="3"
+                                                                Visibility="{x:Bind MissingNrdllVisibility}">
+                                                            <TextBlock FontSize="11" Text="缺 nvngx_dlssnr.dll" />
+                                                        </Border>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Column="1"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8"
+                                                                VerticalAlignment="Center">
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                   Text="{x:Bind SummaryText}" />
+                                                        <ToggleSwitch MinWidth="0"
+                                                                      VerticalAlignment="Center"
+                                                                      IsOn="{x:Bind IsGloballyEnabled, Mode=TwoWay}"
+                                                                      OffContent="全局关"
+                                                                      OnContent="全局开"
+                                                                      Toggled="ToggleSwitch_OptiScalerBuildEnabled_Toggled"
+                                                                      ToolTipService.ToolTip="每个构建自己的全局开关：关掉后哪个游戏都用不了这个构建（启动时不注入）" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+
+                                            <!--  展开后：元信息 + 换版本 + 目录 / 删除 / nrdll  -->
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind MetaText}"
+                                                           TextWrapping="Wrap" />
+
+                                                <StackPanel Orientation="Horizontal"
+                                                            Spacing="8"
+                                                            Visibility="{x:Bind VersionSwitchVisibility}">
+                                                    <ComboBox MinWidth="220"
+                                                              Header="版本"
+                                                              DropDownOpened="ComboBox_OptiScalerVersions_DropDownOpened"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开下拉自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Bottom"
+                                                            Click="Button_DownloadOptiScaler_Click"
+                                                            Content="{x:Bind ActionText}"
+                                                            IsEnabled="{x:Bind CanInteract}"
+                                                            Style="{ThemeResource AccentButtonStyle}" />
+                                                </StackPanel>
+
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind StatusText}"
+                                                           TextWrapping="Wrap" />
+
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <Button Click="Button_PlaceOptiScalerNrdll_Click"
+                                                            Content="放入 nvngx_dlssnr.dll"
+                                                            ToolTipService.ToolTip="各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边。这里从「DLL 配置」装好的插件目录复制一份到构建目录"
+                                                            Visibility="{x:Bind MissingNrdllVisibility}" />
+                                                    <Button Click="Button_OpenOptiScalerBuild_Click"
+                                                            Content="打开目录"
+                                                            IsEnabled="{x:Bind CanOpenFolder}" />
+                                                    <Button Click="Button_DeleteOptiScalerBuild_Click" Content="删除" />
+                                                </StackPanel>
+
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_OptiScalerRepo_Click"
+                                                                 Content="{x:Bind Repository}"
+                                                                 Visibility="{x:Bind RepoVisibility}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_OptiScalerCurrentEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="还没有下载任何 OptiScaler。先在下面「可下载」里拉一个。"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+
+                        <TextBlock Margin="0,6,0,0"
+                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                   Text="可下载" />
+
+                        <ItemsControl x:Name="OptiScalerSourceList" ItemsSource="{x:Bind OptiScalerSources}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:OptiScalerSourceItemViewModel">
+                                    <Border Style="{StaticResource CatalogCardStyle}">
+                                        <StackPanel Spacing="6">
+                                            <!--  标题行：点一下展开 / 收起（默认只占紧凑一行）  -->
+                                            <Button Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                    Click="Button_OptiScalerHeader_Click"
+                                                    ToolTipService.ToolTip="点一下展开 / 收起">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="0"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8">
+                                                        <FontIcon VerticalAlignment="Center"
+                                                                  FontSize="12"
+                                                                  Glyph="{x:Bind ExpandGlyph}" />
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                   Text="{x:Bind Name}" />
+                                                        <ItemsControl VerticalAlignment="Center"
+                                                                      ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                      ItemsSource="{x:Bind Tags}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+
+                                                    <StackPanel Grid.Column="1"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8"
+                                                                VerticalAlignment="Center">
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                   Text="{x:Bind SummaryText}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Button>
+
+                                            <!--  展开后才是完整的可下载卡片  -->
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind Description}"
+                                                           TextWrapping="Wrap" />
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <ComboBox MinWidth="220"
+                                                              Header="版本"
+                                                              DropDownOpened="ComboBox_OptiScalerVersions_DropDownOpened"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开下拉自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Bottom"
+                                                            Click="Button_DownloadOptiScaler_Click"
+                                                            Content="{x:Bind ActionText}"
+                                                            IsEnabled="{x:Bind CanInteract}"
+                                                            Style="{ThemeResource AccentButtonStyle}" />
+                                                </StackPanel>
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind StatusText}"
+                                                           TextWrapping="Wrap" />
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_OptiScalerRepo_Click"
+                                                                 Content="{x:Bind Repository}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_OptiScalerAvailableEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="可下载的来源都已经装过一份了。"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+
+            <!--  ===================== 模块 =====================  -->
+            <Grid x:Name="Grid_Modules" Visibility="Collapsed">
+                <ScrollViewer Padding="0,0,6,0">
+                    <StackPanel Spacing="6">
+                        <!--  顶部按钮：添加 DLL / 打开模块目录 / 刷新  -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Click="Button_AddModuleDll_Click"
+                                    Content="添加 DLL…"
+                                    ToolTipService.ToolTip="手动加一个要注入的 DLL（内置模块表里没有的）" />
+                            <Button Click="Button_OpenModulesFolder_Click"
+                                    Content="打开模块目录"
+                                    ToolTipService.ToolTip="打开 &lt;用户数据目录&gt;\Modules" />
+                            <Button Click="Button_RefreshModules_Click" Content="刷新" />
+                        </StackPanel>
+
+                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
+
+                        <ItemsControl x:Name="ModuleList" ItemsSource="{x:Bind CurrentModules}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:ModuleItemViewModel">
+                                    <Border Style="{StaticResource CatalogCurrentCardStyle}">
+                                        <StackPanel Spacing="6">
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <Button Grid.Column="0"
+                                                        MinHeight="40"
+                                                        Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                        Click="Button_ModuleHeader_Click"
+                                                        ToolTipService.ToolTip="点一下展开 / 收起">
+                                                    <Grid ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel Grid.Column="0"
+                                                                    Orientation="Horizontal"
+                                                                    Spacing="8">
+                                                            <FontIcon VerticalAlignment="Center"
+                                                                      FontSize="12"
+                                                                      Glyph="{x:Bind ExpandGlyph}" />
+                                                            <TextBlock VerticalAlignment="Center"
+                                                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                       Text="{x:Bind Name}" />
+                                                            <ItemsControl VerticalAlignment="Center"
+                                                                          ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                          ItemsSource="{x:Bind Tags}">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+                                                            </ItemsControl>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                                                                    CornerRadius="3">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                           Text="{x:Bind KindText}" />
+                                                            </Border>
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind MissingDllVisibility}">
+                                                                <TextBlock FontSize="11" Text="文件不见了" />
+                                                            </Border>
+                                                        </StackPanel>
+
+                                                        <TextBlock Grid.Column="1"
+                                                                   VerticalAlignment="Center"
+                                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                   Text="{x:Bind SummaryText}" />
+                                                    </Grid>
+                                                </Button>
+
+                                                <StackPanel Grid.Column="1"
+                                                            Orientation="Horizontal"
+                                                            Spacing="8"
+                                                            VerticalAlignment="Center">
+                                                    <ToggleSwitch MinWidth="0"
+                                                                  VerticalAlignment="Center"
+                                                                  IsOn="{x:Bind GloballyEnabled, Mode=TwoWay}"
+                                                                  OffContent="全局关"
+                                                                  OnContent="全局开"
+                                                                  ToolTipService.ToolTip="全局开关；关掉的话哪个游戏都用不了这个模块" />
+                                                    <Button Click="Button_OpenModuleFolder_Click"
+                                                            Content="打开目录"
+                                                            Style="{StaticResource CatalogRowButtonStyle}" />
+                                                    <Button Click="Button_DeleteModule_Click"
+                                                            Content="删除"
+                                                            Style="{StaticResource CatalogRowButtonStyle}"
+                                                            ToolTipService.ToolTip="从手动模块列表里去掉（内置模块不给删）"
+                                                            Visibility="{x:Bind DeleteVisibility}" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind Description}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind DetailText}"
+                                                           TextWrapping="Wrap" />
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_Homepage_Click"
+                                                                 Content="{x:Bind Homepage}"
+                                                                 Visibility="{x:Bind HomepageVisibility}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_ModulesCurrentEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="还没有装任何模块。先在下面「可下载」里拉一个，或「添加 DLL…」"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
+
+                        <TextBlock Margin="0,6,0,0"
+                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                   Text="可下载" />
+
+                        <ItemsControl x:Name="ModuleDownloadList" ItemsSource="{x:Bind AvailableModules}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:ModuleDownloadItemViewModel">
+                                    <Border Style="{StaticResource CatalogCardStyle}">
+                                        <StackPanel Spacing="6">
+                                            <Button Style="{StaticResource CatalogHeaderButtonStyle}"
+                                                    Click="Button_ModuleDownloadHeader_Click"
+                                                    ToolTipService.ToolTip="点一下展开 / 收起">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="0"
+                                                                Orientation="Horizontal"
+                                                                Spacing="8">
+                                                        <FontIcon VerticalAlignment="Center"
+                                                                  FontSize="12"
+                                                                  Glyph="{x:Bind ExpandGlyph}" />
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                   Text="{x:Bind Name}" />
+                                                        <ItemsControl VerticalAlignment="Center"
+                                                                      ItemTemplate="{StaticResource CatalogTagTemplate}"
+                                                                      ItemsSource="{x:Bind Tags}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal" Spacing="4" />
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+
+                                                    <TextBlock Grid.Column="1"
+                                                               VerticalAlignment="Center"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                                               Text="可下载" />
+                                                </Grid>
+                                            </Button>
+
+                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind Description}"
+                                                           TextWrapping="Wrap" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind DetailText}"
+                                                           TextWrapping="Wrap" />
+                                                <ComboBox MinWidth="200"
+                                                          Header="版本"
+                                                          HorizontalAlignment="Left"
+                                                          ItemsSource="{x:Bind Versions}"
+                                                          PlaceholderText="点开卡片时自动获取版本"
+                                                          SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                <Button HorizontalAlignment="Left"
+                                                        Click="Button_DownloadModule_Click"
+                                                        Content="下载 / 更新"
+                                                        IsEnabled="{x:Bind CanInteract}"
+                                                        Style="{ThemeResource AccentButtonStyle}" />
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind StatusText}"
+                                                           TextWrapping="Wrap" />
+                                                <HyperlinkButton Padding="0"
+                                                                 Click="Hyperlink_Homepage_Click"
+                                                                 Content="{x:Bind LinkText}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="TextBlock_ModulesAvailableEmpty"
+                                   MaxWidth="420"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="目录里能装的模块都已经装上了。"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

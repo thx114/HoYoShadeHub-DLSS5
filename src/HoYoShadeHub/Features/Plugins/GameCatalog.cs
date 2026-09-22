@@ -171,6 +171,15 @@ internal static class GameCatalog
     /// <summary>同一张画面的静帧 —— 选择界面那张卡片只认图片，动图给它会是一片空白</summary>
     public const string AzurPromiliaPoster = "azurpromilia.jpg";
 
+    /// <summary>鸣潮的循环视频背景（1080p / 无音轨，随包）</summary>
+    public const string WutheringWavesVideo = "wutheringwaves.mp4";
+
+    /// <summary>鸣潮视频的首帧 —— 视频不在时兜底，选择界面那张卡片也只认图片</summary>
+    public const string WutheringWavesPoster = "wutheringwaves.jpg";
+
+    /// <summary>明日方舟：终末地的 KV 背景图（1920x1920 方图裁成 16:9 再压过）</summary>
+    public const string EndfieldBackground = "endfield.jpg";
+
     /// <summary>随包资源在盘上的全路径</summary>
     public static string BuiltinBackgroundPath(string fileName) =>
         Path.Combine(AppContext.BaseDirectory, "Assets", BuiltinBackgroundFolder, fileName);
@@ -195,28 +204,114 @@ internal static class GameCatalog
                || label.Contains("Azur Promilia", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>这条自定义游戏是不是鸣潮（看 exe 名 / 显示名，认不出就 false）</summary>
+    public static bool IsWutheringWaves(GameEntry entry)
+    {
+        if (!entry.IsCustom)
+        {
+            return false;
+        }
+
+        if (entry.ExePath is { } exe &&
+            string.Equals(Path.GetFileName(exe), "Wuthering Waves.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string name = Path.GetFileNameWithoutExtension(entry.ExePath ?? string.Empty);
+        string label = entry.DisplayName ?? string.Empty;
+        return name.Contains("Wuthering", StringComparison.OrdinalIgnoreCase)
+               || label.Contains("Wuthering", StringComparison.OrdinalIgnoreCase)
+               || label.Contains("鸣潮", StringComparison.Ordinal);
+    }
+
+    /// <summary>这条自定义游戏是不是明日方舟：终末地（看 exe 名 / 显示名，认不出就 false）</summary>
+    public static bool IsEndfield(GameEntry entry)
+    {
+        if (!entry.IsCustom)
+        {
+            return false;
+        }
+
+        if (entry.ExePath is { } exe &&
+            string.Equals(Path.GetFileName(exe), "Endfield.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string name = Path.GetFileNameWithoutExtension(entry.ExePath ?? string.Empty);
+        string label = entry.DisplayName ?? string.Empty;
+        return name.Contains("Endfield", StringComparison.OrdinalIgnoreCase)
+               || label.Contains("Endfield", StringComparison.OrdinalIgnoreCase)
+               || label.Contains("终末地", StringComparison.Ordinal);
+    }
+
     /// <summary>
-    /// 用户加蓝色星原就自动带上这段背景（用户要求）：把随包的 mp4 复制到
-    /// <c>&lt;用户数据目录&gt;\bg\</c>，再写成这个游戏的 <c>custom_bg_</c> 设置。
-    /// 用户自己设过背景就不动他的。
+    /// 这条自定义游戏随包背景的文件名；不是内置支持的游戏 / 资源不在就返回 null。
+    /// 鸣潮同蓝色星原：随包动图直接播，视频不在才退回首帧图；终末地只有图片；
+    /// 蓝色星原沿用原来的动图（那一套一直无视这个开关，见 GAMES-AND-INJECT.md §8.9）。
+    /// </summary>
+    public static string? BuiltinBackgroundAssetName(GameEntry entry)
+    {
+        if (IsAzurPromilia(entry))
+        {
+            return File.Exists(BuiltinBackgroundPath(AzurPromiliaVideo)) ? AzurPromiliaVideo : null;
+        }
+
+        if (IsWutheringWaves(entry))
+        {
+            // 跟蓝色星原一样：这是随包带的（用户点名要的）动图背景，直接播视频；
+            // 视频文件不在才退回首帧图。
+            if (File.Exists(BuiltinBackgroundPath(WutheringWavesVideo)))
+            {
+                return WutheringWavesVideo;
+            }
+
+            return File.Exists(BuiltinBackgroundPath(WutheringWavesPoster)) ? WutheringWavesPoster : null;
+        }
+
+        if (IsEndfield(entry))
+        {
+            return File.Exists(BuiltinBackgroundPath(EndfieldBackground)) ? EndfieldBackground : null;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 这个文件名是不是**我们自己铺的**内置背景（用来跟用户自己设的背景区分）：
+    /// 是的话允许重新铺一遍，不是的话绝不覆盖用户的选择。
+    /// </summary>
+    public static bool IsBuiltinBackgroundAsset(string? fileName) =>
+        string.Equals(fileName, WutheringWavesVideo, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, WutheringWavesPoster, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, EndfieldBackground, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 用户加这几款游戏（蓝色星原 / 鸣潮 / 明日方舟：终末地）就自动带上随包背景：
+    /// 把资源复制到 <c>&lt;用户数据目录&gt;\bg\</c>，再写成这个游戏的 <c>custom_bg_</c> 设置。
+    /// 用户自己设过背景就不动他的；当前用的正是我们铺的内置资源时允许重铺（随包资源换过也能跟上）。
     /// </summary>
     public static void ApplyBuiltinBackground(GameEntry entry)
     {
         try
         {
-            if (!IsAzurPromilia(entry))
+            if (BuiltinBackgroundAssetName(entry) is not { } assetName
+                || string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
             {
                 return;
             }
 
             GameBiz biz = entry.CustomBiz;
-            if (AppConfig.GetEnableCustomBg(biz) && !string.IsNullOrWhiteSpace(AppConfig.GetCustomBg(biz)))
+            string? current = AppConfig.GetCustomBg(biz);
+            if (AppConfig.GetEnableCustomBg(biz) && !string.IsNullOrWhiteSpace(current)
+                && !IsBuiltinBackgroundAsset(current))
             {
                 return;
             }
 
-            string source = BuiltinBackgroundPath(AzurPromiliaVideo);
-            if (!File.Exists(source) || string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
+            string source = BuiltinBackgroundPath(assetName);
+            if (!File.Exists(source))
             {
                 return;
             }
@@ -224,13 +319,13 @@ internal static class GameCatalog
             string directory = Path.Combine(AppConfig.UserDataFolder, "bg");
             Directory.CreateDirectory(directory);
 
-            string target = Path.Combine(directory, AzurPromiliaVideo);
+            string target = Path.Combine(directory, assetName);
             if (!File.Exists(target) || new FileInfo(target).Length != new FileInfo(source).Length)
             {
                 File.Copy(source, target, overwrite: true);
             }
 
-            AppConfig.SetCustomBg(biz, AzurPromiliaVideo);
+            AppConfig.SetCustomBg(biz, assetName);
             AppConfig.SetEnableCustomBg(biz, true);
         }
         catch
@@ -245,19 +340,21 @@ internal static class GameCatalog
     /// </summary>
     public static string? CardBackgroundFor(GameEntry entry, string? customBgPath)
     {
-        if (!IsAzurPromilia(entry))
+        if (customBgPath is null || !BackgroundService.FileIsSupportedVideo(customBgPath))
         {
             return null;
         }
 
-        bool customIsVideo = customBgPath is not null
-                             && BackgroundService.FileIsSupportedVideo(customBgPath);
-        if (!customIsVideo)
+        // 有视频背景的游戏各配一张静帧；终末地本来就是图片，走不到这里
+        string? posterName = IsAzurPromilia(entry) ? AzurPromiliaPoster
+            : IsWutheringWaves(entry) ? WutheringWavesPoster
+            : null;
+        if (posterName is null)
         {
             return null;
         }
 
-        string poster = BuiltinBackgroundPath(AzurPromiliaPoster);
+        string poster = BuiltinBackgroundPath(posterName);
         return File.Exists(poster) ? poster : null;
     }
 

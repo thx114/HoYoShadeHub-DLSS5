@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<sf:PageBase x:Class="HoYoShadeHub.Features.OptiScaler.OptiScalerPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:local="using:HoYoShadeHub.Features.OptiScaler"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:sf="using:HoYoShadeHub.Frameworks"
+             x:DefaultBindMode="OneWay"
+             mc:Ignorable="d">
+
+    <Grid Padding="36,4,36,12" RowSpacing="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="2">
+            <TextBlock FontSize="28" FontWeight="SemiBold" Text="OptiScaler" />
+            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="这个游戏用哪个 OptiScaler 构建（单选）。没选 = 这个游戏不注入。「全局开关」和「下载 / 删除构建」在左下角「全局插件 → OptiScaler」里。"
+                       TextWrapping="Wrap" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
+            <TextBlock x:Name="TextBlock_Game"
+                       VerticalAlignment="Center"
+                       Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            <Button Click="Button_Refresh_Click" Content="刷新" />
+            <Button Click="Button_OpenLibrary_Click" Content="打开 OptiScaler 目录" />
+            <Button Click="Button_ClearChoice_Click" Content="这个游戏不注入" />
+            <TextBlock x:Name="TextBlock_Count"
+                       VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        </StackPanel>
+
+        <!--  单选：用 ListView 管选中（RadioButton 只负责显示那个圈）。
+              注意：RadioButtons 的 SelectionChanged、以及 DataTemplate 里的 Toggled 会让
+              WinUI 的 XamlTypeInfo 生成器直接崩（MarkupCompilePass1 静默 exit 1），所以这里绕开它们。  -->
+        <ListView x:Name="ListView_Builds"
+                  Grid.Row="2"
+                  SelectionMode="Single"
+                  SelectionChanged="ListView_Builds_SelectionChanged">
+            <ListView.ItemTemplate>
+                <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
+                    <Grid ColumnSpacing="10" Padding="0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <RadioButton Grid.Column="0"
+                                     VerticalAlignment="Center"
+                                     GroupName="OptiScalerBuild"
+                                     IsChecked="{x:Bind IsSelected, Mode=OneWay}"
+                                     IsHitTestVisible="False" />
+
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Title}" />
+                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Text="{x:Bind Detail}"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Text="{x:Bind TagsText}" />
+                            <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Text="这个包里没有 OptiScaler.dll"
+                                       Visibility="{x:Bind DllMissingVisibility}" />
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <TextBlock x:Name="TextBlock_Status"
+                   Grid.Row="3"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   TextWrapping="Wrap" />
+    </Grid>
+
+</sf:PageBase>

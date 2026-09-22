@@ -1,4 +1,5 @@
 using HoYoShadeHub.Extensions.Networking;
+using HoYoShadeHub.Features.Modules;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
@@ -19,7 +20,7 @@ internal static class RemoteCatalogDefaults
 }
 
 /// <summary>一次拉取的结果</summary>
-internal sealed record RemoteCatalogResult(bool Fetched, bool PluginsUpdated, bool OptiScalerUpdated, string Message);
+internal sealed record RemoteCatalogResult(bool Fetched, bool PluginsUpdated, bool OptiScalerUpdated, bool ModulesUpdated, string Message);
 
 /// <summary>
 /// 远端目录（插件 + OptiScaler）的拉取与缓存。
@@ -50,6 +51,9 @@ internal static class RemoteCatalogService
 
     public static string OptiScalerCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "optiscaler.json");
 
+    /// <summary>模块目录（catalog/modules.json）的缓存</summary>
+    public static string ModulesCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "modules.json");
+
     /// <summary>离上次成功拉取超过 24 小时（或者从没拉过）</summary>
     public static bool IsRefreshDue => DateTimeOffset.UtcNow - AppConfig.LastCatalogFetchUtc > _interval;
 
@@ -68,14 +72,17 @@ internal static class RemoteCatalogService
 
     public static async Task<RemoteCatalogResult> RefreshAsync(bool force, CancellationToken cancellationToken = default)
     {
+        // 不管这次拉不拉，都先把缓存里的模块目录应用上（打开页面就能用）
+        ModuleCatalogFile.Apply(ModulesCachePath);
+
         if (!force && !IsRefreshDue)
         {
-            return new RemoteCatalogResult(false, false, false, "还没到 24 小时，先不拉。");
+            return new RemoteCatalogResult(false, false, false, false, "还没到 24 小时，先不拉。");
         }
 
         if (CacheDirectory.Length == 0)
         {
-            return new RemoteCatalogResult(false, false, false, "还没读到用户数据目录。");
+            return new RemoteCatalogResult(false, false, false, false, "还没读到用户数据目录。");
         }
 
         Directory.CreateDirectory(CacheDirectory);
@@ -84,19 +91,22 @@ internal static class RemoteCatalogService
 
         bool plugins = await TryDownloadAsync(client, "plugins.json", PluginsCachePath, cancellationToken);
         bool optiScaler = await TryDownloadAsync(client, "optiscaler.json", OptiScalerCachePath, cancellationToken);
+        bool modules = await TryDownloadAsync(client, "modules.json", ModulesCachePath, cancellationToken);
 
-        // 两个都没拿到就不盖时间戳，下次还会再试
-        if (!plugins && !optiScaler)
+        // 一个都没拿到就不盖时间戳，下次还会再试
+        if (!plugins && !optiScaler && !modules)
         {
             _logger.LogWarning("Remote catalog fetch failed (base = {Base})", BaseUrl);
-            return new RemoteCatalogResult(false, false, false, "拉取失败（网络不通或仓库里还没有 catalog/ 文件）。");
+            return new RemoteCatalogResult(false, false, false, false, "拉取失败（网络不通或仓库里还没有 catalog/ 文件）。");
         }
 
-        AppConfig.LastCatalogFetchUtc = DateTimeOffset.UtcNow;
-        _logger.LogInformation("Remote catalog fetched: plugins={Plugins}, optiscaler={Opti}", plugins, optiScaler);
+        ModuleCatalogFile.Apply(ModulesCachePath);
 
-        return new RemoteCatalogResult(true, plugins, optiScaler,
-            $"目录已更新：插件 {(plugins ? "✓" : "—")}，OptiScaler {(optiScaler ? "✓" : "—")}。");
+        AppConfig.LastCatalogFetchUtc = DateTimeOffset.UtcNow;
+        _logger.LogInformation("Remote catalog fetched: plugins={Plugins}, optiscaler={Opti}, modules={Modules}", plugins, optiScaler, modules);
+
+        return new RemoteCatalogResult(true, plugins, optiScaler, modules,
+            $"目录已更新：插件 {(plugins ? "✓" : "—")}，OptiScaler {(optiScaler ? "✓" : "—")}，模块 {(modules ? "✓" : "—")}。");
     }
 
     /// <summary>下载一个文件，成功才覆盖（先写临时文件再搬过去，避免半截文件）。</summary>

@@ -137,6 +137,14 @@ public sealed class ExtensionCatalogService
                 continue;
             }
 
+            // 墓碑：远端把这条删了
+            if (manifest.Removed)
+            {
+                map.Remove(manifest.Id);
+                order.RemoveAll(id => string.Equals(id, manifest.Id, StringComparison.OrdinalIgnoreCase));
+                continue;
+            }
+
             if (map.ContainsKey(manifest.Id))
             {
                 map[manifest.Id] = manifest;

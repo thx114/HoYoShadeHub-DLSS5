@@ -194,27 +194,40 @@ internal static class NvidiaDriverCheck
 
             foreach (string name in controllers.GetSubKeyNames())
             {
-                using RegistryKey? key = controllers.OpenSubKey(name);
-                if (key?.GetValue("DriverVersion") is not string raw)
+                if (name.Length != 4 || !name.All(char.IsDigit))
                 {
+                    // Properties 子键 ACL 拒绝普通用户读取；只有 4 位数字子键是适配器实例
                     continue;
                 }
 
-                // 必须确认这块适配器是 NVIDIA —— 本机第一块是 AMD Radeon 610M，
-                // 用「以 3 开头」这种松判断会把它的 32.0.12011.1010 算成 110.10
-                string provider = key.GetValue("ProviderName") as string ?? string.Empty;
-                string description = key.GetValue("DriverDesc") as string ?? string.Empty;
-                bool isNvidia = provider.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
-                                || description.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
-                if (!isNvidia)
+                try
                 {
-                    continue;
-                }
+                    using RegistryKey? key = controllers.OpenSubKey(name);
+                    if (key?.GetValue("DriverVersion") is not string raw)
+                    {
+                        continue;
+                    }
 
-                string? converted = ConvertDriverVersion(raw);
-                if (converted is not null)
+                    // 必须确认这块适配器是 NVIDIA —— 本机第一块是 AMD Radeon 610M，
+                    // 用「以 3 开头」这种松判断会把它的 32.0.12011.1010 算成 110.10
+                    string provider = key.GetValue("ProviderName") as string ?? string.Empty;
+                    string description = key.GetValue("DriverDesc") as string ?? string.Empty;
+                    bool isNvidia = provider.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase)
+                                    || description.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
+                    if (!isNvidia)
+                    {
+                        continue;
+                    }
+
+                    string? converted = ConvertDriverVersion(raw);
+                    if (converted is not null)
+                    {
+                        return converted;
+                    }
+                }
+                catch
                 {
-                    return converted;
+                    // 单个适配器键读不了就跳过
                 }
             }
         }

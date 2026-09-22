@@ -701,66 +701,79 @@
             <TextBlock Text="{x:Bind lang:Lang.GameLauncherPage_LaunchOptions}"
                        FontSize="12"
                        FontWeight="SemiBold"
-                       Margin="0,0,0,8"
+                       Margin="0,0,0,4"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            
+
+            <!--  启动游戏：现在默认就启动游戏，这条不再显示（点了没别的选择）  -->
             <CheckBox x:Name="CheckBox_EnableGameLaunch"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchGame}"
                       IsChecked="{x:Bind EnableGameLaunch, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsGameLaunchCheckboxEnabled}"
-                      Margin="0,4"
-                      FontWeight="SemiBold" />
-            
-            <CheckBox x:Name="CheckBox_UseStarwardLauncher"
-                      Content="{x:Bind lang:Lang.GameLauncherPage_LaunchWithStarward}"
-                      IsChecked="{x:Bind UseStarwardLauncher, Mode=TwoWay}"
-                      IsEnabled="{x:Bind IsStarwardLauncherCheckboxEnabled}"
-                      Visibility="{x:Bind IsStarwardLauncherCheckboxVisible}"
-                      Margin="0,4"
-                      FontWeight="SemiBold" />
-            
+                      Margin="0,1"
+                      FontWeight="SemiBold"
+                      Visibility="Collapsed" />
+
+            <!--  模型替换（XXMI）：交给 XXMI Launcher 的命令行在后台启动
+                  （XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n），注入由它完成
+                  （它那份 d3d11.dll 是受控版，只有它能驱动）；我们只管 ReShade 那一头。
+                  XXMI 不支持的游戏不显示这条。  -->
+            <CheckBox x:Name="CheckBox_UseXxmiInject"
+                      Content="启用XXMI"
+                      IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
+                      IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
+                      Margin="0,1"
+                      Visibility="{x:Bind XxmiInjectVisibility, Mode=OneWay}"
+                      ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
+
+            <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
+            <CheckBox x:Name="CheckBox_UseModules"
+                      Content="启用模块"
+                      IsChecked="{x:Bind UseModules, Mode=TwoWay}"
+                      Margin="0,1"
+                      ToolTipService.ToolTip="启动游戏时把左侧「模块」页里开着的模块注进游戏进程。只影响这一个游戏。" />
+
+            <!--  OptiScaler：构建在左侧「OptiScaler」页按游戏选，总开关和下载在「全局插件 → OptiScaler」  -->
+            <CheckBox x:Name="CheckBox_UseOptiScaler"
+                      Content="启用OptiScaler"
+                      IsChecked="{x:Bind UseOptiScaler, Mode=TwoWay}"
+                      IsEnabled="{x:Bind IsOptiScalerAvailable, Mode=OneWay}"
+                      Margin="0,1"
+                      ToolTipService.ToolTip="启动游戏时把这个游戏选中的 OptiScaler 注入进程。选哪个构建在左侧「OptiScaler」页；没装任何构建时这项点不了。只影响这一个游戏。" />
+
             <CheckBox x:Name="CheckBox_UseHoYoShade"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchHoYoShade}"
                       IsChecked="{x:Bind UseHoYoShade, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsHoYoShadeInstalled}"
-                      Margin="0,4" />
-            
+                      Margin="0,1" />
+
             <CheckBox x:Name="CheckBox_UseOpenHoYoShade"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchOpenHoYoShade}"
                       IsChecked="{x:Bind UseOpenHoYoShade, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsOpenHoYoShadeInstalled}"
-                      Margin="0,4" />
-            
-            <!--  OptiScaler：启动时把「全局插件 → OptiScaler」里启用的那个构建注入游戏进程  -->
-            <CheckBox x:Name="CheckBox_UseOptiScaler"
-                      Content="启动 OptiScaler"
-                      IsChecked="{x:Bind UseOptiScaler, Mode=TwoWay}"
-                      IsEnabled="{x:Bind IsOptiScalerAvailable, Mode=OneWay}"
-                      Margin="0,4"
-                      ToolTipService.ToolTip="启动游戏时把选中的 OptiScaler 注入游戏进程（内容是 OptiScaler.dll）。选哪个构建在「全局插件 → OptiScaler」里，同一时间只能启用一个。只影响这一个游戏。" />
+                      Margin="0,1" />
 
-            <!--  XXMI 注入（实验性）：把 XXMI 实例里的 3DMigoto d3d11.dll 注入游戏进程  -->
-            <!--  模型替换：交给 XXMI Launcher 的命令行在后台启动（XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n），
-                  注入由它完成（它那份 d3d11.dll 是受控版，只有它能驱动）；我们只管 ReShade 那一头。  -->
-            <CheckBox x:Name="CheckBox_UseXxmiInject"
-                      Content="启用XXMI"
-                      IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
-                      Margin="0,4"
-                      ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
+            <!--  使用 Starward 启动器：先藏起来（留着代码，以后要用再说）  -->
+            <CheckBox x:Name="CheckBox_UseStarwardLauncher"
+                      Content="{x:Bind lang:Lang.GameLauncherPage_LaunchWithStarward}"
+                      IsChecked="{x:Bind UseStarwardLauncher, Mode=TwoWay}"
+                      IsEnabled="{x:Bind IsStarwardLauncherCheckboxEnabled}"
+                      Visibility="Collapsed"
+                      Margin="0,1"
+                      FontWeight="SemiBold" />
 
             <CheckBox x:Name="CheckBox_LaunchGenshinBlenderPlugin"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchGenshinBlenderPlugin}"
                       IsChecked="{x:Bind LaunchGenshinBlenderPlugin, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsGenshinBlenderPluginConfigured}"
                       Visibility="{x:Bind IsGenshinBlenderPluginVisible}"
-                      Margin="0,4" />
-            
+                      Margin="0,1" />
+
             <CheckBox x:Name="CheckBox_LaunchZZZBlenderPlugin"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchZZZBlenderPlugin}"
                       IsChecked="{x:Bind LaunchZZZBlenderPlugin, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsZZZBlenderPluginConfigured}"
                       Visibility="{x:Bind IsZZZBlenderPluginVisible}"
-                      Margin="0,4" />
+                      Margin="0,1" />
         </StackPanel>
 
     </Grid>

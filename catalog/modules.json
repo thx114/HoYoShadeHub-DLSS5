@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-09-22T00:00:00Z",
+  "_readme": [
+    "远端模块目录：模块 = 启动游戏时要注入进程的独立 DLL（DLSS-NR on AMD 这类），不是 ReShade 插件、也不是 OptiScaler。",
+    "不重新发版也能加/改模块：按 id 覆盖内置的同 id 模块，新 id 直接追加；{ \"id\": \"...\", \"removed\": true } 表示删掉（墓碑）。",
+    "字段：id / name / description / repository(owner/repo) / tagPattern / homepage / dllHint(要注入的 dll 文件名) / tags。",
+    "下载走和 OptiScaler 一样的下载器：release 里的 .zip 会解压到模块目录，.exe 会先问一句再运行（官方安装程序）。",
+    "改完跑一遍扩展自测的 --online（它会解析每个来源的 tag / 资产）。"
+  ],
+  "modules": [
+    {
+      "id": "dlssnr-amd",
+      "name": "DLSS-NR on AMD",
+      "description": "A 卡用的 DLSS 神经渲染分支。它只发官方安装程序：点「下载」会先问一句，然后运行它 —— 装到模块目录即可。装完那里会有 version.dll；某个游戏要用它就到左侧「模块」页勾上。",
+      "repository": "danielblnc/DLSS-NR-on-AMD",
+      "tagPattern": "^v?\\d",
+      "homepage": "https://github.com/danielblnc/DLSS-NR-on-AMD/releases",
+      "dllHint": "version.dll",
+      "tags": ["dlssnr", "amd", "neural"]
+    },
+    {
+      "id": "dlssg-sm86",
+      "name": "DLSSG for SM86（RTX 30/20 帧生成）",
+      "description": "在 RTX 30 系（SM86）和 20 系（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G），Windows x64 / D3D12。运行文件是 version.dll + dlssg_sm86.ini；生成帧数量、优化档位都写在 ini 里（MaxGeneratedFrames 3=4X / 5=6X）。这个仓库不发 Release 资产，文件直接在仓库树里（根目录 = 310.9 版，310.1/ = 老版运行库），所以用 directFiles 直下。",
+      "repository": "sdli1995/dlssg_for_sm86",
+      "tagPattern": "^\\d",
+      "homepage": "https://github.com/sdli1995/dlssg_for_sm86",
+      "dllHint": "version.dll",
+      "directFiles": ["version.dll", "dlssg_sm86.ini"],
+      "branch": "main",
+      "tags": ["dlssg", "framegen", "rtx20", "rtx30"]
+    },
+    {
+      "id": "mfg-unlock",
+      "name": "MFG Unlock（多帧生成解锁）",
+      "description": "matiasLombo 的 mfg-unlock：解锁多帧生成（MFG），release 直接发 version.dll。下载后到某个游戏的「模块」页勾上即会注入。",
+      "repository": "matiasLombo/mfg-unlock",
+      "tagPattern": "^v\\d",
+      "homepage": "https://github.com/matiasLombo/mfg-unlock/releases",
+      "dllHint": "version.dll",
+      "tags": ["mfg", "framegen"]
+    }
+  ]
+}

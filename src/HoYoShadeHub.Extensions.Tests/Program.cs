@@ -7,6 +7,7 @@ using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
 using System.IO.Compression;
+using System.Text.Json;
 
 // 临时诊断入口：`-- localize-dump <addon 路径>`
 // 用真正的 AddonLocalizer 打一遍，然后把所有含中文的字符串打出来 —— 验证输出干不干净
@@ -293,8 +294,10 @@ var builtin = ExtensionCatalogService.LoadBuiltin();
 Check(builtin.Extensions.Length >= 6, $"内置目录有 {builtin.Extensions.Length} 个条目");
 Check(builtin.Extensions.All(e => e.IsValid), "所有内置条目都通过 IsValid 校验");
 Check(builtin.Extensions.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == builtin.Extensions.Length, "id 无重复");
-string[] expectedIds = ["renodx.hkrpg", "renodx.dlss5", "renodx.dlss5.superanus", "renodx.dlss.sf", "renodx.ue.doffix", "dlss5.neural.interposer", "hoyoshade.presets"];
-Check(expectedIds.All(id => builtin.Extensions.Any(e => e.Id == id)), "七款插件条目齐全（含 thx114/hoyodlss5 的 Neural Interposer）");
+// renodx.hkrpg（RenoDX 星铁）按用户要求删掉了，不再断言它
+string[] expectedIds = ["renodx.dlss5", "renodx.dlss5.superanus", "renodx.dlss.sf", "renodx.ue.doffix", "dlss5.neural.interposer", "dlss5.bridge", "hoyoshade.presets"];
+Check(expectedIds.All(id => builtin.Extensions.Any(e => e.Id == id)), "内置插件条目齐全（含 thx114/hoyodlss5 的 Neural Interposer）");
+Check(builtin.Extensions.All(e => e.Id != "renodx.hkrpg"), "renodx.hkrpg（RenoDX 星铁）已按用户要求删除");
 
 // 「只管理插件」：全局插件页只列会装 addon 的扩展包，滤镜/预设那条不该出现
 Check(builtin.Extensions.First(e => e.Id == "hoyoshade.presets").Rules.All(r => !r.To.Contains("Addons")),
@@ -303,14 +306,14 @@ Check(builtin.Extensions.First(e => e.Id == "hoyoshade.presets").Rules.All(r => 
 var dlss5 = builtin.Extensions.First(e => e.Id == "renodx.dlss5");
 var dlssSf = builtin.Extensions.First(e => e.Id == "renodx.dlss.sf");
 var ueDof = builtin.Extensions.First(e => e.Id == "renodx.ue.doffix");
-var hkrpg = builtin.Extensions.First(e => e.Id == "renodx.hkrpg");
 
 // 同一个仓库里多个插件族必须靠 tagPattern 区分开
 Check(dlss5.Source.Repository == dlssSf.Source.Repository, "rhi-repo 里的多个插件族来自同一仓库");
 Check(!System.Text.RegularExpressions.Regex.IsMatch("renodx-dlss-SF-26.0917.1436", dlss5.Source.TagPattern!), "renodx-dlss5- 的 tagPattern 不会误吞 renodx-dlss-SF-");
 Check(GlobMatcher.IsMatch(dlssSf.Source.AssetPattern!, "renodx-dlss_SF_26.0917.1436.zip"), "renodx-dlss-SF 资产名匹配");
 Check(GlobMatcher.IsMatch(ueDof.Source.AssetPattern!, "renodx-universal_ue-dof-fix.addon64"), "ue-dof-fix 资产名匹配（是裸 addon 不是 zip）");
-Check(!string.IsNullOrWhiteSpace(hkrpg.Source.AssetName), "renodx.hkrpg 用 assetName 走 atom 快路径（避开 renodx 仓库的巨大 JSON）");
+Check(!string.IsNullOrWhiteSpace(builtin.Extensions.First(e => e.Id == "dlss5.bridge").Source.AssetName),
+    "dlss5.bridge 用 assetName 走 atom 快路径（避开 renodx 仓库的巨大 JSON）");
 
 // 互斥必须成对声明，否则用户先装哪个决定能不能装另一个
 foreach (var entry in builtin.Extensions.Where(e => e.ConflictsWith is { Length: > 0 }))
@@ -499,6 +502,13 @@ if (args.Contains("--online"))
 
             foreach (ExtensionManifest remoteEntry in remoteDoc?.Extensions ?? [])
             {
+                // 墓碑（removed: true）只是个占位，没有 source / rules，不算不完整
+                if (remoteEntry.Removed)
+                {
+                    Check(!string.IsNullOrWhiteSpace(remoteEntry.Id), "[远端] 墓碑条目带 id");
+                    continue;
+                }
+
                 Check(remoteEntry.IsValid, $"[远端] {remoteEntry.Id} 清单完整（id / source / rules）");
                 if (!remoteEntry.IsValid || remoteEntry.Source.Type != ExtensionSourceType.GithubRelease)
                 {
@@ -525,6 +535,56 @@ if (args.Contains("--online"))
                 catch (Exception ex)
                 {
                     Check(false, $"[远端] {remoteEntry.Id}: {ex.GetType().Name} {ex.Message}");
+                }
+            }
+        }
+
+        string modulesFile = Path.Combine(catalogDir, "modules.json");
+        if (File.Exists(modulesFile))
+        {
+            using JsonDocument modulesDoc = JsonDocument.Parse(File.ReadAllText(modulesFile));
+            JsonElement modules = modulesDoc.RootElement.GetProperty("modules");
+            Check(modules.GetArrayLength() > 0, $"[远端] modules.json 有 {modules.GetArrayLength()} 个模块");
+            using var moduleClient = HoYoShadeHub.Extensions.Networking.HysxHttp.CreateClient(timeout: TimeSpan.FromSeconds(30));
+
+            foreach (JsonElement module in modules.EnumerateArray())
+            {
+                string id = module.TryGetProperty("id", out JsonElement idElement) ? idElement.GetString() ?? "" : "";
+                string repo = module.TryGetProperty("repository", out JsonElement repoElement) ? repoElement.GetString() ?? "" : "";
+                bool removed = module.TryGetProperty("removed", out JsonElement removedElement) && removedElement.GetBoolean();
+                Check(removed || (!string.IsNullOrWhiteSpace(id) && repo.Contains('/')),
+                    $"[远端] 模块 {id} 是 owner/repo（或墓碑）");
+
+                if (removed || string.IsNullOrWhiteSpace(repo))
+                {
+                    continue;
+                }
+
+                // 仓库树直链型（directFiles）：文件得真的在那儿
+                if (module.TryGetProperty("directFiles", out JsonElement files) && files.GetArrayLength() > 0)
+                {
+                    string branch = module.TryGetProperty("branch", out JsonElement branchElement)
+                        ? branchElement.GetString() ?? "main"
+                        : "main";
+
+                    foreach (JsonElement file in files.EnumerateArray())
+                    {
+                        string name = file.GetString() ?? "";
+                        string url = HoYoShadeHub.Extensions.Networking.HysxHttp.Apply(
+                            $"https://raw.githubusercontent.com/{repo}/{branch}/{name}");
+
+                        try
+                        {
+                            using var response = await moduleClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                            long length = response.Content.Headers.ContentLength ?? -1;
+                            Check(response.IsSuccessStatusCode && length != 0,
+                                $"[远端] 模块 {id} 的 {name} 能下（{(response.IsSuccessStatusCode ? Math.Round(length / 1024d / 1024d, 1) + " MB" : response.StatusCode.ToString())}）");
+                        }
+                        catch (Exception ex)
+                        {
+                            Check(false, $"[远端] 模块 {id} 的 {name}: {ex.GetType().Name} {ex.Message}");
+                        }
+                    }
                 }
             }
         }
@@ -1586,13 +1646,16 @@ Check(OptiScalerDownloader.IsInstaller(installerOnly[0]) && !OptiScalerDownloade
 Check(OptiScalerDownloader.PickAsset(installerOnly) == "dlssnr_on_amd_setup.exe", "只有 exe 时挑它");
 Check(OptiScalerDownloader.PickAsset(bothKinds) == "OptiScaler-NR-v0.8.6.zip", "有 zip 就不要顺手去跑人家的安装程序");
 
-Check(OptiScalerCatalog.Builtin.Count == 3, "内置 3 个 OptiScaler 来源");
-Check(OptiScalerCatalog.Builtin.Any(s => s.Id == "dlssnr-amd"), "第三个来源换成了 DLSS NR on AMD");
+// DLSS-NR on AMD 已经挪到「模块」了（它不是 OptiScaler），所以内置来源只剩 wilsjo2 / neurotic
+Check(OptiScalerCatalog.Builtin.Count == 2, "内置 2 个 OptiScaler 来源（DLSS-NR on AMD 挪去模块了）");
+Check(OptiScalerCatalog.Builtin.All(s => s.Id != "dlssnr-amd"), "DLSS NR on AMD 不再挂在 OptiScaler 来源里");
 Check(OptiScalerCatalog.Builtin.All(s => s.Id != "multipass-mfg"), "404 的那个来源删掉了");
-Check(OptiScalerCatalog.Builtin.Select(s => s.Id).Distinct().Count() == 3, "来源 id 不重复（要当目录名用）");
+Check(OptiScalerCatalog.Builtin.Select(s => s.Id).Distinct().Count() == 2, "来源 id 不重复（要当目录名用）");
+Check(OptiScalerCatalog.Builtin.All(s => s.Tags is { Length: > 0 }), "每个来源都带 tags（卡片上要显示）");
 Check(OptiScalerCatalog.Builtin.All(s => s.Repository.Contains('/')), "每个来源都是 owner/repo");
 Check(OptiScalerLibrary.Sanitize("a/b:c") == "a_b_c", "版本号里的非法字符会被换掉");
 Check(OptiScalerCatalog.Find("neurotic")?.Repository == "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork", "按 id 找得到来源");
+
 
 Console.WriteLine();
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");

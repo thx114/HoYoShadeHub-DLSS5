@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.RegularExpressions;
 
 namespace HoYoShadeHub.Extensions.ReShade;
@@ -245,6 +245,9 @@ public sealed class ReShadeProfile
     /// </summary>
     public const string HookStageKey = "DirectNeuralRenderingHookStage";
 
+    /// <summary>神经渲染 pass 数（用户要求：超过 3 就算高）</summary>
+    public const string PassCountKey = "DirectNeuralRenderingPassCount";
+
     /// <summary>允许改 hook 点的插件 slug（用户明确要求的前置条件）</summary>
     public static readonly string[] HookPointCapableSlugs = ["renodx-dlss5-super-anus", "renodx-dlss"];
 
@@ -291,6 +294,43 @@ public sealed class ReShadeProfile
         }
     }
 
+    /// <summary>[GENERAL] EffectSearchPaths  可能用逗号分隔写了好几条</summary>
+    public List<string>? EffectSearchPaths => SplitPathList(_ini.GetValue("GENERAL", "EffectSearchPaths"));
+
+    /// <summary>[GENERAL] TextureSearchPaths</summary>
+    public List<string>? TextureSearchPaths => SplitPathList(_ini.GetValue("GENERAL", "TextureSearchPaths"));
+
+    /// <summary>界面 / 诊断里显示用的原文（没写就是 null）</summary>
+    public string? EffectSearchPathsText => _ini.GetValue("GENERAL", "EffectSearchPaths");
+
+    public string? TextureSearchPathsText => _ini.GetValue("GENERAL", "TextureSearchPaths");
+
+    private static List<string>? SplitPathList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        return [.. raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    /// <summary>
+    /// <c>[RENODX-DLSS] DirectNeuralRenderingPassCount</c>  神经渲染的 pass 数。
+    /// 没写返回 null（= 用插件默认值）。
+    /// </summary>
+    public int? GetDirectNeuralRenderingPassCount()
+    {
+        string? raw = _ini.GetValue(RenoDlssSection, PassCountKey) ?? _ini.GetValue(AddonSection, PassCountKey);
+        return int.TryParse(raw?.Trim(), out int value) ? value : null;
+    }
+
+    /// <summary>写 DirectNeuralRenderingPassCount（写进 addon 认的 [RENODX-DLSS] 段）</summary>
+    public void SetDirectNeuralRenderingPassCount(int value)
+    {
+        _ini.SetValue(RenoDlssSection, PassCountKey, value.ToString());
+        _ini.RemoveKey(AddonSection, PassCountKey);
+    }
     #region DisabledAddons
 
     /// <summary>

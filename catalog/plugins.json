@@ -11,28 +11,6 @@
   ],
   "extensions": [
     {
-      "id": "renodx.hkrpg",
-      "name": "RenoDX — 崩坏：星穹铁道",
-      "version": "latest",
-      "author": "clshortfuse",
-      "description": "HDR tonemap 重构插件。替换原版后处理链路，亮部与色相比原生 HDR 更干净。装好后需在 ReShade 叠加层里手动启用。",
-      "homepage": "https://github.com/clshortfuse/renodx",
-      "tags": ["hdr", "tonemap", "miHoYo"],
-      "gameBiz": ["hkrpg_cn", "hkrpg_global", "hkrpg_bilibili"],
-      "hosts": ["HoYoShade"],
-      "source": {
-        "type": "github-release",
-        "repository": "clshortfuse/renodx",
-        "includePrerelease": true,
-        "tagPattern": "^nightly-\\d{8}$",
-        "assetName": "renodx-honkai-starrail.addon64"
-      },
-      "addonPatterns": ["renodx-honkai-starrail*"],
-      "rules": [
-        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
-      ]
-    },
-    {
       "id": "renodx.dlss5",
       "name": "RenoDX DLSS5",
       "version": "latest",
@@ -194,6 +172,10 @@
         { "match": "HoYoShade.Presets-main/ZZZ/**", "to": "Presets/ZZZ", "flatten": false, "optional": true },
         { "match": "HoYoShade.Presets-main/Universal/**", "to": "Presets/Universal", "flatten": false, "optional": true }
       ]
+    },
+    {
+      "id": "renodx.hkrpg",
+      "removed": true
     }
   ]
 }

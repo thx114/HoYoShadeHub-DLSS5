@@ -112,6 +112,16 @@ public sealed partial class GameLauncherPage : PageBase
 
             OnPropertyChanged(nameof(IsShadeInjectMode));
             OnPropertyChanged(nameof(IsWaitProcessMode));
+            OnPropertyChanged(nameof(CanUseXxmiInject));
+
+            // 注入模式：游戏由用户自己拉起来，而 XXMI 必须由它自己启动游戏 —— 两者冲突，
+            // 所以一开注入模式就把「启用XXMI」关掉并提醒（用户要求）
+            if (value && UseXxmiInject && !_isApplyingSavedLaunchOptions)
+            {
+                UseXxmiInject = false;
+                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("注入模式",
+                    "注入模式下不会替你启动游戏，而 XXMI 要自己把游戏拉起来 —— 两者不能同时用，已把「启用XXMI」关掉。", 10000));
+            }
 
             if (_isApplyingSavedLaunchOptions || _gameDiscovery is null || _currentGameEntry is null)
             {
@@ -149,6 +159,12 @@ public sealed partial class GameLauncherPage : PageBase
 
         UseInjectMode = _currentGameEntry?.UseInjectMode ?? false;
         OnPropertyChanged(nameof(CanUseInjectMode));
+
+        // 老配置里注入模式和 XXMI 都开着：注入模式优先，把 XXMI 关掉
+        if (UseInjectMode && _useXxmiInject)
+        {
+            UseXxmiInject = false;
+        }
     }
 
     /// <summary>注入模式开关（用户要求：别再弹「注入模式」介绍提示了，说明都在控件 tooltip 里）</summary>
@@ -231,11 +247,20 @@ public sealed partial class GameLauncherPage : PageBase
                 UseOpenHoYoShade = false;
             }
 
-            // OptiScaler：只有「全局插件 → OptiScaler」里启用了某个构建，这里才能勾
-            IsOptiScalerAvailable = AppConfig.GetSelectedOptiScalerDll() is not null;
+            // OptiScaler：本地有装好的构建才让勾（选哪个构建在「OptiScaler」页）
+            IsOptiScalerAvailable = HasInstalledOptiScaler();
             if (!IsOptiScalerAvailable && UseOptiScaler)
             {
                 UseOptiScaler = false;
+            }
+
+            // XXMI：只对 XXMI 支持的游戏显示「启用XXMI」，注入模式下点不了
+            UpdateXxmiInjectVisibility();
+
+            // 老配置里的「额外注入 DLL」（每个游戏一个路径）搬进「模块」页（一次性）
+            if (CurrentGameId is not null)
+            {
+                Features.Modules.ModuleRegistry.MigrateLegacyExtraInjectDll(CurrentGameId.GameBiz);
             }
 
             // Check Blender plugin configurations
@@ -477,7 +502,41 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    /// <summary>启动时注入 OptiScaler（全局插件页里选中的那个构建）。按游戏记</summary>
+    /// <summary>本地库里有没有装好的 OptiScaler 构建</summary>
+    private static bool HasInstalledOptiScaler()
+    {
+        try
+        {
+            string root = AppConfig.OptiScalerRootPath;
+            if (root.Length == 0)
+            {
+                return false;
+            }
+
+            return new Extensions.Services.OptiScalerLibrary(root).List()
+                .Any(b => !string.IsNullOrWhiteSpace(b.DllPath));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>启动时注入「模块」页里开着的模块（DLSS-NR on AMD 之类）。按游戏记</summary>
+    private bool _useModules;
+    public bool UseModules
+    {
+        get => _useModules;
+        set
+        {
+            if (SetProperty(ref _useModules, value))
+            {
+                NotifyLaunchModeChanged();
+            }
+        }
+    }
+
+    /// <summary>启动时注入 OptiScaler（构建在「OptiScaler」页按游戏选，总开关在「全局插件 → OptiScaler」）。按游戏记</summary>
     private bool _useOptiScaler;
     public bool UseOptiScaler
     {
@@ -491,7 +550,35 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    /// <summary>启动时注入 XXMI（3DMigoto 的 d3d11.dll，模型替换那套）。按游戏记</summary>
+    /// <summary>本地装了 OptiScaler 构建才让勾（没装就灰着）</summary>
+    private bool _isOptiScalerAvailable;
+    public bool IsOptiScalerAvailable
+    {
+        get => _isOptiScalerAvailable;
+        set => SetProperty(ref _isOptiScalerAvailable, value);
+    }
+
+    /// <summary>注入模式下不能同时用 XXMI（XXMI 要自己把游戏拉起来）</summary>
+    public bool CanUseXxmiInject => !UseInjectMode;
+
+    /// <summary>XXMI 支持这个游戏才显示「启用XXMI」（不支持的游戏显示它没有意义）</summary>
+    public Visibility XxmiInjectVisibility
+        => CurrentGameId is { } gameId
+           && Features.Xxmi.XxmiLocator.SupportsGame(gameId.GameBiz.Value, _currentGameEntry?.DisplayName)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    private void UpdateXxmiInjectVisibility()
+    {
+        OnPropertyChanged(nameof(XxmiInjectVisibility));
+
+        if (XxmiInjectVisibility != Visibility.Visible && _useXxmiInject)
+        {
+            UseXxmiInject = false;
+        }
+    }
+
+    /// <summary>启动时注入 XXMI（交给 XXMI Launcher 命令行，模型替换那套）。按游戏记</summary>
     private bool _useXxmiInject;
     public bool UseXxmiInject
     {
@@ -505,13 +592,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    /// <summary>全局插件页里有没有「启用了的 OptiScaler 构建」（没有就点不了这个勾）</summary>
-    private bool _isOptiScalerAvailable;
-    public bool IsOptiScalerAvailable
-    {
-        get => _isOptiScalerAvailable;
-        set => SetProperty(ref _isOptiScalerAvailable, value);
-    }
+
 
     private bool _isHoYoShadeInstalled;
     public bool IsHoYoShadeInstalled
@@ -709,7 +790,11 @@ public sealed partial class GameLauncherPage : PageBase
             return;
         }
 
-        bool conflict = UseOptiScaler && (UseHoYoShade || UseOpenHoYoShade);
+        // OptiScaler：勾了「启用OptiScaler」+ 总开关开着 + 本游戏选过构建
+        bool optiScalerOn = UseOptiScaler
+                            && CurrentGameId is { } optiGameId
+                            && AppConfig.GetSelectedOptiScalerDll(optiGameId) is not null;
+        bool conflict = optiScalerOn && (UseHoYoShade || UseOpenHoYoShade);
         Border_OptiScalerConflict.Visibility = conflict ? Visibility.Visible : Visibility.Collapsed;
 
         if (!conflict)
@@ -799,12 +884,14 @@ public sealed partial class GameLauncherPage : PageBase
         _isApplyingSavedLaunchOptions = true;
         try
         {
-            bool enableGameLaunch = AppConfig.GetEnableGameLaunchOption(CurrentGameId);
+            // 启动游戏：界面上那条已经藏了，默认就是启动 —— 不读老设置（老设置里关过的用户不该被卡住）
+            bool enableGameLaunch = true;
             bool useStarwardLauncher = AppConfig.GetUseStarwardLaunchOption(CurrentGameId);
             bool useHoYoShade = AppConfig.GetUseHoYoShadeLaunchOption(CurrentGameId);
             bool useOpenHoYoShade = AppConfig.GetUseOpenHoYoShadeLaunchOption(CurrentGameId);
             bool launchGenshinBlenderPlugin = AppConfig.GetLaunchGenshinBlenderPluginOption(CurrentGameId);
             bool launchZZZBlenderPlugin = AppConfig.GetLaunchZZZBlenderPluginOption(CurrentGameId);
+            bool useModules = AppConfig.GetUseModulesLaunchOption(CurrentGameId);
             bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(CurrentGameId);
             bool useXxmiInject = AppConfig.GetUseXxmiInjectLaunchOption(CurrentGameId);
 
@@ -830,6 +917,7 @@ public sealed partial class GameLauncherPage : PageBase
             _useOpenHoYoShade = useOpenHoYoShade;
             _launchGenshinBlenderPlugin = launchGenshinBlenderPlugin;
             _launchZZZBlenderPlugin = launchZZZBlenderPlugin;
+            _useModules = useModules;
             _useOptiScaler = useOptiScaler;
             _useXxmiInject = useXxmiInject;
 
@@ -839,8 +927,11 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(UseOpenHoYoShade));
             OnPropertyChanged(nameof(LaunchGenshinBlenderPlugin));
             OnPropertyChanged(nameof(LaunchZZZBlenderPlugin));
+            OnPropertyChanged(nameof(UseModules));
             OnPropertyChanged(nameof(UseOptiScaler));
             OnPropertyChanged(nameof(UseXxmiInject));
+            OnPropertyChanged(nameof(XxmiInjectVisibility));
+            OnPropertyChanged(nameof(CanUseXxmiInject));
 
             UpdateGameLaunchCheckboxState();
 
@@ -868,6 +959,7 @@ public sealed partial class GameLauncherPage : PageBase
         AppConfig.SetUseOpenHoYoShadeLaunchOption(CurrentGameId, _useOpenHoYoShade);
         AppConfig.SetLaunchGenshinBlenderPluginOption(CurrentGameId, _launchGenshinBlenderPlugin);
         AppConfig.SetLaunchZZZBlenderPluginOption(CurrentGameId, _launchZZZBlenderPlugin);
+        AppConfig.SetUseModulesLaunchOption(CurrentGameId, _useModules);
         AppConfig.SetUseOptiScalerLaunchOption(CurrentGameId, _useOptiScaler);
         AppConfig.SetUseXxmiInjectLaunchOption(CurrentGameId, _useXxmiInject);
     }
@@ -1725,24 +1817,26 @@ public sealed partial class GameLauncherPage : PageBase
     {
         List<InjectDllSpec> specs = [];
 
-        // ① 设置界面里配的「额外注入 DLL」
-        string? dllPath = CurrentGameId is { } gameId ? AppConfig.GetExtraInjectDll(gameId.GameBiz) : null;
-        if (!string.IsNullOrWhiteSpace(dllPath) && File.Exists(dllPath))
+        // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
+        if (UseModules && CurrentGameId is { } moduleGameId)
         {
-            specs.Add(new InjectDllSpec(dllPath, "额外注入"));
+            foreach ((string name, string path) in Features.Modules.ModuleRegistry.ResolveInjectionDlls(moduleGameId))
+            {
+                if (specs.All(s => !string.Equals(s.Path, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    specs.Add(new InjectDllSpec(path, name));
+                }
+            }
         }
 
-        // ② 启动选项里勾的 OptiScaler（= 全局插件页里启用的那个构建）
-        if (UseOptiScaler)
+        // ② OptiScaler：启动选项勾了「启用OptiScaler」+「全局插件 → OptiScaler」的总开关开着
+        //    + 这个游戏在「OptiScaler」页选过构建，三者都满足才注入
+        if (UseOptiScaler && CurrentGameId is { } optiGameId)
         {
-            string? optiScaler = AppConfig.GetSelectedOptiScalerDll();
-
-            if (string.IsNullOrWhiteSpace(optiScaler) || !File.Exists(optiScaler))
-            {
-                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("OptiScaler",
-                    "勾了「启动 OptiScaler」，但「全局插件 → OptiScaler」里还没有启用任何构建（或者那个包里没有 OptiScaler.dll）。", 10000));
-            }
-            else if (specs.All(s => !string.Equals(s.Path, optiScaler, StringComparison.OrdinalIgnoreCase)))
+            string? optiScaler = AppConfig.GetSelectedOptiScalerDll(optiGameId);
+            if (!string.IsNullOrWhiteSpace(optiScaler)
+                && File.Exists(optiScaler)
+                && specs.All(s => !string.Equals(s.Path, optiScaler, StringComparison.OrdinalIgnoreCase)))
             {
                 specs.Add(new InjectDllSpec(optiScaler, "OptiScaler"));
             }

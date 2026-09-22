@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8" ?>
+﻿<?xml version="1.0" encoding="utf-8" ?>
 <sf:PageBase x:Class="HoYoShadeHub.Features.Plugins.GamePluginPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -57,6 +57,11 @@
                         Click="Button_PickExe_Click"
                         Content="指定主程序…"
                         ToolTipService.ToolTip="目录里有多个 exe 时，挑出真正的游戏主程序；进程名和 ReShade.ini 位置都靠它" />
+                <Button x:Name="Button_Dlss5CompatCheck"
+                        Click="Button_Dlss5CompatCheck_Click"
+                        Content="DLSS5 兼容性检测"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性，并提供一键修复" />
             </StackPanel>
         </Grid>
 

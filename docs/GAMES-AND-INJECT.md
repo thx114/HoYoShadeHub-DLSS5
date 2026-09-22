@@ -1018,10 +1018,12 @@ StartExtraDllInjection → InjectExtraDllsAsync（一个进程只等一次，两
 用户要求：GitHub 上放一份**目录**（所有插件 + OptiScaler 来源），启动器自动拉最新（每天一次，设置里也能手动拉），
 这样以后加插件 / 换来源 / 加 OptiScaler 分支**不用重新发版**。
 
-**约定**（详见 docs/OPEN-SOURCE-PLAN.md §4）：仓库根 catalog/，两个文件：
+**约定**（详见 docs/OPEN-SOURCE-PLAN.md §4）：仓库根 catalog/，三个文件：
 
 - catalog/plugins.json = 内置目录的同一格式（extensions: [...]），按 id 覆盖内置插件条目；
-- catalog/optiscaler.json = {"sources":[{ "id","name","repository","description","tagPattern" }]}，同样按 id 覆盖内置来源。
+- catalog/optiscaler.json = {"sources":[{ "id","name","repository","description","tagPattern","tags","homepage" }]}，同样按 id 覆盖内置来源；
+- catalog/modules.json = {"modules":[{ "id","name","description","repository","tagPattern","homepage","dllHint","tags" }]}，按 id 覆盖内置模块
+  （模块 = 要注入游戏进程的独立 DLL，DLSS-NR on AMD 那类；两侧都支持 { "id":"...", "removed": true } 墓碑）。
 
 **客户端**（Features/Plugins/RemoteCatalogService.cs）：
 

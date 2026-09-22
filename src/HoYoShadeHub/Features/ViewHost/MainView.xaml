@@ -101,19 +101,6 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
-                <!--  DLL 配置：插件要的那套运行时（nvngx_dlssnr.dll / sl.*.dll）都装在插件目录里  -->
-                <NavigationViewItem Name="NavigationViewItem_DllConfig"
-                                    Tag="DllConfigPage"
-                                    ToolTipService.ToolTip="DLL 配置">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE74C;" />
-                    </NavigationViewItem.Icon>
-                    <NavigationViewItem.Content>
-                        <Border Height="40">
-                            <TextBlock VerticalAlignment="Center" Text="DLL 配置" />
-                        </Border>
-                    </NavigationViewItem.Content>
-                </NavigationViewItem>
                 <!--  模型替换（XXMI）：MI 实例 + Mods 管理  -->
                 <NavigationViewItem Name="NavigationViewItem_Xxmi"
                                     Tag="XxmiPage"
@@ -127,10 +114,49 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
+                <!--  模块：要注入游戏进程的独立 DLL（DLSS-NR on AMD 那类），可以同时开多个  -->
+                <NavigationViewItem Name="NavigationViewItem_Modules"
+                                    Tag="ModulesPage"
+                                    ToolTipService.ToolTip="模块">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE7B5;" />
+                    </NavigationViewItem.Icon>
+                    <NavigationViewItem.Content>
+                        <Border Height="40">
+                            <TextBlock VerticalAlignment="Center" Text="模块" />
+                        </Border>
+                    </NavigationViewItem.Content>
+                </NavigationViewItem>
+                <!--  OptiScaler：总开关 + 每个游戏选一个构建  -->
+                <NavigationViewItem Name="NavigationViewItem_OptiScaler"
+                                    Tag="OptiScalerPage"
+                                    ToolTipService.ToolTip="OptiScaler">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9D9;" />
+                    </NavigationViewItem.Icon>
+                    <NavigationViewItem.Content>
+                        <Border Height="40">
+                            <TextBlock VerticalAlignment="Center" Text="OptiScaler" />
+                        </Border>
+                    </NavigationViewItem.Content>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
 
-            <!--  左下角（设置上方）：全局视角 —— 装/删扩展包 + 重命名式全局开关  -->
+            <!--  左下角（设置上方）：DLL 配置 + 全局插件（文件夹图标）  -->
             <NavigationView.FooterMenuItems>
+                <!--  DLL 配置：插件要的那套运行时（nvngx_dlssnr.dll / sl.*.dll）都装在插件目录里  -->
+                <NavigationViewItem Name="NavigationViewItem_DllConfig"
+                                    Tag="DllConfigPage"
+                                    ToolTipService.ToolTip="DLL 配置">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE74C;" />
+                    </NavigationViewItem.Icon>
+                    <NavigationViewItem.Content>
+                        <Border Height="40">
+                            <TextBlock VerticalAlignment="Center" Text="DLL 配置" />
+                        </Border>
+                    </NavigationViewItem.Content>
+                </NavigationViewItem>
                 <NavigationViewItem Name="NavigationViewItem_GlobalPlugins"
                                     Tag="GlobalPluginPage"
                                     ToolTipService.ToolTip="全局插件">

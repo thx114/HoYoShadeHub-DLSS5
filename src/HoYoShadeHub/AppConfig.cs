@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -1016,10 +1016,16 @@ public static class AppConfig
 
     /// <summary>
     /// 更新渠道：0 = 官方（RPC 元数据），1 = GitHub（本 fork 的仓库，支持一键更新 + 退回旧版本）。
+    ///
+    /// <para>
+    /// **默认 1**：这是本 fork 的发行渠道，用户装的就是这个仓库的包，
+    /// 默认走官方只会读到上游的版本（而且我们改了这么多东西，跟上游并不兼容）。
+    /// 用户在「设置 → 关于」里手动选过就按他选的来。
+    /// </para>
     /// </summary>
     public static int UpdateChannel
     {
-        get => GetValue(0);
+        get => GetValue(1);
         set => SetValue(value);
     }
 
@@ -1145,6 +1151,211 @@ public static class AppConfig
     public static void SetExtraInjectDll(GameBiz biz, string? value)
     {
         SetValue(value, $"extra_inject_dll_{biz}");
+    }
+
+    // ===================== 模块（要注入游戏进程的东西：DLSS-NR on AMD 那类） =====================
+
+    /// <summary>「模块」根目录：&lt;用户数据目录&gt;\Modules\&lt;模块 id&gt;\</summary>
+    public static string ModulesRootPath
+    {
+        get
+        {
+            string? userData = UserDataFolder;
+            return string.IsNullOrWhiteSpace(userData)
+                ? string.Empty
+                : Path.Combine(userData, "Modules");
+        }
+    }
+
+    public static string ModuleDirectory(string moduleId)
+    {
+        string root = ModulesRootPath;
+        return root.Length == 0 ? string.Empty : Path.Combine(root, moduleId);
+    }
+
+    /// <summary>模块开关（全局，可以同时开多个）</summary>
+    public static bool GetModuleEnabled(string moduleId)
+    {
+        return GetValue(false, $"module_enabled_{moduleId}");
+    }
+
+    public static void SetModuleEnabled(string moduleId, bool value)
+    {
+        SetValue(value, $"module_enabled_{moduleId}");
+    }
+
+    /// <summary>模块要注入的那个 DLL（用户手动指定的；空 = 在模块目录 / 旧的 OptiScaler 库里自动找）</summary>
+    public static string? GetModuleDllPath(string moduleId)
+    {
+        return GetValue<string>(default, $"module_dll_{moduleId}");
+    }
+
+    public static void SetModuleDllPath(string moduleId, string? value)
+    {
+        SetValue(value, $"module_dll_{moduleId}");
+    }
+
+    /// <summary>用户手动加的模块 DLL（一行一个路径）—— 原来「额外注入 DLL」里的那些</summary>
+    public static IReadOnlyList<string> GetManualModuleDlls()
+    {
+        string? raw = GetValue<string>(default, "manual_module_dlls");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : [.. raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    public static void SetManualModuleDlls(IEnumerable<string> paths)
+    {
+        string value = string.Join("\n", paths.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase));
+        SetValue(value.Length == 0 ? null : value, "manual_module_dlls");
+    }
+
+    /// <summary>用户手动加的那些模块里，被关掉的（默认都是开的）</summary>
+    public static IReadOnlyList<string> GetDisabledManualModuleDlls()
+    {
+        string? raw = GetValue<string>(default, "manual_module_disabled");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : [.. raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    public static void SetManualModuleDllEnabled(string path, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        List<string> disabled = [.. GetDisabledManualModuleDlls()];
+        disabled.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        if (!enabled)
+        {
+            disabled.Add(path);
+        }
+
+        SetValue(disabled.Count == 0 ? null : string.Join("\n", disabled), "manual_module_disabled");
+    }
+
+    public static bool IsManualModuleDllEnabled(string path)
+        => !GetDisabledManualModuleDlls().Contains(path, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>老配置「额外注入 DLL」搬进模块页了没有（按游戏记，只搬一次）</summary>
+    public static bool GetModuleMigrated(GameBiz biz)
+    {
+        return GetValue(false, $"module_migrated_{biz}");
+    }
+
+    public static void SetModuleMigrated(GameBiz biz, bool value)
+    {
+        SetValue(value, $"module_migrated_{biz}");
+    }
+
+    /// <summary>这个游戏勾了哪些模块（模块 key：内置模块 id，或手动加的 DLL 路径）。
+    /// null = 还没选过 → 按「全局开着的都用」算（老配置迁移）。</summary>
+    public static IReadOnlyList<string>? GetUsedModuleKeysOrNull(GameId gameId)
+    {
+        string? raw = GetValue<string>(default, BuildLaunchOptionKey(gameId, "modules_used"));
+        return raw is null
+            ? null
+            : [.. raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    public static void SetUsedModuleKeys(GameId gameId, IEnumerable<string> keys)
+    {
+        string value = string.Join("\n", keys.Where(k => !string.IsNullOrWhiteSpace(k)).Distinct(StringComparer.OrdinalIgnoreCase));
+        SetValue(value, BuildLaunchOptionKey(gameId, "modules_used"));
+    }
+
+    /// <summary>启动时注入「已启用的模块」，按游戏记</summary>
+    public static bool GetUseModulesLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_modules"));
+    }
+
+    public static void SetUseModulesLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_modules"));
+    }
+
+    // ===================== OptiScaler（每个构建一个全局开关） =====================
+
+    /// <summary>OptiScaler 总开关（历史配置，已不在界面显示；新逻辑按构建记全局开关）。</summary>
+    public static bool OptiScalerEnabled
+    {
+        get => GetValue(false, "optiscaler_enabled");
+        set => SetValue(value, "optiscaler_enabled");
+    }
+
+    /// <summary>被用户「全局关」的 OptiScaler 构建 id（OptiScalerLibrary.MakeId：&lt;来源&gt;/&lt;版本&gt;）</summary>
+    public static IReadOnlyList<string> GetDisabledOptiScalerBuilds()
+    {
+        string? raw = GetValue<string>(default, "optiscaler_disabled_builds");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : [.. raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    public static bool IsOptiScalerBuildEnabled(string buildId)
+        => !string.IsNullOrWhiteSpace(buildId)
+           && !GetDisabledOptiScalerBuilds().Contains(buildId, StringComparer.OrdinalIgnoreCase);
+
+    public static void SetOptiScalerBuildEnabled(string buildId, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(buildId))
+        {
+            return;
+        }
+
+        List<string> disabled = [.. GetDisabledOptiScalerBuilds()];
+        disabled.RemoveAll(id => string.Equals(id, buildId, StringComparison.OrdinalIgnoreCase));
+        if (!enabled)
+        {
+            disabled.Add(buildId);
+        }
+
+        SetValue(disabled.Count == 0 ? null : string.Join("\n", disabled), "optiscaler_disabled_builds");
+    }
+
+    /// <summary>这个游戏选的 OptiScaler 构建 id（OptiScalerLibrary.MakeId：&lt;来源&gt;/&lt;版本&gt;；空 = 没选）</summary>
+    public static string? GetSelectedOptiScalerId(GameId gameId)
+    {
+        return GetValue<string>(default, BuildLaunchOptionKey(gameId, "optiscaler_build"));
+    }
+
+    public static void SetSelectedOptiScalerId(GameId gameId, string? buildId)
+    {
+        SetValue(buildId, BuildLaunchOptionKey(gameId, "optiscaler_build"));
+    }
+
+    /// <summary>这个游戏实际要注入的 OptiScaler DLL（没开总开关 / 没选 / 那个构建没了 → null）</summary>
+    public static string? GetSelectedOptiScalerDll(GameId? gameId)
+    {
+        try
+        {
+            string root = OptiScalerRootPath;
+            if (root.Length == 0)
+            {
+                return null;
+            }
+
+            var library = new Extensions.Services.OptiScalerLibrary(root);
+            string? id = gameId is null ? null : GetSelectedOptiScalerId(gameId);
+
+            // 没选过就退回旧行为（state.json 里那个「选中的构建」），老配置不至于突然失效
+            Extensions.Services.OptiScalerBuild? build = string.IsNullOrWhiteSpace(id)
+                ? library.GetSelected()
+                : library.List().FirstOrDefault(b => b.Id == id);
+            if (build is null || !IsOptiScalerBuildEnabled(build.Id))
+            {
+                return null;
+            }
+
+            return build.DllPath;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
 

@@ -1,4 +1,4 @@
-# 更新日志（便携包 1.0.8 → 1.1.1）
+# 更新日志（便携包 1.0.8 → 1.2.0）
 
 > 便携包版本号 = 发布用的号；括号里是对应的开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」在 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md) 的 §8.x。
@@ -129,6 +129,18 @@
 - 修：「装最新」（不指定版本）原来取 atom 里**第一个**命中的 tag，但 atom 并不是时间序 ——
   改成取命中的里面发布时间最晚的，和下拉第一条保持一致。
 - 版本下拉现在显示 **`tag · 发布日期`**，顺序一眼可见。
+
+## 1.2.0 · 卡片视觉 + 新来源 + 一批体验修复
+
+- 全局插件页换回**精致版卡片**：统一卡片描边 / 圆角、标题行点开、标签 chip、状态徽标（已装 / 有新版 / 缺必需 DLL 红 / 缺建议 DLL 黄）；展开后有版本下拉、安装 / 切换 / 删除 / 打开目录和主页链接。
+- 新增**插件**：MFG Unlock（ImDreamt/MFGAdaUnlock-RenoDx，RTX 40 系多帧生成 3x/4x/6x 解锁）。
+- 新增**模块**：MFG Unlock（matiasLombo/mfg-unlock）。
+- 新增 **OptiScaler 来源**：DLSS Unlocked（ShyVortex，自动只取 standalone zip）、DLSS Enabler（artur-graniszewski，setup exe）。
+- 「可下载」的插件 / 模块卡片新增**版本下拉**：能选具体版本再装，不再只能装最新。
+- DLSS5 兼容性检测：**结果排序改成红 → 黄 → 提示 → 绿**（同级按编号），问题项排最前；修了读显卡型号时 `Properties` 子键 ACL 抛 `Requested registry access is not allowed` 导致整条显卡检查失败（现在能读到 RTX 5090 / Radeon 610M 等全部适配器）。
+- 修：全局插件页**无法上下滑动**（内容区错放在 Auto 行，改到 `*` 行，ScrollViewer 拿到有界高度）。
+- 修：OptiScaler「可下载」卡片比其它可下载卡片高（删掉一个从已装构建误复制、处理器按错类型会静默失败的多余开关）。
+- 更新内容窗口：Hub 的更新日志改读**本 fork 仓库**的 release（之前读官方上游 `DuolaD/HoYoShade-Hub`）；Hub 的 release 链接也指向本仓库。
 
 
 

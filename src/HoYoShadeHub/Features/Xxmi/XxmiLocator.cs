@@ -68,6 +68,39 @@ internal sealed class XxmiLocator
         return null;
     }
 
+    /// <summary>
+    /// 这个游戏的 MI 实例名。先认 HoYoPlay 的 GameBiz；认不出来再按**游戏名**认
+    /// （自定义游戏没有 GameBiz，只有名字 —— 鸣潮 / 终末地 就是这种）。
+    /// </summary>
+    public static string? ImporterForGame(string? gameBiz, string? gameName)
+    {
+        string? byBiz = ImporterFor(gameBiz);
+        if (byBiz is not null)
+        {
+            return byBiz;
+        }
+
+        if (string.IsNullOrWhiteSpace(gameName))
+        {
+            return null;
+        }
+
+        string name = gameName.ToLowerInvariant();
+
+        if (name.Contains("绝区零")) return "ZZMI";
+        if (name.Contains("原神")) return "GIMI";
+        if (name.Contains("星穹") || name.Contains("星铁")) return "SRMI";
+        if (name.Contains("崩坏3") || name.Contains("崩坏 3")) return "HIMI";
+        if (name.Contains("鸣潮") || name.Contains("wuthering")) return "WWMI";
+        if (name.Contains("终末地") || name.Contains("endfield")) return "EFMI";
+
+        return null;
+    }
+
+    /// <summary>XXMI 支不支持这个游戏（不支持就别显示「启用XXMI」了）</summary>
+    public static bool SupportsGame(string? gameBiz, string? gameName)
+        => ImporterForGame(gameBiz, gameName) is not null;
+
     /// <summary>XXMI 根目录（没有配置 / 启动器 / 任何 MI 实例就不算）</summary>
     public static string? FindRoot()
     {

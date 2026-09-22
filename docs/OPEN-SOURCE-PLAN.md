@@ -62,14 +62,23 @@ DuolaD/HoYoShade-Hub（MIT，默认分支 main）最近提交：
 | catalog/plugins.json、catalog/optiscaler.json（远端目录，见 §4） | 用户的 ReShade.ini、游戏数据库、下载缓存 |
 | GitHub Release：HoYoShadeHub_Portable_<版本>_x64.zip（+ app-<版本> 可选） | build/、bin/、obj/ 等中间产物（.gitignore 掉） |
 
-## 4. 远端目录（插件 + OptiScaler）的约定
+## 4. 远端目录（插件 + OptiScaler + 模块）的约定
 
-仓库根建 catalog/，两个文件，地址形如
-raw.githubusercontent.com/<owner>/<repo>/main/catalog/{plugins,optiscaler}.json：
+仓库根建 catalog/，三个文件，地址形如
+raw.githubusercontent.com/<owner>/<repo>/main/catalog/{plugins,optiscaler,modules}.json：
 
 - **plugins.json**：与内置目录 src/HoYoShadeHub.Extensions/Resources/catalog.builtin.json 同一格式（extensions: [...]），
   按 id 覆盖内置条目 —— 改插件来源 / 加新插件**不用重新发版**；
-- **optiscaler.json**：{"sources":[{ "id","name","repository","description","tagPattern" }]}，同样按 id 覆盖内置来源。
+- **optiscaler.json**：{"sources":[{ "id","name","repository","description","tagPattern","tags","homepage" }]}，同样按 id 覆盖内置来源；
+- **modules.json**：{"modules":[{ "id","name","description","repository","tagPattern","homepage","dllHint","tags" }]}，
+  按 id 覆盖内置模块（Features/Modules/ModuleRegistry.cs 里那张表）。
+  模块只有 Release 资产时用 repository+tagPattern（走和 OptiScaler 一样的下载器）；
+  **有些模块不发 Release、文件直接在仓库树里**（dlssg_for_sm86 的 version.dll + dlssg_sm86.ini），
+  这时给它 `"directFiles": ["version.dll","dlssg_sm86.ini"]`（可选 `"branch"`，默认 main），
+  客户端就从 raw.githubusercontent.com/<repository>/<branch>/<file> 直下到模块目录。
+
+插件条目和模块条目都支持**墓碑**：`{ "id": "...", "removed": true }` = 这条被删了（合并时摘掉），
+这样云端删条目也不用发版（老客户端不认识这个字段，顶多继续显示那条）。
 
 客户端行为：
 

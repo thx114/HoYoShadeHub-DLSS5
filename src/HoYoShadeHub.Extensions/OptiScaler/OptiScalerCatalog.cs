@@ -30,11 +30,23 @@ public sealed class OptiScalerSource
     /// <summary>tag 正则过滤（比如跳过跟 OptiScaler 无关的 display-filter release）</summary>
     public string? TagPattern { get; init; }
 
+    /// <summary>
+    /// 资产名 glob（* 与 ?）过滤；为空时不过滤。
+    /// 一个 release 同时发 setup exe 和 standalone zip 时用它收窄（例如只要 standalone zip）。
+    /// </summary>
+    public string? AssetPattern { get; init; }
+
+    /// <summary>卡片上显示的标签（跟插件那边的 tags 一套）</summary>
+    public string[]? Tags { get; init; }
+
+    public string? Homepage { get; init; }
+
     public ExtensionSource ToExtensionSource() => new()
     {
         Type = ExtensionSourceType.GithubRelease,
         Repository = Repository,
         TagPattern = TagPattern,
+        AssetPattern = AssetPattern,
         IncludePrerelease = true,
     };
 }
@@ -51,6 +63,8 @@ public static class OptiScalerCatalog
             Repository = "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
             Description = "DLSS 神经渲染 + pre-SR 摆放，支持 1~3 遍处理。带 -rtx40-mfg 的是 40 系多帧生成特化包。",
             TagPattern = @"^v?\d",
+            Tags = ["dlssnr", "presr", "multipass"],
+            Homepage = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases",
         },
         new OptiScalerSource
         {
@@ -59,15 +73,8 @@ public static class OptiScalerCatalog
             Repository = "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork",
             Description = "NeuRotic 分支（alpha 系列）。名字里带 Patch 的包是在上一版上打的补丁，单独装是残缺的。",
             TagPattern = @"^alpha-\d",
-        },
-        new OptiScalerSource
-        {
-            Id = "dlssnr-amd",
-            Name = "DLSS NR on AMD (danielblnc)",
-            Repository = "danielblnc/DLSS-NR-on-AMD",
-            Description = "A 卡用的 DLSS-NR 分支。它只有一个自己的安装程序：下载后会先弹窗提醒，然后运行它 ——" +
-                          "装到默认目录（就是构建目录）即可；装完那里会有 version.dll，勾「启动 OptiScaler」就能注入。",
-            TagPattern = @"^v?\d",
+            Tags = ["dlssnr", "neurotic", "alpha"],
+            Homepage = "https://github.com/MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork/releases",
         },
     ];
 

@@ -5,28 +5,46 @@
       "name": "OptiScaler DLSSNR PreSR Multipass (wilsjo2)",
       "repository": "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
       "description": "DLSS 神经渲染 + pre-SR 摆放，支持 1~3 遍处理。带 -rtx40-mfg 的是 40 系多帧生成特化包。",
-      "tagPattern": "^v?\\d"
+      "tagPattern": "^v?\\d",
+      "tags": ["dlssnr", "presr", "multipass"],
+      "homepage": "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases"
     },
     {
       "id": "neurotic",
       "name": "NeuRotic (MagicalPrincessUnicorn)",
       "repository": "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork",
       "description": "NeuRotic 分支（alpha 系列）。名字里带 Patch 的包是在上一版上打的补丁，单独装是残缺的。",
-      "tagPattern": "^alpha-\\d"
-    },
-    {
-      "id": "dlssnr-amd",
-      "name": "DLSS NR on AMD (danielblnc)",
-      "repository": "danielblnc/DLSS-NR-on-AMD",
-      "description": "A 卡用的 DLSS-NR 分支。它只有一个自己的安装程序：下载后会先弹窗提醒，然后运行它 —— 装到默认目录（就是构建目录）即可；装完那里会有 version.dll，勾「启动 OptiScaler」就能注入。",
-      "tagPattern": "^v?\\d"
+      "tagPattern": "^alpha-\\d",
+      "tags": ["dlssnr", "neurotic", "alpha"],
+      "homepage": "https://github.com/MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork/releases"
     },
     {
       "id": "janblade",
       "name": "OptiScaler DLSSNR PreSR Multipass (janblade)",
       "repository": "janblade/OptiScaler-DLSSNR-PreSR-Multipass",
       "description": "上游作者自己的实验分支（wilsjo2 那份就 fork 自它）：guarded pre-SR 摆放 + 1~3 遍处理，多出 vit-reuse / nvidia-residual / 预设包几个方向。装好后按它的说明还要跑一次 setup_windows.bat 选 NVIDIA；缺的 nvngx_dlssnr.dll 本页会自动补一份。",
-      "tagPattern": "^v?\\d"
+      "tagPattern": "^v?\\d",
+      "tags": ["dlssnr", "presr", "upstream"],
+      "homepage": "https://github.com/janblade/OptiScaler-DLSSNR-PreSR-Multipass/releases"
+    },
+    {
+      "id": "dlss-unlocked",
+      "name": "DLSS Unlocked (ShyVortex)",
+      "repository": "ShyVortex/dlss-unlocked",
+      "description": "ShyVortex 的 DLSS Unlocked（NR 系列）。release 同时发 setup exe 和 standalone zip，目录这里只取 standalone zip 解压进库参与注入。",
+      "tagPattern": "^NR-v?\\d",
+      "assetPattern": "dlss-unlocked-standalone-*.zip",
+      "tags": ["dlss", "unlocked", "standalone"],
+      "homepage": "https://github.com/ShyVortex/dlss-unlocked/releases"
+    },
+    {
+      "id": "dlss-enabler",
+      "name": "DLSS Enabler (artur-graniszewski)",
+      "repository": "artur-graniszewski/DLSS-Enabler",
+      "description": "artur-graniszewski 的 DLSS Enabler。release 只发它自己的 setup exe：下载后运行，按提示装到默认目录（构建目录），装完那里会有可注入的 dll。",
+      "tagPattern": "^v\\d",
+      "tags": ["dlss", "enabler", "installer"],
+      "homepage": "https://github.com/artur-graniszewski/DLSS-Enabler/releases"
     }
   ]
 }

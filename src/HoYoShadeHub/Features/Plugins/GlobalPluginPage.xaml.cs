@@ -1,10 +1,11 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Features.Modules;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
@@ -25,15 +26,18 @@ namespace HoYoShadeHub.Features.Plugins;
 /// <summary>
 /// **全局**插件页（左下角，设置上方）。
 ///
-/// 管的是全局那一份 HoYoShade：&lt;用户数据目录&gt;\HoYoShade —— 所有游戏共用同一套 addon。
-/// 两个视图：
+/// 管的是全局那一份 HoYoShade：&lt;用户数据目录&gt;\HoYoShade。三个标签页，都是同一套
+/// 「上面 当前（已装的东西，可点开换版本 / 开关），下面 可下载（目录里还没装的，紧凑一行）」：
 /// <list type="bullet">
-/// <item>「插件」：装 / 重装 / 删除（只列**会装 addon 的**扩展包 —— 滤镜/预设那类先不进这个页面）；</item>
-/// <item>「插件文件」：**全局**开关 —— 重命名 <c>.addon64 ↔ .addon64x</c>，影响所有游戏（会明确警告）。
-/// 按游戏的开关在「插件」页（<see cref="GamePluginPage"/>），写的是各游戏自己的 ReShade.ini。</item>
+/// <item>「插件」：当前 = 已装的扩展包（全局开关 + 展开换版本 + 打开目录 / 删除），
+/// 外加一小截「没匹配到目录条目的插件文件」；可下载 = 目录里还没装的扩展包。</item>
+/// <item>「OptiScaler」：当前 = 已经下载到本地的构建（展开换版本）；可下载 = 还没装过的来源。
+/// 总开关（<see cref="AppConfig.OptiScalerEnabled"/>）也挪到这里。</item>
+/// <item>「模块」：当前 = 装好了的模块（内置 + 手动加的 DLL）；可下载 = 远端 / 内置模块目录里还没装的。</item>
 /// </list>
 ///
-/// 卡片默认只占一行，点一下才展开描述 / 状态 / 文件清单。
+/// 三个标签页的条目都只来自云端目录（plugins.json / optiscaler.json / modules.json）+ 内置表，
+/// 以后加新东西不用改这个页面。按游戏的开关在左侧「插件」/「模块」/「OptiScaler」页里。
 /// </summary>
 public sealed partial class GlobalPluginPage : PageBase
 {
@@ -46,35 +50,62 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>这次进页面已经查过更新了没有（别每次刷新都打一遍网络）</summary>
     private bool _updatesChecked;
 
-    private string _filter = "all";
     private string _search = string.Empty;
+
+    /// <summary>当前标签页：plugins / optiscaler / modules</summary>
+    private string _tab = "plugins";
+
+
+    /// <summary>OptiScaler 来源的重叠层（打开页面时读一次，RefreshOptiScaler 复用）</summary>
+    private List<OptiScalerSource>? _optiScalerOverlay;
 
     public GlobalPluginPage()
     {
         InitializeComponent();
     }
 
-    /// <summary>全部条目（过滤前的）</summary>
+    /// <summary>全部扩展条目（过滤前的）</summary>
     public ObservableCollection<PluginItemViewModel> Items { get; } = [];
 
-    /// <summary>当前显示的条目（过滤 + 搜索之后）</summary>
+    /// <summary>「当前」：已经装了的扩展包</summary>
+    public ObservableCollection<PluginItemViewModel> InstalledItems { get; } = [];
+
+    /// <summary>「可下载」：目录里还没装的扩展包</summary>
     public ObservableCollection<PluginItemViewModel> VisibleItems { get; } = [];
 
-    /// <summary>插件文件（全局开关那一栏）</summary>
-    public ObservableCollection<AddonFileItemViewModel> AddonFiles { get; } = [];
+    /// <summary>「当前」里那截「没匹配到目录条目的插件文件」</summary>
+    public ObservableCollection<AddonFileItemViewModel> OrphanAddonFiles { get; } = [];
 
-    /// <summary>OptiScaler 那一栏：已下载的构建（同一时间只有一个「启用中」）</summary>
+    /// <summary>OptiScaler「当前」：已经下载到本地的构建</summary>
     public ObservableCollection<OptiScalerBuildItemViewModel> OptiScalerBuilds { get; } = [];
 
-    /// <summary>OptiScaler 那一栏：可下载的来源（3 个社区分支）</summary>
+    /// <summary>OptiScaler「可下载」：还没装过的来源</summary>
     public ObservableCollection<OptiScalerSourceItemViewModel> OptiScalerSources { get; } = [];
+
+    /// <summary>模块「当前」：装好了的模块</summary>
+    public ObservableCollection<ModuleItemViewModel> CurrentModules { get; } = [];
+
+    /// <summary>模块「可下载」：还没装的模块</summary>
+    public ObservableCollection<ModuleDownloadItemViewModel> AvailableModules { get; } = [];
+
+    // 下面几个是过滤 / 搜索前的全量，ApplyFilter 从它们算可见列表
+    private List<AddonFileItemViewModel> _allAddonFiles = [];
+    private List<OptiScalerBuildItemViewModel> _allOptiScalerBuilds = [];
+    private List<OptiScalerSourceItemViewModel> _allOptiScalerSources = [];
+    private List<ModuleItemViewModel> _allModules = [];
+    private List<ModuleDownloadItemViewModel> _allModuleDownloads = [];
 
     protected override void OnLoaded()
     {
+        InstalledPluginList.ItemsSource = InstalledItems;
+        OrphanAddonFileList.ItemsSource = OrphanAddonFiles;
         PluginList.ItemsSource = VisibleItems;
-        AddonFileList.ItemsSource = AddonFiles;
         OptiScalerBuildList.ItemsSource = OptiScalerBuilds;
         OptiScalerSourceList.ItemsSource = OptiScalerSources;
+        ModuleList.ItemsSource = CurrentModules;
+        ModuleDownloadList.ItemsSource = AvailableModules;
+
+
         _ = RefreshCatalogThenPageAsync();
     }
 
@@ -94,22 +125,30 @@ public sealed partial class GlobalPluginPage : PageBase
             _logger.LogWarning(ex, "Refresh remote catalog");
         }
 
+        // 云端目录：模块（catalog/modules.json）和 OptiScaler（catalog/optiscaler.json）。
+        // 插件那边有它自己的 ExtraCatalogFiles 机制，这里不动。
+        ModuleCatalogFile.Apply(RemoteCatalogService.ModulesCachePath);
+        _optiScalerOverlay = OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath);
+
         await RefreshAsync();
     }
 
     protected override void OnUnloaded()
     {
         Items.Clear();
+        InstalledItems.Clear();
         VisibleItems.Clear();
-        AddonFiles.Clear();
+        OrphanAddonFiles.Clear();
         OptiScalerBuilds.Clear();
         OptiScalerSources.Clear();
+        CurrentModules.Clear();
+        AvailableModules.Clear();
     }
 
     #region 刷新
 
     /// <summary>
-    /// 挨个查已装插件在 GitHub 上有没有新版本（用户要求「没有检测插件更新的功能」）。
+    /// 挨个查已装插件在 GitHub 上有没有新版本。
     /// 只对装了账本的条目查，串行跑、失败就跳过；查完在卡片上挂「有新版本 xxx」的徽标。
     /// </summary>
     private async Task CheckUpdatesAsync()
@@ -139,8 +178,6 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
-
-
     private async Task RefreshAsync()
     {
         if (_isWorking)
@@ -149,7 +186,6 @@ public sealed partial class GlobalPluginPage : PageBase
         }
 
         _isWorking = true;
-        TextBlock_Empty.Visibility = Visibility.Collapsed;
         TextBlock_Status.Text = "正在读取插件目录…";
 
         try
@@ -159,13 +195,15 @@ public sealed partial class GlobalPluginPage : PageBase
             if (_manager is null)
             {
                 Items.Clear();
-                AddonFiles.Clear();
-                ApplyFilter();
+                _allAddonFiles = [];
+                _allOptiScalerBuilds = [];
+                _allOptiScalerSources = [];
+                _allModules = [];
+                _allModuleDownloads = [];
                 TextBlock_TargetPath.Text = "未找到 HoYoShade 目录";
-                TextBlock_Empty.Text = reason;
-                TextBlock_Empty.Visibility = Visibility.Visible;
                 ShowInfo("没有可管理的 HoYoShade 目录", reason, InfoBarSeverity.Warning);
                 TextBlock_Status.Text = string.Empty;
+                ApplyFilter();
                 return;
             }
 
@@ -209,6 +247,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
             RefreshAddonFiles();
             RefreshOptiScaler();
+            RefreshModules();
 
             ShadeHostDiagnostics diagnostics = _manager.Diagnose();
             if (!diagnostics.ShadeDllExists)
@@ -231,7 +270,7 @@ public sealed partial class GlobalPluginPage : PageBase
             ApplyFilter();
 
             _logger.LogInformation("Global plugin page: {Extensions} plugin extensions, {Addons} addon files, shade host = {Host}",
-                Items.Count, AddonFiles.Count, _manager.Host.RootPath);
+                Items.Count, _allAddonFiles.Count, _manager.Host.RootPath);
 
             // 后台查一遍更新（每进一次页面查一次），有新的就在卡片上挂徽标
             _ = CheckUpdatesAsync();
@@ -315,7 +354,6 @@ public sealed partial class GlobalPluginPage : PageBase
 
     /// <summary>
     /// 全局开关：把这个扩展装的那几个 addon 全部改名（.addon64 ↔ .addon64x）。
-    /// **影响所有游戏** —— 这是「全局」和「按游戏」两种手段里的前一种。
     /// </summary>
     private void OnGlobalToggleRequested(PluginItemViewModel item, bool enabled)
     {
@@ -356,11 +394,11 @@ public sealed partial class GlobalPluginPage : PageBase
             }
         }
 
-        TextBlock_Status.Text = $"「{item.Name}」已全局{(enabled ? "启用" : "禁用")}（改了 {ok} 个文件的后缀）—— 所有游戏都会受影响。" +
+        TextBlock_Status.Text = $"「{item.Name}」已全局{(enabled ? "启用" : "禁用")}（改了 {ok} 个文件的后缀）。" +
                                 (error is null ? string.Empty : "（部分失败：" + error + "）") +
                                 purgeNote;
 
-        // 「插件文件」那一栏也要跟着变
+        // 「插件文件」那截也要跟着变
         RefreshAddonFiles();
     }
 
@@ -372,87 +410,346 @@ public sealed partial class GlobalPluginPage : PageBase
         manifest.Rules.Any(rule =>
             (rule.To ?? string.Empty).Replace('\\', '/').Contains("Addons", StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>过滤 + 搜索 → 重建可见列表</summary>
-    private void ApplyFilter()
+    /// <summary>重建「当前」的插件文件列表（哪些文件已经归到扩展卡片下面，由 ApplyFilter 再算）</summary>
+    private void RefreshAddonFiles()
     {
-        IEnumerable<PluginItemViewModel> query = Items;
+        _allAddonFiles = [];
 
-        query = _filter switch
+        string? directory = _manager?.Host.AddonsPath;
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
-            "installed" => query.Where(i => i.IsInstalled),
-            "available" => query.Where(i => !i.IsInstalled),
-            _ => query,
+            ApplyFilter();
+            return;
+        }
+
+        var cache = AddonNameCache.Load(PluginHostLocator.AddonNameCachePath ?? string.Empty);
+        List<string> candidates = [.. GameCatalog.AddonCandidateNames()];
+
+        List<AddonFileInfo> infos = AddonFileInfo.ScanDirectory(directory);
+
+        // 「缺 dll」必须看目录里的**所有文件**：nvngx_dlssnr.dll / sl.*.dll 不是 addon，
+        // 只看 addon 文件名会永远报「缺 dll」（用户反馈：实际不缺却显示缺）
+        List<string> allNames = [.. Directory.EnumerateFiles(directory).Select(Path.GetFileName)!];
+
+        foreach (AddonFileInfo info in infos)
+        {
+            // 这个文件属于哪个插件族 → 要不要 DLSS5 那套 dll
+            AddonDllStatus dllStatus = AddonDllChecker.CheckFiles(allNames, GameCatalog.TagsOfAddonFile(info.FileName));
+            _allAddonFiles.Add(new AddonFileItemViewModel(info, directory, cache, candidates, dllStatus, OnAddonFileToggleRequested));
+        }
+
+        ApplyFilter();
+    }
+
+    /// <summary>
+    /// 「插件文件」那一截的删除：二级确认 → 删文件 → 顺手把各游戏 ini 里指向它的条目清掉。
+    /// </summary>
+    private async void Button_DeleteAddonFile_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: AddonFileItemViewModel item })
+        {
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "删除插件文件",
+            Content = $"确定删掉这个文件吗？\n\n{item.FileName}\n\n" +
+                      "文件会从插件目录里真正删除（不进回收站）；各游戏 ReShade.ini 里指向它的 " +
+                      "DisabledAddons / LoadFromDllMain 条目也会一起清掉。",
+            PrimaryButtonText = "删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
         };
 
-        if (!string.IsNullOrWhiteSpace(_search))
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
         {
-            query = query.Where(i =>
-                i.Name.Contains(_search, StringComparison.CurrentCultureIgnoreCase)
-                || i.Description.Contains(_search, StringComparison.CurrentCultureIgnoreCase)
-                || i.Manifest.Id.Contains(_search, StringComparison.OrdinalIgnoreCase));
+            return;
         }
 
-        List<PluginItemViewModel> visible = [.. query];
-
-        VisibleItems.Clear();
-        foreach (PluginItemViewModel item in visible)
+        await RunAsync(async () =>
         {
-            VisibleItems.Add(item);
+            try
+            {
+                string fullPath = item.FullPath;
+                if (File.Exists(fullPath))
+                {
+                    File.Delete(fullPath);
+                }
+
+                AddonReferenceCleanResult clean = PurgeAddonReferences([Path.GetFileName(fullPath)]);
+                TextBlock_Status.Text = $"已删除 {Path.GetFileName(fullPath)}" +
+                                        (clean.Changed ? $"，并清了 {clean.ChangedGames.Count} 个游戏 ini 里的残留条目。" : "。");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Delete addon file");
+                ShowInfo("删除失败", ex.Message, InfoBarSeverity.Error);
+                return;
+            }
+
+            RefreshAddonFiles();
+            await Task.CompletedTask;
+        });
+    }
+
+    /// <summary>「插件文件」那一截的开关：改这一个文件的后缀</summary>
+    private void OnAddonFileToggleRequested(AddonFileItemViewModel item, bool enabled)
+    {
+        AddonToggleResult result = AddonFileSwitcher.SetEnabled(item.FullPath, enabled);
+
+        if (!result.Ok)
+        {
+            item.Revert();
+            _logger.LogWarning("Global addon toggle failed: {Error}", result.Error);
+            TextBlock_Status.Text = "改名失败：" + result.Error;
+            ShowInfo("改名失败", result.Error ?? string.Empty, InfoBarSeverity.Error);
+            return;
         }
 
-        // 展开的卡片如果被过滤掉了，收起它，免得下次回来还是摊开的
-        foreach (PluginItemViewModel hidden in Items.Except(visible))
-        {
-            hidden.IsExpanded = false;
-        }
+        _logger.LogInformation("Global addon toggle: {Name} -> {Path}", item.FileName, result.Path);
 
-        int installed = Items.Count(i => i.IsInstalled);
-        TextBlock_Count.Text = Items.Count == 0 ? string.Empty : $"共 {Items.Count} 个插件，已安装 {installed} 个";
-        TextBlock_Status.Text = Items.Count == 0
-            ? string.Empty
-            : $"{VisibleItems.Count} / {Items.Count} 个显示中";
+        item.MarkToggled(enabled, Path.GetFileName(result.Path));
+        TextBlock_Status.Text = $"「{item.Name}」已{(enabled ? "全局启用" : "全局禁用")}（{Path.GetFileName(result.Path)}）。";
 
-        bool empty = VisibleItems.Count == 0;
-        TextBlock_Empty.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-        if (empty)
+        // 扩展包那边的开关状态也跟着变
+        foreach (PluginItemViewModel extension in Items)
         {
-            TextBlock_Empty.Text = Items.Count == 0
-                ? (_manager is null ? "没有可管理的 HoYoShade 目录。" : "插件目录是空的。")
-                : "没有符合当前过滤条件的插件。";
+            extension.RefreshGlobalEnabled();
         }
     }
 
     #endregion
 
-    #region 视图切换
+    #region 视图切换 / 过滤
 
     private void RadioButtons_View_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // 事件可能在 InitializeComponent 解析到一半就触发，这时后面的控件还是 null
+        if (Grid_Plugins is null || Grid_OptiScaler is null || Grid_Modules is null || TextBlock_Count is null)
+        {
+            return;
+        }
+
         if (RadioButtons_View.SelectedItem is not RadioButton { Tag: string tag })
         {
             return;
         }
 
-        bool files = tag == "files";
-        bool optiScaler = tag == "optiscaler";
+        _tab = tag;
 
-        Grid_Extensions.Visibility = files || optiScaler ? Visibility.Collapsed : Visibility.Visible;
-        Grid_AddonFiles.Visibility = files ? Visibility.Visible : Visibility.Collapsed;
-        Grid_OptiScaler.Visibility = optiScaler ? Visibility.Visible : Visibility.Collapsed;
-
-        // 「全部 / 已安装 / 可下载」是扩展包专用的过滤，另外两栏用不上
-        Visibility filterVisibility = files || optiScaler ? Visibility.Collapsed : Visibility.Visible;
-        RadioButtons_Filter.Visibility = filterVisibility;
-        TextBlock_Count.Visibility = filterVisibility;
-
-        if (files)
-        {
-            RefreshAddonFiles();
-        }
-        else if (optiScaler)
+        // 切到哪一页就把哪一页的本地数据重读一遍（都是读本地目录，不打网络）
+        if (tag == "optiscaler")
         {
             RefreshOptiScaler();
         }
+        else if (tag == "modules")
+        {
+            RefreshModules();
+        }
+        else
+        {
+            RefreshAddonFiles();
+        }
+
+        ApplyFilter();
+    }
+
+    private void TextBox_Search_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _search = TextBox_Search.Text?.Trim() ?? string.Empty;
+        ApplyFilter();
+    }
+
+    private bool MatchSearch(params string?[] values)
+    {
+        if (string.IsNullOrWhiteSpace(_search))
+        {
+            return true;
+        }
+
+        foreach (string? value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value) && value.Contains(_search, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>三个标签页共用：搜索 / 空状态 / 计数都在这里收口</summary>
+    private void ApplyFilter()
+    {
+        if (TextBlock_PluginsCurrentEmpty is null || TextBlock_Count is null)
+        {
+            return;
+        }
+
+        UpdatePluginLists();
+        UpdateOptiScalerLists();
+        UpdateModuleLists();
+        UpdateTabVisibility();
+        UpdateCount();
+    }
+
+    private void UpdateTabVisibility()
+    {
+        if (Grid_Plugins is null || Grid_OptiScaler is null || Grid_Modules is null)
+        {
+            return;
+        }
+
+        Grid_Plugins.Visibility = _tab == "plugins" ? Visibility.Visible : Visibility.Collapsed;
+        Grid_OptiScaler.Visibility = _tab == "optiscaler" ? Visibility.Visible : Visibility.Collapsed;
+        Grid_Modules.Visibility = _tab == "modules" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateCount()
+    {
+        TextBlock_Count.Text = _tab switch
+        {
+            "optiscaler" => $"当前 {OptiScalerBuilds.Count} · 可下载 {OptiScalerSources.Count}",
+            "modules" => $"当前 {CurrentModules.Count} · 可下载 {AvailableModules.Count}",
+            _ => $"当前 {InstalledItems.Count + OrphanAddonFiles.Count} · 可下载 {VisibleItems.Count}",
+        };
+    }
+
+    /// <summary>插件页：当前 = 已装扩展（+ 没归属的插件文件），可下载 = 还没装的扩展</summary>
+    private void UpdatePluginLists()
+    {
+        // 已经归到某个扩展卡片下面的插件文件，不再单独列一遍
+        HashSet<string> owned = new(StringComparer.OrdinalIgnoreCase);
+        foreach (PluginItemViewModel item in Items)
+        {
+            foreach (string file in item.GlobalAddonFiles)
+            {
+                owned.Add(Path.GetFileName(file));
+            }
+        }
+
+        bool hasSearch = !string.IsNullOrWhiteSpace(_search);
+
+        InstalledItems.Clear();
+        foreach (PluginItemViewModel item in Items)
+        {
+            if (item.IsInstalled && MatchSearch(item.Name, item.Description, item.Manifest.Id))
+            {
+                InstalledItems.Add(item);
+            }
+        }
+
+        VisibleItems.Clear();
+        foreach (PluginItemViewModel item in Items)
+        {
+            if (!item.IsInstalled && MatchSearch(item.Name, item.Description, item.Manifest.Id))
+            {
+                VisibleItems.Add(item);
+            }
+        }
+
+        OrphanAddonFiles.Clear();
+        foreach (AddonFileItemViewModel file in _allAddonFiles)
+        {
+            if (!owned.Contains(file.FileName) && MatchSearch(file.Name, file.FileName, file.Slug))
+            {
+                OrphanAddonFiles.Add(file);
+            }
+        }
+
+        // 展开的卡片如果被搜索过滤掉了，收起来
+        foreach (PluginItemViewModel item in Items)
+        {
+            if (!InstalledItems.Contains(item) && !VisibleItems.Contains(item))
+            {
+                item.IsExpanded = false;
+            }
+        }
+
+        TextBlock_PluginsCurrentEmpty.Text = hasSearch
+            ? "没有符合搜索条件的插件。"
+            : _manager is null ? "没有可管理的 HoYoShade 目录。" : "插件目录里没有插件。";
+        TextBlock_PluginsCurrentEmpty.Visibility =
+            InstalledItems.Count == 0 && OrphanAddonFiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        TextBlock_OrphanCaption.Visibility = OrphanAddonFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        TextBlock_PluginsAvailableEmpty.Text = hasSearch
+            ? "没有符合搜索条件的插件。"
+            : "目录里的插件都已经装上了。";
+        TextBlock_PluginsAvailableEmpty.Visibility = VisibleItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>OptiScaler 页：当前 = 本地构建，可下载 = 还没装过的来源</summary>
+    private void UpdateOptiScalerLists()
+    {
+        bool hasSearch = !string.IsNullOrWhiteSpace(_search);
+
+        OptiScalerBuilds.Clear();
+        foreach (OptiScalerBuildItemViewModel build in _allOptiScalerBuilds)
+        {
+            if (MatchSearch(build.Title, build.Build.Version, build.Build.SourceId, build.Build.AssetName))
+            {
+                OptiScalerBuilds.Add(build);
+            }
+        }
+
+        OptiScalerSources.Clear();
+        foreach (OptiScalerSourceItemViewModel source in _allOptiScalerSources)
+        {
+            if (MatchSearch(source.Name, source.Description, source.Repository, source.TagsText))
+            {
+                OptiScalerSources.Add(source);
+            }
+        }
+
+        TextBlock_OptiScalerCurrentEmpty.Text = hasSearch
+            ? "没有符合搜索条件的 OptiScaler。"
+            : AppConfig.OptiScalerRootPath.Length == 0
+                ? "还没读到用户数据目录，装不了 OptiScaler。"
+                : "还没有下载任何 OptiScaler。先在下面「可下载」里拉一个。";
+        TextBlock_OptiScalerCurrentEmpty.Visibility = OptiScalerBuilds.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        TextBlock_OptiScalerAvailableEmpty.Text = hasSearch
+            ? "没有符合搜索条件的来源。"
+            : "可下载的来源都已经装过一份了。";
+        TextBlock_OptiScalerAvailableEmpty.Visibility = OptiScalerSources.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>模块页：当前 = 装好的模块，可下载 = 目录里还没装的模块</summary>
+    private void UpdateModuleLists()
+    {
+        bool hasSearch = !string.IsNullOrWhiteSpace(_search);
+
+        CurrentModules.Clear();
+        foreach (ModuleItemViewModel module in _allModules)
+        {
+            if (MatchSearch(module.Name, module.Description, module.Key, module.DllPath, module.TagsText))
+            {
+                CurrentModules.Add(module);
+            }
+        }
+
+        AvailableModules.Clear();
+        foreach (ModuleDownloadItemViewModel module in _allModuleDownloads)
+        {
+            if (MatchSearch(module.Name, module.Description, module.Module.Id, module.TagsText))
+            {
+                AvailableModules.Add(module);
+            }
+        }
+
+        TextBlock_ModulesCurrentEmpty.Text = hasSearch
+            ? "没有符合搜索条件的模块。"
+            : "还没有装任何模块。先在下面「可下载」里拉一个，或「添加 DLL…」。";
+        TextBlock_ModulesCurrentEmpty.Visibility = CurrentModules.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        TextBlock_ModulesAvailableEmpty.Text = hasSearch
+            ? "没有符合搜索条件的模块。"
+            : "目录里能装的模块都已经装上了。";
+        TextBlock_ModulesAvailableEmpty.Visibility = AvailableModules.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     #endregion
@@ -467,7 +764,7 @@ public sealed partial class GlobalPluginPage : PageBase
         ? string.Empty
         : Path.Combine(AppConfig.UserDataFolder, ".hysx", "i18n");
 
-    #region 插件文件（全局开关）
+    #region 插件文件汉化（入口已挪到设置 → 实验性功能，这里保留逻辑）
 
     /// <summary>插件汉化：按翻译表把这行插件里的英文界面文本原地换成中文（先自动备份）</summary>
     private async void Button_LocalizeAddon_Click(object sender, RoutedEventArgs e)
@@ -578,7 +875,7 @@ public sealed partial class GlobalPluginPage : PageBase
     private async void Button_LocalizeAllAddons_Click(object sender, RoutedEventArgs e)
     {
         List<AddonI18nTable> tables = AddonLocalizer.LoadTables(I18nTableDirectory);
-        List<AddonFileItemViewModel> targets = [.. AddonFiles.Where(f => AddonLocalizer.SelectTable(tables, f.FileName) is not null)];
+        List<AddonFileItemViewModel> targets = [.. _allAddonFiles.Where(f => AddonLocalizer.SelectTable(tables, f.FileName) is not null)];
 
         if (targets.Count == 0)
         {
@@ -635,127 +932,11 @@ public sealed partial class GlobalPluginPage : PageBase
         RefreshAddonFiles();
     }
 
-    private void RefreshAddonFiles()
-    {
-        AddonFiles.Clear();
-
-        string? directory = _manager?.Host.AddonsPath;
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
-        {
-            TextBlock_AddonFilesEmpty.Text = "找不到插件目录（HoYoShade\\reshade-shaders\\Addons）。";
-            TextBlock_AddonFilesEmpty.Visibility = Visibility.Visible;
-            return;
-        }
-
-        var cache = AddonNameCache.Load(PluginHostLocator.AddonNameCachePath ?? string.Empty);
-        List<string> candidates = [.. GameCatalog.AddonCandidateNames()];
-
-        List<AddonFileInfo> infos = AddonFileInfo.ScanDirectory(directory);
-
-        // 「缺 dll」必须看目录里的**所有文件**：nvngx_dlssnr.dll / sl.*.dll 不是 addon，
-        // 只看 addon 文件名会永远报「缺 dll」（用户反馈：实际不缺却显示缺）
-        List<string> allNames = [.. Directory.EnumerateFiles(directory).Select(Path.GetFileName)!];
-
-        foreach (AddonFileInfo info in infos)
-        {
-            // 这个文件属于哪个插件族 → 要不要 DLSS5 那套 dll
-            AddonDllStatus dllStatus = AddonDllChecker.CheckFiles(allNames, GameCatalog.TagsOfAddonFile(info.FileName));
-            AddonFiles.Add(new AddonFileItemViewModel(info, directory, cache, candidates, dllStatus, OnAddonFileToggleRequested));
-        }
-
-        TextBlock_AddonFilesEmpty.Text = "插件目录里没有 addon 文件。";
-        TextBlock_AddonFilesEmpty.Visibility = AddonFiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    /// <summary>
-    /// 「插件文件」那一栏的删除：二级确认 → 删文件 → 顺手把各游戏 ini 里指向它的条目清掉。
-    /// </summary>
-    private async void Button_DeleteAddonFile_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement { DataContext: AddonFileItemViewModel item })
-        {
-            return;
-        }
-
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "删除插件文件",
-            Content = $"确定删掉这个文件吗？\n\n{item.FileName}\n\n" +
-                      "文件会从插件目录里真正删除（不进回收站）；各游戏 ReShade.ini 里指向它的 " +
-                      "DisabledAddons / LoadFromDllMain 条目也会一起清掉。",
-            PrimaryButtonText = "删除",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Close,
-        };
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        await RunAsync(async () =>
-        {
-            try
-            {
-                string fullPath = item.FullPath;
-                if (File.Exists(fullPath))
-                {
-                    File.Delete(fullPath);
-                }
-
-                AddonReferenceCleanResult clean = PurgeAddonReferences([Path.GetFileName(fullPath)]);
-                TextBlock_Status.Text = $"已删除 {Path.GetFileName(fullPath)}" +
-                                        (clean.Changed ? $"，并清了 {clean.ChangedGames.Count} 个游戏 ini 里的残留条目。" : "。");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Delete addon file");
-                ShowInfo("删除失败", ex.Message, InfoBarSeverity.Error);
-                return;
-            }
-
-            RefreshAddonFiles();
-            await Task.CompletedTask;
-        });
-    }
-
-
-
-    /// <summary>「插件文件」那一栏的开关：改这一个文件的后缀</summary>
-    private void OnAddonFileToggleRequested(AddonFileItemViewModel item, bool enabled)
-    {
-        AddonToggleResult result = AddonFileSwitcher.SetEnabled(item.FullPath, enabled);
-
-        if (!result.Ok)
-        {
-            item.Revert();
-            _logger.LogWarning("Global addon toggle failed: {Error}", result.Error);
-            TextBlock_Status.Text = "改名失败：" + result.Error;
-            ShowInfo("改名失败", result.Error ?? string.Empty, InfoBarSeverity.Error);
-            return;
-        }
-
-        _logger.LogInformation("Global addon toggle: {Name} -> {Path}", item.FileName, result.Path);
-
-        item.MarkToggled(enabled, Path.GetFileName(result.Path));
-        TextBlock_Status.Text = $"「{item.Name}」已{(enabled ? "全局启用" : "全局禁用")}（{Path.GetFileName(result.Path)}）—— 影响所有游戏。";
-
-        // 扩展包那边的开关状态也跟着变
-        foreach (PluginItemViewModel extension in Items)
-        {
-            extension.RefreshGlobalEnabled();
-        }
-    }
-
     #endregion
 
-    #region OptiScaler（下载 + 单选启用）
+    #region OptiScaler（下载 + 管理；总开关也在这里）
 
     private OptiScalerDownloader? _optiScalerDownloader;
-
-    /// <summary>刷新期间别响应 RadioButton 的 Checked（否则会把选择反复写盘）</summary>
-    private bool _isRefreshingOptiScaler;
 
     /// <summary>每个来源拉过的版本 tag（装完刷新时直接用，不再打网络）</summary>
     private readonly Dictionary<string, List<ExtensionVersion>> _optiScalerVersions = new(StringComparer.OrdinalIgnoreCase);
@@ -764,105 +945,113 @@ public sealed partial class GlobalPluginPage : PageBase
 
     private OptiScalerDownloader OptiDownloads => _optiScalerDownloader ??= new OptiScalerDownloader();
 
-    /// <summary>
-    /// 扫一遍本地 OptiScaler 库 + 填上三个来源。
-    /// 库目录：&lt;用户数据目录&gt;\OptiScaler（跟 HoYoShade 目录平级，不进插件目录）。
-    /// </summary>
-    private void RefreshOptiScaler()
+    private void ToggleSwitch_OptiScalerBuildEnabled_Toggled(object sender, RoutedEventArgs e)
     {
-        _isRefreshingOptiScaler = true;
-
-        try
-        {
-            OptiScalerBuilds.Clear();
-            OptiScalerSources.Clear();
-
-            string root = AppConfig.OptiScalerRootPath;
-
-            if (root.Length == 0)
-            {
-                TextBlock_OptiScalerEmpty.Text = "还没读到用户数据目录，装不了 OptiScaler。";
-                TextBlock_OptiScalerEmpty.Visibility = Visibility.Visible;
-                return;
-            }
-
-            OptiScalerLibrary library = OptiLib;
-            OptiScalerBuild? selected = library.GetSelected();
-            List<OptiScalerBuild> all = library.List();
-
-            foreach (OptiScalerBuild build in all)
-            {
-                OptiScalerBuilds.Add(new OptiScalerBuildItemViewModel(build, selected?.Id));
-            }
-
-            // 内置来源 + 远端目录覆盖（catalog/optiscaler.json，缓存在 .hysxcatalog）
-            List<OptiScalerSource> sources = OptiScalerCatalog.MergeWithBuiltin(
-                OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath));
-
-            foreach (OptiScalerSource source in sources)
-            {
-                List<OptiScalerBuild> mine =
-                    [.. all.Where(b => string.Equals(b.SourceId, source.Id, StringComparison.OrdinalIgnoreCase))];
-
-                // 「当前版本」：优先当前启用的那个；没启用过就用这个来源最近装的那个
-                string? current = null;
-                if (selected is not null && string.Equals(selected.SourceId, source.Id, StringComparison.OrdinalIgnoreCase))
-                {
-                    current = selected.Version;
-                }
-                else if (mine.Count > 0)
-                {
-                    current = mine[0].Version;
-                }
-
-                var vm = new OptiScalerSourceItemViewModel(source) { CurrentVersion = current };
-                foreach (OptiScalerBuild build in mine)
-                {
-                    vm.InstalledVersions.Add(build.Version);
-                }
-
-                // 之前拉过版本列表就直接用（装完/删完重新刷新时不用再打一遍网络）
-                if (_optiScalerVersions.TryGetValue(source.Id, out List<ExtensionVersion>? cached))
-                {
-                    vm.ApplyVersions(cached);
-                }
-
-                OptiScalerSources.Add(vm);
-            }
-
-            TextBlock_OptiScalerEmpty.Text = "还没有下载任何 OptiScaler。先在下面「可下载」里拉一个。";
-            TextBlock_OptiScalerEmpty.Visibility = OptiScalerBuilds.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-        finally
-        {
-            _isRefreshingOptiScaler = false;
-        }
-    }
-
-    /// <summary>单选：点了某一行的「启用」就把 state.json 改成它（其它行自动取消）。</summary>
-    private void RadioButton_OptiScalerBuild_Checked(object sender, RoutedEventArgs e)
-    {
-        if (_isRefreshingOptiScaler || sender is not FrameworkElement { DataContext: OptiScalerBuildItemViewModel item })
+        if (sender is not ToggleSwitch { DataContext: OptiScalerBuildItemViewModel item } toggle)
         {
             return;
         }
 
-        try
-        {
-            OptiLib.Select(item.Id);
+        AppConfig.SetOptiScalerBuildEnabled(item.Build.Id, toggle.IsOn);
+        TextBlock_Status.Text = toggle.IsOn
+            ? $"「{item.Title}」的全局开关：已打开。"
+            : $"「{item.Title}」的全局开关：已关闭。";
+    }
 
-            foreach (OptiScalerBuildItemViewModel vm in OptiScalerBuilds)
+    /// <summary>
+    /// 扫一遍本地 OptiScaler 库 + 填上「可下载」的来源。
+    /// 库目录：&lt;用户数据目录&gt;\OptiScaler（跟 HoYoShade 目录平级，不进插件目录）。
+    /// </summary>
+    private void RefreshOptiScaler()
+    {
+        // 刷新会重建整个列表，先记住哪些卡片是展开的，重建后还给它展开
+        HashSet<string> expandedBuilds = [.. _allOptiScalerBuilds.Where(b => b.IsExpanded).Select(b => b.Id)];
+        HashSet<string> expandedSources = [.. _allOptiScalerSources.Where(s => s.IsExpanded).Select(s => s.Source.Id)];
+
+        _allOptiScalerBuilds = [];
+        _allOptiScalerSources = [];
+
+        string root = AppConfig.OptiScalerRootPath;
+
+        if (root.Length == 0)
+        {
+            ApplyFilter();
+            return;
+        }
+
+        OptiScalerLibrary library = OptiLib;
+        OptiScalerBuild? selected = library.GetSelected();
+        List<OptiScalerBuild> all = library.List();
+
+        // 内置来源 + 远端目录覆盖（catalog/optiscaler.json，缓存在 .hysxcatalog）
+        List<OptiScalerSource> sources = OptiScalerCatalog.MergeWithBuiltin(
+            _optiScalerOverlay ?? OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath));
+
+        var byId = new Dictionary<string, OptiScalerSource>(StringComparer.OrdinalIgnoreCase);
+        foreach (OptiScalerSource source in sources)
+        {
+            byId[source.Id] = source;
+        }
+
+        // 「当前」= 本地已经下载好的构建（展开可以换版本）
+        foreach (OptiScalerBuild build in all)
+        {
+            byId.TryGetValue(build.SourceId, out OptiScalerSource? source);
+
+            var vm = new OptiScalerBuildItemViewModel(build, selected?.Id, source)
             {
-                vm.Enabled = string.Equals(vm.Id, item.Id, StringComparison.OrdinalIgnoreCase);
+                IsExpanded = expandedBuilds.Contains(build.Id),
+            };
+
+            if (source is not null && _optiScalerVersions.TryGetValue(source.Id, out List<ExtensionVersion>? cached))
+            {
+                vm.ApplyVersions(cached);
             }
 
-            TextBlock_Status.Text = $"当前启用 OptiScaler：{item.Id}";
-            _logger.LogInformation("OptiScaler selected: {Id}", item.Id);
+            _allOptiScalerBuilds.Add(vm);
         }
-        catch (Exception ex)
+
+        // 「可下载」= 还没装过任何构建的来源（已经装过的在「当前」里，不重复列）
+        foreach (OptiScalerSource source in sources)
         {
-            _logger.LogError(ex, "Select OptiScaler build");
-            ShowInfo("启用失败", ex.Message, InfoBarSeverity.Error);
+            bool installed = all.Any(b => string.Equals(b.SourceId, source.Id, StringComparison.OrdinalIgnoreCase));
+            if (installed)
+            {
+                continue;
+            }
+
+            var vm = new OptiScalerSourceItemViewModel(source)
+            {
+                IsExpanded = expandedSources.Contains(source.Id),
+            };
+
+            if (_optiScalerVersions.TryGetValue(source.Id, out List<ExtensionVersion>? cached))
+            {
+                vm.ApplyVersions(cached);
+            }
+
+            _allOptiScalerSources.Add(vm);
+        }
+
+        ApplyFilter();
+    }
+
+    /// <summary>
+    /// 构建卡片 / 来源卡片共用：点标题行展开 / 收起（默认只占紧凑一行）。
+    /// 展开时顺手拉一次版本列表，好让用户直接换版本。
+    /// </summary>
+    private void Button_OptiScalerHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: IOptiScalerVersionHost item })
+        {
+            return;
+        }
+
+        item.IsExpanded = !item.IsExpanded;
+
+        if (item.IsExpanded && item.Versions.Count == 0 && item.CanInteract && item.HasVersionsSource)
+        {
+            _ = LoadOptiScalerVersionsAsync(item);
         }
     }
 
@@ -945,12 +1134,13 @@ public sealed partial class GlobalPluginPage : PageBase
         RefreshOptiScaler();
     }
 
-    /// <summary>点开版本下拉时自动拉一次版本（用户要求：跟扩展包那边一样，点下拉自动获取）。</summary>
+    /// <summary>点开版本下拉时自动拉一次版本（跟扩展包那边一样，点下拉自动获取）。</summary>
     private async void ComboBox_OptiScalerVersions_DropDownOpened(object sender, object e)
     {
-        if (sender is not FrameworkElement { DataContext: OptiScalerSourceItemViewModel item }
+        if (sender is not FrameworkElement { DataContext: IOptiScalerVersionHost item }
             || item.Versions.Count > 0
-            || !item.CanInteract)
+            || !item.CanInteract
+            || !item.HasVersionsSource)
         {
             return;
         }
@@ -958,7 +1148,7 @@ public sealed partial class GlobalPluginPage : PageBase
         await LoadOptiScalerVersionsAsync(item);
     }
 
-    private async Task LoadOptiScalerVersionsAsync(OptiScalerSourceItemViewModel item)
+    private async Task LoadOptiScalerVersionsAsync(IOptiScalerVersionHost item)
     {
         item.CanInteract = false;
         item.StatusText = "正在获取版本…";
@@ -974,9 +1164,9 @@ public sealed partial class GlobalPluginPage : PageBase
             {
                 item.StatusText = "没拿到任何版本 —— 仓库可能已改名 / 删除，或者网络不通。";
             }
-            else if (item.SelectedVersion is { } selected)
+            else if (item.SelectedVersion is not null)
             {
-                item.StatusText = $"共 {versions.Count} 个版本，默认选中 {item.TagOf(selected)}。";
+                item.StatusText = $"共 {versions.Count} 个版本，默认选中 {item.TagOf(item.SelectedVersion)}。";
             }
             else
             {
@@ -994,112 +1184,122 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
-    /// <summary>「下载并安装」：一个 release 里通常有好几个 zip（主包 / rtx40-mfg / 补丁），让用户挑。</summary>
+    /// <summary>「下载 / 切换 / 重装」：按选中的 tag 装这个来源的某个版本。</summary>
     private async void Button_DownloadOptiScaler_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { DataContext: OptiScalerSourceItemViewModel item } || _isWorking)
+        if (sender is not FrameworkElement { DataContext: IOptiScalerVersionHost item } || _isWorking)
         {
             return;
         }
 
-        string tag = item.TagOf(item.SelectedVersion);
+        string? tag = item.TagOf(item.SelectedVersion);
         if (string.IsNullOrWhiteSpace(tag))
         {
             ShowInfo("还没选版本", "点开「版本」下拉，选一个版本。", InfoBarSeverity.Warning);
             return;
         }
 
-        await RunAsync(async () =>
+        await RunAsync(() => DownloadOptiScalerVersionAsync(item, tag));
+    }
+
+    /// <summary>一个 release 里通常有好几个 zip（主包 / rtx40-mfg / 补丁），让用户挑。</summary>
+    private async Task DownloadOptiScalerVersionAsync(IOptiScalerVersionHost item, string tag)
+    {
+        item.CanInteract = false;
+        item.StatusText = $"正在查 {tag} 里的压缩包…";
+
+        string finalStatus = string.Empty;
+
+        var progress = new Progress<DownloadProgress>(p =>
         {
-            item.CanInteract = false;
-            item.StatusText = $"正在查 {tag} 里的压缩包…";
-
-            var progress = new Progress<DownloadProgress>(p =>
-            {
-                string text = p.Percent is null
-                    ? $"{p.BytesReceived / 1024d / 1024d:F1} MB"
-                    : $"{p.Percent.Value:F0}%　{p.BytesReceived / 1024d / 1024d:F1} MB";
-                TextBlock_Status.Text = $"正在下载 OptiScaler（{tag}）… {text}";
-                ProgressBar_Overall.IsIndeterminate = p.Percent is null;
-                ProgressBar_Overall.Value = p.Percent ?? 0;
-            });
-
-            try
-            {
-                List<string> assets = await OptiDownloads.ListAssetsAsync(item.Source, tag);
-
-                if (assets.Count == 0)
-                {
-                    item.StatusText = $"{tag} 里没有可下载的 .zip / .exe（7z 之类暂不支持）。";
-                    return;
-                }
-
-                string? asset = assets.Count == 1 ? assets[0] : await PickOptiScalerAssetAsync(item.Source, tag, assets);
-                if (string.IsNullOrWhiteSpace(asset))
-                {
-                    item.StatusText = "已取消。";
-                    return;
-                }
-
-                bool installer = OptiScalerDownloader.IsInstaller(asset);
-                item.StatusText = installer ? $"正在下载安装程序 {asset}…" : $"正在下载 {asset}…";
-
-                OptiScalerLibrary library = OptiLib;
-                string targetDirectory = library.DirectoryFor(item.Source.Id, tag);
-                bool setupDeclined = false;
-
-                OptiScalerBuild build = await OptiDownloads.InstallAsync(
-                    item.Source,
-                    tag,
-                    asset,
-                    library,
-                    progress,
-                    confirmBeforeRun: async _ =>
-                    {
-                        // 运行它自己的安装程序之前先提醒一句（用户要求）
-                        bool run = await ConfirmOptiScalerSetupAsync(targetDirectory);
-                        setupDeclined = !run;
-                        return run;
-                    });
-
-                // 各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边 —— 装完顺手从插件目录补一份
-                NrdllPlaceResult nrdll = OptiScalerRuntime.EnsureNrdll(
-                    build.Directory,
-                    _manager?.Host.AddonsPath,
-                    OptiScalerBuilds.Select(v => v.Build.Directory));
-
-                // 之前一个都没启用、而且这个构建里真有 dll 时，装完直接启用它（省一步）
-                if (library.GetSelected() is null && build.DllPath is not null)
-                {
-                    library.Select(build.Id);
-                }
-
-                item.StatusText = installer
-                    ? setupDeclined
-                        ? $"安装程序已下载（{build.SizeBytes / 1024d / 1024d:F1} MB），还没运行 —— 点「打开目录」可以自己双击它。"
-                        : build.DllPath is null
-                            ? "安装程序跑完了，但没在目录里找到可注入的 dll（version.dll / dxgi.dll 之类）。"
-                            : $"装好了：注入目标 = {Path.GetFileName(build.DllPath)}。{nrdll.Message}到启动器页勾「启动 OptiScaler」即可。"
-                    : $"已装好 {build.Id}（{build.SizeBytes / 1024d / 1024d:F1} MB）。" +
-                      (build.DllPath is null ? "注意：包里没找到 OptiScaler.dll。" : string.Empty);
-                TextBlock_Status.Text = $"OptiScaler「{build.Id}」安装完成：{build.Directory}";
-                _logger.LogInformation("OptiScaler installed: {Id} from {Asset}", build.Id, asset);
-
-                RefreshOptiScaler();
-
-                OptiScalerSourceItemViewModel? refreshed =
-                    OptiScalerSources.FirstOrDefault(s => string.Equals(s.Source.Id, item.Source.Id, StringComparison.OrdinalIgnoreCase));
-                if (refreshed is not null)
-                {
-                    refreshed.StatusText = item.StatusText;
-                }
-            }
-            finally
-            {
-                item.CanInteract = true;
-                ProgressBar_Overall.IsIndeterminate = false;
-            }
+            string text = p.Percent is null
+                ? $"{p.BytesReceived / 1024d / 1024d:F1} MB"
+                : $"{p.Percent.Value:F0}%　{p.BytesReceived / 1024d / 1024d:F1} MB";
+            TextBlock_Status.Text = $"正在下载 OptiScaler（{tag}）… {text}";
+            ProgressBar_Overall.IsIndeterminate = p.Percent is null;
+            ProgressBar_Overall.Value = p.Percent ?? 0;
         });
+
+        try
+        {
+            List<string> assets = await OptiDownloads.ListAssetsAsync(item.Source, tag);
+
+            if (assets.Count == 0)
+            {
+                item.StatusText = $"{tag} 里没有可下载的 .zip / .exe（7z 之类暂不支持）。";
+                return;
+            }
+
+            string? asset = assets.Count == 1 ? assets[0] : await PickOptiScalerAssetAsync(item.Source, tag, assets);
+            if (string.IsNullOrWhiteSpace(asset))
+            {
+                item.StatusText = "已取消。";
+                return;
+            }
+
+            bool installer = OptiScalerDownloader.IsInstaller(asset);
+            item.StatusText = installer ? $"正在下载安装程序 {asset}…" : $"正在下载 {asset}…";
+
+            OptiScalerLibrary library = OptiLib;
+            string targetDirectory = library.DirectoryFor(item.Source.Id, tag);
+            bool setupDeclined = false;
+
+            OptiScalerBuild build = await OptiDownloads.InstallAsync(
+                item.Source,
+                tag,
+                asset,
+                library,
+                progress,
+                confirmBeforeRun: async _ =>
+                {
+                    // 运行它自己的安装程序之前先提醒一句（用户要求）
+                    bool run = await ConfirmOptiScalerSetupAsync(targetDirectory);
+                    setupDeclined = !run;
+                    return run;
+                });
+
+            // 各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边 —— 装完顺手从插件目录补一份
+            NrdllPlaceResult nrdll = OptiScalerRuntime.EnsureNrdll(
+                build.Directory,
+                _manager?.Host.AddonsPath,
+                OptiScalerBuilds.Select(v => v.Build.Directory));
+
+            finalStatus = installer
+                ? setupDeclined
+                    ? $"安装程序已下载（{build.SizeBytes / 1024d / 1024d:F1} MB），还没运行 —— 点「打开目录」可以自己双击它。"
+                    : build.DllPath is null
+                        ? "安装程序跑完了，但没在目录里找到可注入的 dll（version.dll / dxgi.dll 之类）。"
+                        : $"装好了：注入目标 = {Path.GetFileName(build.DllPath)}。{nrdll.Message}到启动器页勾「启动 OptiScaler」即可。"
+                : $"已装好 {build.Id}（{build.SizeBytes / 1024d / 1024d:F1} MB）。" +
+                  (build.DllPath is null ? "注意：包里没找到 OptiScaler.dll。" : string.Empty);
+
+            item.StatusText = finalStatus;
+            TextBlock_Status.Text = $"OptiScaler「{build.Id}」安装完成：{build.Directory}";
+            _logger.LogInformation("OptiScaler installed: {Id} from {Asset}", build.Id, asset);
+
+            RefreshOptiScaler();
+
+            // 刷新之后列表是新的对象了，把状态挪到对应那一行（来源可能已经变成「当前」里的构建）
+            string newId = OptiScalerLibrary.MakeId(item.Source.Id, tag);
+            OptiScalerBuildItemViewModel? target =
+                _allOptiScalerBuilds.FirstOrDefault(b => string.Equals(b.Id, newId, StringComparison.OrdinalIgnoreCase))
+                ?? (item is OptiScalerBuildItemViewModel old
+                    ? _allOptiScalerBuilds.FirstOrDefault(b => string.Equals(b.Id, old.Id, StringComparison.OrdinalIgnoreCase))
+                    : null);
+
+            if (target is not null)
+            {
+                target.StatusText = finalStatus;
+                target.IsExpanded = true;
+            }
+
+            ApplyFilter();
+        }
+        finally
+        {
+            item.CanInteract = true;
+            ProgressBar_Overall.IsIndeterminate = false;
+        }
     }
 
     /// <summary>
@@ -1168,7 +1368,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
     private void Hyperlink_OptiScalerRepo_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { DataContext: OptiScalerSourceItemViewModel item })
+        if (sender is not FrameworkElement { DataContext: IOptiScalerVersionHost item })
         {
             return;
         }
@@ -1185,9 +1385,370 @@ public sealed partial class GlobalPluginPage : PageBase
 
     #endregion
 
+    #region 模块（下载 / 部署 / 全局开关）
+
+    /// <summary>模块「当前 / 可下载」两截：当前 = 装好的（内置 + 手动 DLL），可下载 = 目录里还没装的。</summary>
+    private void RefreshModules()
+    {
+        HashSet<string> expanded = [.. _allModules.Where(m => m.IsExpanded).Select(m => m.Key)];
+
+        _allModules = [];
+        _allModuleDownloads = [];
+
+        foreach (ModuleEntry entry in ModuleRegistry.List())
+        {
+            // 没装的内置模块不放在「当前」；手动加的条目即使文件已经不在了也留着，
+            // 好让用户还能把它从列表里删掉
+            if (entry.IsBuiltin && string.IsNullOrWhiteSpace(entry.DllPath))
+            {
+                continue;
+            }
+
+            _allModules.Add(new ModuleItemViewModel(entry, OnModuleToggleRequested)
+            {
+                IsExpanded = expanded.Contains(entry.Key),
+            });
+        }
+
+        foreach (ModuleDefinition module in ModuleRegistry.All())
+        {
+            if (ModuleRegistry.ResolveDllPath(module) is not null)
+            {
+                continue;
+            }
+
+            _allModuleDownloads.Add(new ModuleDownloadItemViewModel(module));
+        }
+
+        ApplyFilter();
+    }
+
+    private void OnModuleToggleRequested(ModuleItemViewModel item, bool enabled)
+    {
+        if (item.IsBuiltin)
+        {
+            AppConfig.SetModuleEnabled(item.Key, enabled);
+        }
+        else
+        {
+            AppConfig.SetManualModuleDllEnabled(item.Key, enabled);
+        }
+
+        TextBlock_Status.Text = $"模块「{item.Name}」已全局{(enabled ? "启用" : "禁用")}。";
+    }
+
+    private void Button_ModuleHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ModuleItemViewModel item })
+        {
+            item.IsExpanded = !item.IsExpanded;
+        }
+    }
+
+    private void Button_ModuleDownloadHeader_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ModuleDownloadItemViewModel item })
+        {
+            bool expand = !item.IsExpanded;
+            item.IsExpanded = expand;
+
+            if (expand && !item.VersionsLoaded && !item.Module.IsDirect)
+            {
+                _ = LoadModuleVersionsAsync(item);
+            }
+        }
+    }
+
+    /// <summary>拉这个模块能装的版本（GitHub tag，新 → 旧）铺进下拉</summary>
+    private async Task LoadModuleVersionsAsync(ModuleDownloadItemViewModel item)
+    {
+        try
+        {
+            var source = new OptiScalerSource
+            {
+                Id = item.Module.Id,
+                Name = item.Module.Name,
+                Repository = item.Module.Repository,
+                TagPattern = item.Module.TagPattern,
+            };
+
+            List<ExtensionVersion> versions = await Task.Run(() =>
+                new OptiScalerDownloader().ListVersionsAsync(source));
+            item.ApplyVersions(versions);
+        }
+        catch (Exception ex)
+        {
+            item.VersionsLoaded = true;
+            item.StatusText = "拉版本列表失败：" + ex.Message;
+            _logger.LogWarning(ex, "List module versions for {Id}", item.Module.Id);
+        }
+    }
+
+    /// <summary>手动加一个要注入的 DLL（内置模块表里没有的）。</summary>
+    private async void Button_AddModuleDll_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? file = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("DLL", ".dll"), ("所有文件", ".*"));
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                return;
+            }
+
+            List<string> list = [.. AppConfig.GetManualModuleDlls()];
+            if (!list.Contains(file, StringComparer.OrdinalIgnoreCase))
+            {
+                list.Add(file);
+            }
+
+            AppConfig.SetManualModuleDlls(list);
+            AppConfig.SetManualModuleDllEnabled(file, true);
+            TextBlock_Status.Text = $"已添加模块 DLL：{file}";
+            RefreshModules();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Add manual module dll");
+            ShowInfo("添加失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    private void Button_OpenModulesFolder_Click(object sender, RoutedEventArgs e)
+    {
+        string root = AppConfig.ModulesRootPath;
+        if (root.Length == 0)
+        {
+            TextBlock_Status.Text = "还没读到用户数据目录。";
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(root);
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{root}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Open modules folder");
+            TextBlock_Status.Text = "打不开目录：" + ex.Message;
+        }
+    }
+
+    private void Button_RefreshModules_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshModules();
+        TextBlock_Status.Text = "模块列表已刷新。";
+    }
+
+    private void Button_OpenModuleFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ModuleItemViewModel item })
+        {
+            return;
+        }
+
+        string? directory = item.HasDll ? Path.GetDirectoryName(item.DllPath) : null;
+
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            directory = ModuleRegistry.Find(item.Key)?.Directory;
+        }
+
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            TextBlock_Status.Text = "这个模块还没有目录 —— 先下载一份，或者文件已经不在了。";
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{directory}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Open module folder");
+            TextBlock_Status.Text = "打不开目录：" + ex.Message;
+        }
+    }
+
+    private async void Button_DeleteModule_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ModuleItemViewModel item } || item.IsBuiltin)
+        {
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "删除手动模块",
+            Content = $"确定把这条从手动模块列表里去掉吗？\n\n{item.Key}\n\n只删记录，不动磁盘上的文件。",
+            PrimaryButtonText = "删除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        List<string> list = [.. AppConfig.GetManualModuleDlls()
+            .Where(p => !string.Equals(p, item.Key, StringComparison.OrdinalIgnoreCase))];
+        AppConfig.SetManualModuleDlls(list);
+
+        TextBlock_Status.Text = $"已从模块列表里去掉：{item.Name}";
+        RefreshModules();
+    }
+
+    /// <summary>「下载 / 更新」：走 OptiScaler 那套下载器把模块装进模块目录。</summary>
+    private async void Button_DownloadModule_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ModuleDownloadItemViewModel item } || _isWorking)
+        {
+            return;
+        }
+
+        await RunAsync(async () =>
+        {
+            item.CanInteract = false;
+            item.StatusText = "正在下载 / 安装…";
+
+            try
+            {
+                string? tag = item.TagOf(item.SelectedVersion);
+                if (!item.Module.IsDirect && string.IsNullOrWhiteSpace(tag))
+                {
+                    item.StatusText = "先在「版本」里选一个。";
+                    return;
+                }
+
+                string result = await ModuleRegistry.InstallAsync(
+                    item.Module,
+                    progress: null,
+                    confirmBeforeRun: async _ => await ConfirmModuleSetupAsync(item.Module),
+                    tag: tag);
+
+                item.StatusText = "已装好：" + result;
+                TextBlock_Status.Text = $"模块「{item.Name}」安装完成（{result}）。到左侧「模块」页勾选后，启动游戏时会注入。";
+                _logger.LogInformation("Module installed: {Id} {Result}", item.Module.Id, result);
+            }
+            catch (Exception ex)
+            {
+                item.StatusText = "安装失败：" + ex.Message;
+                _logger.LogError(ex, "Install module {Id}", item.Module.Id);
+                ShowInfo("模块安装失败", ex.Message, InfoBarSeverity.Error);
+            }
+            finally
+            {
+                item.CanInteract = true;
+            }
+
+            RefreshModules();
+            await Task.CompletedTask;
+        });
+    }
+
+    /// <summary>模块来源自己的安装程序：运行前先弹一句「装到模块目录」。</summary>
+    private async Task<bool> ConfirmModuleSetupAsync(ModuleDefinition module)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "即将运行模块安装程序",
+            Content = $"「{module.Name}」用的是它自己的安装程序。\n\n" +
+                      "请装到模块目录（默认即可，别改）：\n" + module.Directory + "\n\n" +
+                      $"装完那里会有 {module.DllHint}；之后的注入由 Hub 负责。",
+            PrimaryButtonText = "启动安装程序",
+            CloseButtonText = "先不装",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    #endregion
+
     #region 顶部按钮
 
     private async void Button_Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
+
+    private async void Button_Dlss5CompatCheck_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await ShowDlss5CompatibilityAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DLSS5 compatibility check");
+            ShowInfo("DLSS5 检测出错", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    /// <summary>
+    /// 右上角「DLSS5 兼容性检测」：弹窗列 15 条（显卡 / 启动器 / 游戏目录 / XXMI），
+    /// 7/9/10/11/12/13/14/15 带自动修复。
+    ///
+    /// <para>
+    /// 这里检的是**全局那一份 HoYoShade** + 当前选中的那个游戏（能拿到就一起检游戏目录那几条）。
+    /// 只看启动器（7~11）也行  没选游戏时 12~14 会明说「不知道游戏目录」。
+    /// </para>
+    /// </summary>
+    private async Task ShowDlss5CompatibilityAsync()
+    {
+        ShadeHost? host = _manager?.Host ?? PluginHostLocator.Resolve(out _);
+
+        if (host is null)
+        {
+            ShowInfo("DLSS5 兼容性检测", "还没找到 HoYoShade 目录  先点「指定目录」指一下再检测。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        var context = new Dlss5CompatContext
+        {
+            ShadeHost = host,
+        };
+
+        // 顺带把当前选中的游戏一起检（游戏目录那 12~14 条要它）
+        try
+        {
+            GameEntry? entry = GameCatalog.GetOrCreate(GameCatalog.CreateService(), CurrentGameId);
+
+            if (entry is not null)
+            {
+                var plugins = new GamePluginService(
+                    entry,
+                    host,
+                    PluginHostLocator.AddonNameCachePath,
+                    GameCatalog.AddonCandidateNames(),
+                    GameCatalog.TagsOfAddonFile);
+
+                context = new Dlss5CompatContext
+                {
+                    ShadeHost = host,
+                    Game = entry,
+                    GameId = CurrentGameId,
+                    Profile = plugins.Profile,
+                    ProfileError = plugins.ProfileError,
+                    AddonStates = plugins.GetAddons(),
+                    HookPoint = plugins.GetHookPoint(),
+                    PluginService = plugins,
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "DLSS5 check: 读当前游戏失败，只检启动器那几条");
+        }
+
+        var dialog = new Dlss5CompatDialog(context)
+        {
+            XamlRoot = XamlRoot,
+        };
+
+        await dialog.ShowAsync();
+    }
 
     private async void Button_PickFolder_Click(object sender, RoutedEventArgs e)
     {
@@ -1235,6 +1796,27 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
+    /// <summary>「当前」插件卡片上的「打开目录」：打开插件目录（addon 文件都在那里）。</summary>
+    private void Button_OpenPluginFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? path = _manager?.Host.AddonsPath;
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            {
+                TextBlock_Status.Text = "找不到插件目录。";
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Open addons folder");
+            TextBlock_Status.Text = "打不开目录：" + ex.Message;
+        }
+    }
+
     private async void Button_InstallLocal_Click(object sender, RoutedEventArgs e)
     {
         if (_manager is null)
@@ -1273,26 +1855,10 @@ public sealed partial class GlobalPluginPage : PageBase
 
     #region 列表操作
 
-    private void RadioButtons_Filter_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>点标题行 = 展开/收起详情（默认只占一行）；已装的卡片展开时顺手拉一次版本</summary>
+    private void Button_PluginHeader_Click(object sender, RoutedEventArgs e)
     {
-        if (RadioButtons_Filter.SelectedItem is RadioButton { Tag: string tag })
-        {
-            _filter = tag;
-        }
-
-        ApplyFilter();
-    }
-
-    private void TextBox_Search_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        _search = TextBox_Search.Text?.Trim() ?? string.Empty;
-        ApplyFilter();
-    }
-
-    /// <summary>点卡片 = 展开/收起详情（默认只占一行）</summary>
-    private void PluginList_ItemClick(object sender, ItemClickEventArgs e)
-    {
-        if (e.ClickedItem is not PluginItemViewModel item)
+        if (sender is not FrameworkElement { DataContext: PluginItemViewModel item })
         {
             return;
         }
@@ -1306,10 +1872,21 @@ public sealed partial class GlobalPluginPage : PageBase
 
         item.IsExpanded = expand;
 
-        if (expand && !item.VersionsLoaded)
+        if (expand && item.IsInstalled && !item.VersionsLoaded)
         {
             _ = LoadVersionsAsync(item);
         }
+    }
+
+    /// <summary>plugin version dropdown handler</summary>
+    private async void ComboBox_PluginVersions_DropDownOpened(object sender, object e)
+    {
+        if (sender is not FrameworkElement { DataContext: PluginItemViewModel item })
+        {
+            return;
+        }
+
+        await LoadVersionsAsync(item);
     }
 
     /// <summary>拉这个插件能装的版本（GitHub tag，新 → 旧）+ 顺便看看有没有新版本</summary>
@@ -1331,7 +1908,7 @@ public sealed partial class GlobalPluginPage : PageBase
             item.VersionsLoaded = true;
             item.VersionsHint = versions.Count == 0
                 ? "这个来源列不出可选版本（不是 GitHub Release 或网络不通），只能装最新。"
-                : $"共 {versions.Count} 个版本可装（默认最新）。";
+                : $"共 {versions.Count} 个版本可装（默认选中当前装着的那个）。";
 
             if (versions.Count > 0 && item.Installed is not null)
             {
@@ -1349,7 +1926,7 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
-    /// <summary>装下拉里选的那个版本</summary>
+    /// <summary>装下拉里选的那个版本（当前已装的也是走这条路 = 重装）</summary>
     private async void Button_InstallVersion_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: PluginItemViewModel item })
@@ -1442,7 +2019,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 parts.Add($"{result.MissingFiles.Count} 个已不存在");
             }
 
-            // 插件文件没了，各游戏 ini 里指向它的 DisabledAddons / LoadFromDllMain 条目就是死条目（用户要求永久去掉）
+            // 插件文件没了，各游戏 ini 里指向它的 DisabledAddons / LoadFromDllMain 条目就是死条目
             var deletedNames = result.DeletedFiles
                 .Concat(result.DeletedStaleFiles)
                 .Select(Path.GetFileName)
@@ -1471,7 +2048,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
     /// <summary>
     /// 「清理失效条目」：扫所有游戏的 ini，把指向「插件目录里已经不存在的文件」的
-    /// DisabledAddons / LoadFromDllMain 条目删掉（用户要求：检查是否有不存在的插件在里面）。
+    /// DisabledAddons / LoadFromDllMain 条目删掉。
     /// </summary>
     private async void Button_CleanStaleReferences_Click(object sender, RoutedEventArgs e)
     {
@@ -1495,11 +2072,8 @@ public sealed partial class GlobalPluginPage : PageBase
         });
     }
 
-
-
     /// <summary>
     /// 把插件文件名从所有游戏的 ReShade.ini 里摘掉（DisabledAddons + LoadFromDllMain）。
-    /// 用户要求：插件被删除/全局禁用之后，这些条目也要跟着没。
     /// </summary>
     private AddonReferenceCleanResult PurgeAddonReferences(IEnumerable<string?> fileNames)
     {
@@ -1525,8 +2099,6 @@ public sealed partial class GlobalPluginPage : PageBase
             return new AddonReferenceCleanResult(0, [], []);
         }
     }
-
-
 
     private async Task RunInstallAsync(ExtensionManifest manifest, string? tagOverride = null)
     {
@@ -1668,9 +2240,13 @@ public sealed partial class GlobalPluginPage : PageBase
     #endregion
 }
 
-/// <summary>列表里的一行（一个可安装的插件扩展包）</summary>
+
+/// <summary>列表里的一行（一个可安装的插件扩展包）：「当前」的已装卡片和「可下载」的紧凑行都用它。</summary>
 public partial class PluginItemViewModel : ObservableObject
 {
+    /// <summary>版本下拉里给「当前装着的版本」加的后缀</summary>
+    public const string CurrentSuffix = " (当前)";
+
     private readonly Action<PluginItemViewModel, bool>? _onGlobalToggle;
     private bool _suppressGlobal;
 
@@ -1691,7 +2267,6 @@ public partial class PluginItemViewModel : ObservableObject
         DllStatusText = dllStatus?.Summary ?? string.Empty;
         Name = status.Manifest.Name;
         Description = status.Manifest.Description ?? string.Empty;
-        IsInstalled = status.IsInstalled;
 
         // 版本要显示「盘上这个文件是哪个版本」——
         // 目录里写的基本都是 "latest"，光看它等于没版本
@@ -1699,6 +2274,7 @@ public partial class PluginItemViewModel : ObservableObject
                                   ?? status.Installed?.ResolvedTag
                                   ?? status.Installed?.Version
                                   ?? string.Empty;
+        CurrentVersion = installedVersion;
         VersionText = BuildVersionText(status, installedVersion);
         // 盘上有文件（哪怕不是 Hub 装的）就算「已装」—— 装按钮变「重装」，卡片也才有全局开关
         IsInstalled = status.IsInstalled || foundOnDiskOnly;
@@ -1711,15 +2287,18 @@ public partial class PluginItemViewModel : ObservableObject
         SetGlobalEnabledSilently(AreEnabled(GlobalAddonFiles));
     }
 
-    /// <summary>可装版本（GitHub tag，新 → 旧）—— 点开卡片时才去拉。
-    /// 下拉里显示的是「tag · 发布日期」，真正用的 tag 在 <see cref="_versionTags"/> 里。</summary>
+    /// <summary>盘上当前装着的版本（版本下拉默认选它）</summary>
+    public string CurrentVersion { get; }
+
+    /// <summary>列表里铺进下拉的版本（GitHub tag，新 → 旧）—— 展开卡片时才去拉。</summary>
     public ObservableCollection<string> Versions { get; } = [];
 
     private readonly Dictionary<string, string> _versionTags = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 铺进下拉。显示文本带上发布日期：GitHub 自己的列表是按 release 的创建时间排的，
-    /// 光看 tag 顺序会觉得「乱」，把时间摆出来就一眼能看明白为什么是这个顺序。
+    /// 光看 tag 顺序会觉得「乱」，把时间摆出来就一眼能看明白为什么是这个顺序；
+    /// 当前装着的那个再带「(当前)」后缀并默认选中。
     /// </summary>
     public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
     {
@@ -1732,6 +2311,23 @@ public partial class PluginItemViewModel : ObservableObject
             _versionTags[display] = version.Tag;
             Versions.Add(display);
         }
+
+        string? match = !string.IsNullOrWhiteSpace(CurrentVersion)
+            ? Versions.FirstOrDefault(v => string.Equals(TagOf(v), CurrentVersion, StringComparison.OrdinalIgnoreCase))
+            : null;
+        SelectedVersion = match ?? Versions.FirstOrDefault();
+    }
+
+    /// <summary>下拉里显示的文本：tag · 发布日期，当前版本再带「(当前)」</summary>
+    private string DisplayOf(ExtensionVersion version)
+    {
+        string text = version.Published is { } published
+            ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
+            : version.Tag;
+
+        return string.Equals(version.Tag, CurrentVersion, StringComparison.OrdinalIgnoreCase)
+            ? text + CurrentSuffix
+            : text;
     }
 
     /// <summary>下拉里选的文本还原成 tag</summary>
@@ -1742,13 +2338,10 @@ public partial class PluginItemViewModel : ObservableObject
             return null;
         }
 
-        return _versionTags.TryGetValue(display, out string? tag) ? tag : display.Trim();
+        return _versionTags.TryGetValue(display, out string? tag)
+            ? tag
+            : display.Replace(CurrentSuffix, string.Empty).Trim();
     }
-
-    private static string DisplayOf(ExtensionVersion version)
-        => version.Published is { } published
-            ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
-            : version.Tag;
 
     [ObservableProperty]
     private string? selectedVersion;
@@ -1859,10 +2452,19 @@ public partial class PluginItemViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ExpandedVisibility))]
+    [NotifyPropertyChangedFor(nameof(ExpandGlyph))]
     private bool isExpanded;
 
     [ObservableProperty]
     private bool isInstalled;
+
+    /// <summary>收起时标题行右边的摘要</summary>
+    public string SummaryText => IsInstalled
+        ? (string.IsNullOrWhiteSpace(CurrentVersion) ? "已安装" : $"已装 {CurrentVersion}")
+        : (IsRealVersion(Manifest.Version) ? $"版本 {Manifest.Version}" : "可下载");
+
+    /// <summary>展开箭头：收起朝下，展开朝上</summary>
+    public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
 
     /// <summary>展开时给一句解释：文件是盘上捡到的，Hub 没账本</summary>
     public string DiskOnlyHint =>
@@ -1951,7 +2553,7 @@ public partial class PluginItemViewModel : ObservableObject
     }
 }
 
-/// <summary>插件文件那一栏的一行</summary>
+/// <summary>插件目录里没匹配到目录条目的插件文件（一行一个，保留逐个改名开关）。</summary>
 public partial class AddonFileItemViewModel : ObservableObject
 {
     private readonly Action<AddonFileItemViewModel, bool>? _onToggle;
@@ -2086,22 +2688,71 @@ public partial class AddonFileItemViewModel : ObservableObject
     }
 }
 
-/// <summary>「OptiScaler」那一栏的一行：一个已经下载到本地的构建。</summary>
-public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
+/// <summary>
+/// OptiScaler 那一栏「可下载的来源」和「当前里的构建」共用的一套换版本能力：
+/// 头行点开、下拉列版本、选一个下载 / 切换。
+/// </summary>
+public interface IOptiScalerVersionHost
 {
-    private bool? _enabled;
+    OptiScalerSource Source { get; }
 
-    public OptiScalerBuildItemViewModel(OptiScalerBuild build, string? selectedId)
+    ObservableCollection<string> Versions { get; }
+
+    string? SelectedVersion { get; }
+
+    string StatusText { get; set; }
+
+    bool CanInteract { get; set; }
+
+    bool IsExpanded { get; set; }
+
+    /// <summary>来源仓库可用（能列版本）</summary>
+    bool HasVersionsSource { get; }
+
+    void ApplyVersions(IReadOnlyList<ExtensionVersion> versions);
+
+    string? TagOf(string? display);
+}
+
+/// <summary>「OptiScaler」那一栏「当前」里的一行：一个已经下载到本地的构建。</summary>
+public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOptiScalerVersionHost
+{
+    private readonly Dictionary<string, string> _versionTags = new(StringComparer.OrdinalIgnoreCase);
+
+    public OptiScalerBuildItemViewModel(OptiScalerBuild build, string? selectedId, OptiScalerSource? source)
     {
         Build = build;
-        _enabled = string.Equals(build.Id, selectedId, StringComparison.OrdinalIgnoreCase);
+        Enabled = string.Equals(build.Id, selectedId, StringComparison.OrdinalIgnoreCase);
+        Source = source ?? new OptiScalerSource
+        {
+            Id = build.SourceId,
+            Name = build.SourceId,
+            Repository = string.Empty,
+            Description = string.Empty,
+        };
+        CurrentVersion = build.Version;
+        IsGloballyEnabled = AppConfig.IsOptiScalerBuildEnabled(build.Id);
     }
 
     public OptiScalerBuild Build { get; }
 
+    public OptiScalerSource Source { get; }
+
     public string Id => Build.Id;
 
-    public string Title => $"{Build.Version}　·　{OptiScalerCatalog.Find(Build.SourceId)?.Name ?? Build.SourceId}";
+    /// <summary>来源名字：内置表里找得到就用那个（更完整），否则退回本地记的 id</summary>
+    public string SourceName => OptiScalerCatalog.Find(Build.SourceId)?.Name ?? Source.Name;
+
+    public string Title => $"{Build.Version}　·　{SourceName}";
+
+    /// <summary>来源带的标签（跟插件卡片的 tags 同一套）</summary>
+    public IReadOnlyList<string> Tags => Source.Tags is { Length: > 0 } tags ? tags : Array.Empty<string>();
+
+    public string TagsText => Tags.Count > 0 ? string.Join(" ", Tags) : string.Empty;
+
+    public string Repository => Source.Repository;
+
+    public Visibility RepoVisibility => string.IsNullOrWhiteSpace(Repository) ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>资产名 · 大小 · dll · 目录</summary>
     public string MetaText
@@ -2128,7 +2779,7 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
     public bool InstallerOnly => Build.DllPath is null
                                  && Build.AssetName?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true;
 
-    public Visibility EnabledVisibility => Enabled == true ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility EnabledVisibility => Enabled ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility NoDllVisibility => Build.DllPath is null && !InstallerOnly ? Visibility.Visible : Visibility.Collapsed;
 
@@ -2141,22 +2792,105 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
 
     public bool CanOpenFolder => Directory.Exists(Build.Directory);
 
-    /// <summary>单选：true = 当前启用的那个（RadioButton 绑的就是它）</summary>
-    public bool? Enabled
+    /// <summary>只读：true = 当前使用的那个构建（状态由左侧新的 OptiScaler 页面写下）</summary>
+    public bool Enabled { get; }
+
+    /// <summary>这个构建装的是哪个 tag（下拉默认选它）</summary>
+    public string CurrentVersion { get; }
+
+    public ObservableCollection<string> Versions { get; } = [];
+
+    public bool HasVersionsSource => !string.IsNullOrWhiteSpace(Source.Repository) && !string.IsNullOrWhiteSpace(Source.Id);
+
+    public Visibility VersionSwitchVisibility => HasVersionsSource ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>收起时标题行右边的摘要（资产名，没有就版本号）</summary>
+    public string SummaryText => string.IsNullOrWhiteSpace(Build.AssetName) ? Build.Version : Build.AssetName!;
+
+    /// <summary>展开箭头：收起朝下，展开朝上</summary>
+    public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
+
+    public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ActionText))]
+    private string? selectedVersion;
+
+    [ObservableProperty]
+    private string statusText = string.Empty;
+
+    [ObservableProperty]
+    private bool canInteract = true;
+
+    /// <summary>这个构建自己的全局开关（AppConfig 里按构建 id 记；关掉后哪个游戏都不注入）</summary>
+    [ObservableProperty]
+    private bool isGloballyEnabled;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ExpandedVisibility))]
+    [NotifyPropertyChangedFor(nameof(ExpandGlyph))]
+    private bool isExpanded;
+
+    /// <summary>选中的是不是当前这个构建：是 = 重装，不是 = 切到这个版本</summary>
+    public string ActionText
     {
-        get => _enabled;
-        set
+        get
         {
-            if (SetProperty(ref _enabled, value))
+            string? tag = TagOf(SelectedVersion);
+            if (string.IsNullOrWhiteSpace(tag))
             {
-                OnPropertyChanged(nameof(EnabledVisibility));
+                return "下载并安装";
             }
+
+            return string.Equals(tag, Build.Version, StringComparison.OrdinalIgnoreCase)
+                ? "重装这个版本"
+                : "切换到这个版本";
         }
+    }
+
+    /// <summary>铺进下拉，并默认选中当前这个构建的版本</summary>
+    public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
+    {
+        Versions.Clear();
+        _versionTags.Clear();
+
+        foreach (ExtensionVersion version in versions)
+        {
+            string display = DisplayOf(version);
+            _versionTags[display] = version.Tag;
+            Versions.Add(display);
+        }
+
+        string? match = Versions.FirstOrDefault(v => string.Equals(TagOf(v), CurrentVersion, StringComparison.OrdinalIgnoreCase));
+        SelectedVersion = match ?? Versions.FirstOrDefault();
+    }
+
+    private string DisplayOf(ExtensionVersion version)
+    {
+        string text = version.Published is { } published
+            ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
+            : version.Tag;
+
+        return string.Equals(version.Tag, CurrentVersion, StringComparison.OrdinalIgnoreCase)
+            ? text + OptiScalerSourceItemViewModel.CurrentSuffix
+            : text;
+    }
+
+    public string? TagOf(string? display)
+    {
+        if (string.IsNullOrWhiteSpace(display))
+        {
+            return null;
+        }
+
+        return _versionTags.TryGetValue(display, out string? tag)
+            ? tag
+            : display.Replace(OptiScalerSourceItemViewModel.CurrentSuffix, string.Empty).Trim();
     }
 }
 
-/// <summary>「OptiScaler」那一栏的一行：一个可下载的来源（GitHub 仓库）。</summary>
-public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
+/// <summary>「OptiScaler」那一栏「可下载」里的一行：一个还没装过的来源（GitHub 仓库）。</summary>
+public sealed partial class OptiScalerSourceItemViewModel : ObservableObject, IOptiScalerVersionHost
 {
     /// <summary>下拉里给「当前版本」加的后缀</summary>
     public const string CurrentSuffix = " (当前)";
@@ -2174,6 +2908,17 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
 
     public string Repository => Source.Repository;
 
+    /// <summary>来源带的标签（跟插件卡片的 tags 同一套）</summary>
+    public IReadOnlyList<string> Tags => Source.Tags is { Length: > 0 } tags ? tags : Array.Empty<string>();
+
+    public string TagsText => Tags.Count > 0 ? string.Join(" ", Tags) : string.Empty;
+
+    public string Homepage => Source.Homepage ?? string.Empty;
+
+    public Visibility HomepageVisibility => string.IsNullOrWhiteSpace(Homepage) ? Visibility.Collapsed : Visibility.Visible;
+
+    public bool HasVersionsSource => !string.IsNullOrWhiteSpace(Source.Repository);
+
     /// <summary>这个来源能装的版本（下拉里显示的文本，当前版本带后缀）</summary>
     public ObservableCollection<string> Versions { get; } = [];
 
@@ -2183,9 +2928,27 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
     public HashSet<string> InstalledVersions { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>「当前版本」：当前启用的那个，或这个来源最近装的那个</summary>
-    public string? CurrentVersion { get; set; }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SummaryText))]
+    private string? currentVersion;
 
-    /// <summary>把版本列表铺进下拉，并默认选中当前版本（用户要求）</summary>
+    /// <summary>「可下载」的卡片默认收起，点标题行才展开</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ExpandedVisibility))]
+    [NotifyPropertyChangedFor(nameof(ExpandGlyph))]
+    private bool isExpanded;
+
+    public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>展开箭头：收起朝下，展开朝上</summary>
+    public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
+
+    /// <summary>收起时标题行右边的状态</summary>
+    public string SummaryText => CurrentVersion is { Length: > 0 } version
+        ? $"当前 {version}"
+        : InstalledVersions.Count > 0 ? "已下载" : "可下载";
+
+    /// <summary>把版本列表铺进下拉，并默认选中当前版本（没装过就选最新的）</summary>
     public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
     {
         Versions.Clear();
@@ -2198,13 +2961,13 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
             Versions.Add(display);
         }
 
-        if (CurrentVersion is { Length: > 0 } current)
-        {
-            SelectedVersion = Versions.FirstOrDefault(v => string.Equals(
+        string? match = CurrentVersion is { Length: > 0 } current
+            ? Versions.FirstOrDefault(v => string.Equals(
                 _versionTags.TryGetValue(v, out string? tag) ? tag : v,
                 current,
-                StringComparison.OrdinalIgnoreCase));
-        }
+                StringComparison.OrdinalIgnoreCase))
+            : null;
+        SelectedVersion = match ?? Versions.FirstOrDefault();
     }
 
     /// <summary>下拉里显示的文本：tag · 发布日期，当前版本再带「(当前)」</summary>
@@ -2220,7 +2983,7 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
     }
 
     /// <summary>从下拉文本还原出版本 tag</summary>
-    public string TagOf(string? display)
+    public string? TagOf(string? display)
     {
         if (string.IsNullOrWhiteSpace(display))
         {
@@ -2242,7 +3005,176 @@ public sealed partial class OptiScalerSourceItemViewModel : ObservableObject
     [ObservableProperty]
     private bool canInteract = true;
 
+    /// <summary>这个构建自己的全局开关（AppConfig 里按构建 id 记；关掉后哪个游戏都不注入）</summary>
+    [ObservableProperty]
+    private bool isGloballyEnabled;
+
     /// <summary>选中的版本已经装过 → 「更新到此版本」，否则「下载并安装」</summary>
     public string ActionText
-        => InstalledVersions.Contains(TagOf(SelectedVersion)) ? "更新到此版本" : "下载并安装";
+        => InstalledVersions.Contains(TagOf(SelectedVersion) ?? string.Empty) ? "更新到此版本" : "下载并安装";
 }
+
+/// <summary>「模块」那一栏「当前」里的一行：一个装好了的模块（内置模块，或用户手动加的 DLL）。</summary>
+public sealed partial class ModuleItemViewModel : ObservableObject
+{
+    private readonly Action<ModuleItemViewModel, bool>? _onToggle;
+    private bool _suppress;
+
+    public ModuleItemViewModel(ModuleEntry entry, Action<ModuleItemViewModel, bool>? onToggle = null)
+    {
+        _onToggle = onToggle;
+        Key = entry.Key;
+        Name = entry.Name;
+        Description = entry.Description;
+        Tags = entry.Tags is { Length: > 0 } tags ? tags : Array.Empty<string>();
+        Homepage = entry.Homepage ?? string.Empty;
+        DllPath = entry.DllPath ?? string.Empty;
+        IsBuiltin = entry.IsBuiltin;
+
+        _suppress = true;
+        GloballyEnabled = entry.GloballyEnabled;
+        _suppress = false;
+    }
+
+    /// <summary>内置模块 = 模块 id；手动加的 = DLL 全路径</summary>
+    public string Key { get; }
+
+    public string Name { get; }
+
+    public string Description { get; }
+
+    public IReadOnlyList<string> Tags { get; }
+
+    public string TagsText => Tags.Count > 0 ? string.Join(" ", Tags) : string.Empty;
+
+    public string Homepage { get; }
+
+    public string DllPath { get; }
+
+    public bool IsBuiltin { get; }
+
+    public string KindText => IsBuiltin ? "内置" : "手动";
+
+    public bool HasDll => !string.IsNullOrWhiteSpace(DllPath);
+
+    public Visibility MissingDllVisibility => HasDll ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>内置模块只能「打开目录」，不给删；手动加的可以删</summary>
+    public Visibility DeleteVisibility => IsBuiltin ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility HomepageVisibility => string.IsNullOrWhiteSpace(Homepage) ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>收起时标题行右边的摘要</summary>
+    public string SummaryText => HasDll ? Path.GetFileName(DllPath) : "文件不见了";
+
+    public string DetailText => HasDll
+        ? $"注入：{DllPath}"
+        : "记录里的文件已经不在了 —— 可以删掉这条，或者重新「添加 DLL…」。";
+
+    /// <summary>展开箭头：收起朝下，展开朝上</summary>
+    public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
+
+    public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    [ObservableProperty]
+    private bool globallyEnabled;
+
+    partial void OnGloballyEnabledChanged(bool value)
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        _onToggle?.Invoke(this, value);
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ExpandedVisibility))]
+    [NotifyPropertyChangedFor(nameof(ExpandGlyph))]
+    private bool isExpanded;
+}
+
+/// <summary>「模块」那一栏「可下载」里的一行：目录里一个还没装的模块。</summary>
+public sealed partial class ModuleDownloadItemViewModel : ObservableObject
+{
+    public ModuleDownloadItemViewModel(ModuleDefinition module)
+    {
+        Module = module;
+    }
+
+    public ModuleDefinition Module { get; }
+
+    public string Name => Module.Name;
+
+    public string Description => Module.Description;
+
+    public IReadOnlyList<string> Tags => Module.Tags is { Length: > 0 } tags ? tags : Array.Empty<string>();
+
+    public string TagsText => Tags.Count > 0 ? string.Join(" ", Tags) : string.Empty;
+
+    public string DetailText => $"注入目标：{Module.DllHint}　·　目录：{Module.Directory}";
+
+    /// <summary>主页链接（没有主页就退回仓库地址）</summary>
+    public string LinkText => !string.IsNullOrWhiteSpace(Module.Homepage)
+        ? Module.Homepage!
+        : "https://github.com/" + Module.Repository;
+
+    /// <summary>展开箭头：收起朝下，展开朝上</summary>
+    public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
+
+    public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ExpandedVisibility))]
+    [NotifyPropertyChangedFor(nameof(ExpandGlyph))]
+    private bool isExpanded;
+
+    [ObservableProperty]
+    private string statusText = string.Empty;
+
+    [ObservableProperty]
+    private bool canInteract = true;
+
+    /// <summary>版本下拉里的显示文本（tag · 发布日期）</summary>
+    public ObservableCollection<string> Versions { get; } = [];
+
+    private readonly Dictionary<string, string> _versionTags = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>版本列表拉过了没有</summary>
+    public bool VersionsLoaded { get; set; }
+
+    public string? TagOf(string? display)
+    {
+        if (string.IsNullOrWhiteSpace(display))
+        {
+            return null;
+        }
+
+        return _versionTags.TryGetValue(display, out string? tag) ? tag : display.Trim();
+    }
+
+    /// <summary>把版本列表铺进下拉，默认选中最新（第一个）</summary>
+    public void ApplyVersions(IReadOnlyList<ExtensionVersion> versions)
+    {
+        VersionsLoaded = true;
+        Versions.Clear();
+        _versionTags.Clear();
+
+        foreach (ExtensionVersion version in versions)
+        {
+            string display = version.Published is { } published
+                ? $"{version.Tag}  ·  {published.ToLocalTime():yyyy-MM-dd}"
+                : version.Tag;
+            _versionTags[display] = version.Tag;
+            Versions.Add(display);
+        }
+
+        SelectedVersion = Versions.FirstOrDefault();
+    }
+
+    [ObservableProperty]
+    private string? selectedVersion;
+}
+
+

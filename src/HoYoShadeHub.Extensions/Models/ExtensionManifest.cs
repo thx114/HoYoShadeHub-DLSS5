@@ -68,6 +68,14 @@ public class ExtensionManifest
     [JsonPropertyName("sha256")]
     public string? Sha256 { get; set; }
 
+    /// <summary>
+    /// 远端目录里的「墓碑」：这条被删了（只要写 id + <c>removed: true</c>）。
+    /// 本地目录合并时把它从结果里摘掉 —— 这样云端删条目不用重新发版。
+    /// 老客户端不认识这个字段（忽略），顶多继续显示那条。
+    /// </summary>
+    [JsonPropertyName("removed")]
+    public bool Removed { get; set; }
+
     [JsonIgnore]
     public bool IsValid =>
         !string.IsNullOrWhiteSpace(Id)

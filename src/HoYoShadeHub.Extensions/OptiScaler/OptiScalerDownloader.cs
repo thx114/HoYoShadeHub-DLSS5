@@ -38,7 +38,14 @@ public sealed class OptiScalerDownloader
     public async Task<List<string>> ListAssetsAsync(OptiScalerSource source, string tag, CancellationToken cancellationToken = default)
     {
         List<string> names = await _resolver.GetAssetNamesFromHtmlAsync(source.Repository, tag, cancellationToken);
-        return [.. names.Where(IsUsableAsset).Order(StringComparer.OrdinalIgnoreCase)];
+        IEnumerable<string> filtered = names.Where(IsUsableAsset);
+
+        if (!string.IsNullOrWhiteSpace(source.AssetPattern))
+        {
+            filtered = filtered.Where(n => GlobMatcher.IsSimpleMatch(source.AssetPattern, n));
+        }
+
+        return [.. filtered.Order(StringComparer.OrdinalIgnoreCase)];
     }
 
     /// <summary>能装的包：zip 压缩包，或者来源自己的安装程序（.exe）</summary>
