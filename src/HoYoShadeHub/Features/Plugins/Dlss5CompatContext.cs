@@ -1,4 +1,4 @@
-﻿using HoYoShadeHub.Core;
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
@@ -9,6 +9,25 @@ using System.IO;
 using System.Linq;
 
 namespace HoYoShadeHub.Features.Plugins;
+
+/// <summary>DLSS5 神经渲染的承载方式 —— 决定检测里哪些项该查、哪些项查不了也不该报错</summary>
+public enum Dlss5Delivery
+{
+    /// <summary>还不知道（没选游戏 / 读不到配置）</summary>
+    Unknown = 0,
+
+    /// <summary>两条路都没有：既没 HoYoShade 也没给游戏选 OptiScaler</summary>
+    None,
+
+    /// <summary>只有 HoYoShade（走 ReShade addon 那条）：插件页那几条要查</summary>
+    HoYoShadeOnly,
+
+    /// <summary>只有 OptiScaler（<b>不需要 HoYoShade</b>）：插件页那几条查不了，但不该报错</summary>
+    OptiScalerOnly,
+
+    /// <summary>两条都有</summary>
+    Both,
+}
 
 /// <summary>
 /// 跑一次 DLSS5 兼容性检测需要的全部上下文。
@@ -51,6 +70,47 @@ public sealed class Dlss5CompatContext
 
     /// <summary>「用哪个游戏的服务读插件/ini」的操作对象  修复要写盘，所以留着 service</summary>
     public GamePluginService? PluginService { get; init; }
+
+    /// <summary>
+    /// DLSS5 的承载方式。
+    ///
+    /// <para>
+    /// 现在有两条路：
+    /// <list type="bullet">
+    /// <item><b>HoYoShade</b>：ReShade + addon（renodx-dlss5 / dlss5-bridge）那条，需要装 HoYoShade；</item>
+    /// <item><b>OptiScaler</b>：用 OptiScaler 的 DLSS-NR（神经渲染）实现，<b>不需要 HoYoShade</b>，
+    /// 只要给游戏选了 OptiScaler 构建。</item>
+    /// </list>
+    /// 检测项要根据它决定「哪些项该查、哪些项查不了但也不该报错」。
+    /// </para>
+    /// </summary>
+    public Dlss5Delivery Delivery { get; init; } = Dlss5Delivery.Unknown;
+
+    /// <summary>这个游戏选的 OptiScaler 构建 dll 全路径（走 OptiScaler 那条路时才有）</summary>
+    public string? OptiScalerDllPath { get; init; }
+
+    /// <summary>有没有 HoYoShade 宿主</summary>
+    public bool HasShadeHost => ShadeHost is not null;
+
+    /// <summary>是不是「只装了 OptiScaler、没装 HoYoShade」</summary>
+    public bool IsOptiScalerOnly => Delivery == Dlss5Delivery.OptiScalerOnly;
+
+    /// <summary>
+    /// 这个游戏当前实际在用的 DLSS5 承载方式（按配置算）。
+    /// 检测里判断「要不要因为缺 HoYoShade 报错」全靠它。
+    /// </summary>
+    public static Dlss5Delivery ResolveDelivery(GameId? gameId, ShadeHost? host)
+    {
+        bool hasOpti = !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(gameId));
+
+        if (hasOpti)
+        {
+            // OptiScaler 和 HoYoShade 不互斥，但「只装 Opti」是用户明确要支持的一条路
+            return host is null ? Dlss5Delivery.OptiScalerOnly : Dlss5Delivery.Both;
+        }
+
+        return host is null ? Dlss5Delivery.None : Dlss5Delivery.HoYoShadeOnly;
+    }
 
     /// <summary>
     /// 第 2 条驱动检查的补充说明：用户要求「如果此游戏配置有项目使用全局，则查一下全局的」。

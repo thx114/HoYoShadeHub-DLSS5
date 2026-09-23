@@ -246,7 +246,12 @@ public sealed partial class MainView : UserControl
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // 以前这里是空的 catch{}，导航失败时什么都不留，排查起来只能靠猜。
+            // 页面加载/XAML 出错时必须能看见原因。
+            AppConfig.GetLogger<MainView>().LogError(ex, "NavigationView item invoked failed");
+        }
     }
 
 

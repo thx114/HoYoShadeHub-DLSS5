@@ -43,7 +43,9 @@
 		<PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.11" />
 		<PackageReference Include="Microsoft.Extensions.Configuration.CommandLine" Version="9.0.11" />
 		<PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="9.0.11" />
-		<PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.2" ExcludeAssets="all" />
+		<!-- 名字条的「真·高斯模糊」要用 Win2D 的 GaussianBlurEffect（Composition 的 effect 类型在 Win2D 里）。
+		     原来这里是 ExcludeAssets="all"（编译期禁用），为做磨砂把它放开。 -->
+		<PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.2" />
 		<PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.2.0" />
 		<PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.251107005" />
 		<PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.6901" />

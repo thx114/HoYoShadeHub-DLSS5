@@ -221,11 +221,13 @@ public sealed partial class ReShadeDownloadView : UserControl
         IsHoYoShadeInstalled && IsOpenHoYoShadeInstalled &&
         (!_hasInstalledHoYoShadeTarget || IsUpdateMode) && (!_hasInstalledOpenHoYoShadeTarget || IsUpdateMode);
 
+    // 默认「仅安装必要组件」：全量会拉一大堆用不上的插件和效果滤镜，
+    // 又慢又占地方，新用户第一次装大概率只想要能跑起来的那一份。
     [ObservableProperty]
-    private bool isInstallAll = true;
+    private bool isInstallAll;
 
     [ObservableProperty]
-    private bool isInstallEssentialOnly;
+    private bool isInstallEssentialOnly = true;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowCustomizeButton))]

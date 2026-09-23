@@ -89,6 +89,19 @@ internal static class PluginHostLocator
             }
 
             string? expected = ShadeHostLocator.GetDefaultRoot(AppConfig.UserDataFolder);
+
+            // 还要考虑一种常见情况：用户只导入了 shader/插件（那个「导入压缩包」只铺
+            // reshade-shaders，没有 ReShade64.dll），目录已经存在但还不是有效宿主。
+            // 这种时候如果直接说「没装 HoYoShade」，用户会一脸问号 —— 所以分开提示，
+            // 并给出「补装本体」的下一步。
+            if (!string.IsNullOrWhiteSpace(expected) && Directory.Exists(expected))
+            {
+                reason = $"HoYoShade 目录已存在，但缺少 ReShade64.dll / inject.exe：{expected}\n" +
+                         "你导入的只是着色器与插件。要真正用起来，还得装一次 HoYoShade 本体" +
+                         "（启动器的「启动器」页点安装），或把完整离线包解压到这里。";
+                return null;
+            }
+
             reason = string.IsNullOrWhiteSpace(expected)
                 ? "还没读到用户数据目录，请先完成首次启动向导，或点「指定目录」。"
                 : $"还没装 HoYoShade：{expected}　先到「启动器」页装一次，或点「指定目录」。";

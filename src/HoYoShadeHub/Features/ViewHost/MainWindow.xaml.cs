@@ -325,14 +325,27 @@ public sealed partial class MainWindow : WindowEx
             }
 
             NavigateToView(new WelcomeView(), ViewTransitionType.None);
+            return;
         }
-        else
+
+        // 数据目录已经配好了 —— 但**不代表**该跳过引导。
+        //
+        // 之前这里是无条件进主界面，结果：便携包 / 用户手写的 config.ini 只要填了
+        // UserDataFolder，就算 HoYoShade 框架一个字节都没装，也会直接进主界面，
+        // 用户完全看不到「去装 HoYoShade」的引导（真事：用户解压便携包后一脸问号）。
+        //
+        // 现在的判定：数据目录配好 **且** 盘上确实有 HoYoShade 才直接进主界面；
+        // 否则照样给引导，让用户知道还差一步。
+        if (HasExistingShadeInstall())
         {
             AppConfig.WelcomeOOBECompleted = true;
+            _mainViewLoaded = true;
             NavigateToView(new MainView(), ViewTransitionType.None);
             App.Current.EnsureSystemTray();
-            _mainViewLoaded = true;
+            return;
         }
+
+        NavigateToView(new WelcomeView(), ViewTransitionType.None);
     }
 
 

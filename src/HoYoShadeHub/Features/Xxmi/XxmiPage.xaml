@@ -9,112 +9,483 @@
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
-    <Grid Padding="36,4,36,12" RowSpacing="8">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <!-- 顶部多留一点：第一行控件直接顶在窗口上沿会显得贴到标题栏 -->
+    <Grid Padding="36,24,36,12">
+        <!-- 侧边栏开合动画放在页面级资源里（放 Border.Resources 里 x:Name 生不成字段） -->
+        <Grid.Resources>
+            <Storyboard x:Name="Storyboard_ShowFilter">
+                <DoubleAnimation Storyboard.TargetName="Panel_Filter"
+                                 Storyboard.TargetProperty="Width"
+                                 From="0" To="260"
+                                 Duration="0:0:0.22">
+                    <DoubleAnimation.EasingFunction>
+                        <CubicEase EasingMode="EaseOut" />
+                    </DoubleAnimation.EasingFunction>
+                </DoubleAnimation>
+                <DoubleAnimation Storyboard.TargetName="Panel_Filter"
+                                 Storyboard.TargetProperty="Opacity"
+                                 From="0" To="1"
+                                 Duration="0:0:0.22" />
+            </Storyboard>
+            <Storyboard x:Name="Storyboard_HideFilter">
+                <DoubleAnimation Storyboard.TargetName="Panel_Filter"
+                                 Storyboard.TargetProperty="Width"
+                                 From="260" To="0"
+                                 Duration="0:0:0.18">
+                    <DoubleAnimation.EasingFunction>
+                        <CubicEase EasingMode="EaseIn" />
+                    </DoubleAnimation.EasingFunction>
+                </DoubleAnimation>
+                <DoubleAnimation Storyboard.TargetName="Panel_Filter"
+                                 Storyboard.TargetProperty="Opacity"
+                                 From="1" To="0"
+                                 Duration="0:0:0.18" />
+            </Storyboard>
+        </Grid.Resources>
 
-        <StackPanel Grid.Row="0" Spacing="2">
-            <TextBlock x:Name="TextBlock_Title" FontSize="28" FontWeight="SemiBold" Text="模型替换" />
-        </StackPanel>
+        <Grid.ColumnDefinitions>
+            <!-- 主区：导航栏 + 卡片网格 -->
+            <ColumnDefinition Width="*" />
+            <!-- 右侧筛选侧边栏（默认收起，标题栏按钮/鼠标靠右弹出） -->
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
 
-        <Grid Grid.Row="1" ColumnSpacing="8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
+        <Grid Grid.Column="0" RowSpacing="10">
+            <Grid.RowDefinitions>
+                <!-- 0 顶部栏：就一行，实例 / MI 目录 / 动作全挤这儿 -->
+                <RowDefinition Height="Auto" />
+                <!-- 1 卡片网格 -->
+                <RowDefinition Height="*" />
+                <!-- 2 底部状态 -->
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-            <ComboBox x:Name="ComboBox_Importer"
-                      MinWidth="200"
-                      Header="实例"
-                      SelectionChanged="ComboBox_Importer_SelectionChanged" />
-            <TextBox x:Name="TextBox_Instance"
-                     Grid.Column="1"
-                     Header="MI 目录"
-                     IsReadOnly="True" />
-            <Button Grid.Column="2"
-                    VerticalAlignment="Bottom"
-                    Click="Button_AutoFind_Click"
-                    Content="自动查找"
-                    ToolTipService.ToolTip="手动指定 → %AppData%\XXMI Launcher → 开始菜单里的 XXMI 快捷方式 → 注册表卸载项 → 各盘浅层目录" />
-            <Button Grid.Column="3"
-                    VerticalAlignment="Bottom"
-                    Click="Button_Browse_Click"
-                    Content="选择…" />
-            <Button Grid.Column="4"
-                    VerticalAlignment="Bottom"
-                    Click="Button_OpenInstance_Click"
-                    Content="打开目录" />
+            <!-- 0 顶部栏：一行搞定（不要大标题、不要第二行工具条） -->
+            <Grid Grid.Row="0" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <!-- 0 搜索 / 1 实例 / 2 MI 目录 / 3-5 动作按钮 / 6 侧边栏开关 -->
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 0 搜索：支持自定义名 / GameBanana 名 / 目录名 / 作者 / modId -->
+                <AutoSuggestBox x:Name="TextBox_Search"
+                                Width="190"
+                                QueryIcon="Find"
+                                PlaceholderText="搜索 mod"
+                                TextChanged="TextBox_Search_TextChanged"
+                                ToolTipService.ToolTip="按名字 / 作者 / 编号搜索（重命名后中文也能搜到）" />
+
+                <ComboBox x:Name="ComboBox_Importer"
+                          Grid.Column="1"
+                          MinWidth="150"
+                          SelectionChanged="ComboBox_Importer_SelectionChanged"
+                          ToolTipService.ToolTip="MI 实例" />
+                <TextBox x:Name="TextBox_Instance"
+                         Grid.Column="2"
+                         IsReadOnly="True"
+                         PlaceholderText="MI 目录"
+                         ToolTipService.ToolTip="MI 目录（点右边「选择…」或「自动查找」）" />
+                <Button Grid.Column="3"
+                        Click="Button_AutoFind_Click"
+                        Content="自动查找"
+                        ToolTipService.ToolTip="手动指定 → %AppData%\XXMI Launcher → 开始菜单里的 XXMI 快捷方式 → 注册表卸载项 → 各盘浅层目录" />
+                <Button Grid.Column="4"
+                        Click="Button_Browse_Click"
+                        Content="选择…" />
+                <Button Grid.Column="5"
+                        Click="Button_OpenInstance_Click"
+                        Content="打开目录" />
+                <!-- 右侧侧边栏的开关；侧边栏本身是「筛选」，先做壳 -->
+                <ToggleButton x:Name="ToggleButton_Filter"
+                              Grid.Column="6"
+                              MinWidth="0"
+                              Padding="10,5"
+                              Click="ToggleButton_Filter_Click"
+                              ToolTipService.ToolTip="筛选（先做成能开合的壳，内容待定）">
+                    <FontIcon FontSize="14" Glyph="&#xE71C;" />
+                </ToggleButton>
+            </Grid>
+
+            <!-- 1 卡片网格（空白处右键 = 页面级操作菜单，免得顶部再占一行） -->
+            <GridView x:Name="GridView_Mods"
+                      Grid.Row="1"
+                      IsItemClickEnabled="False"
+                      SelectionMode="None"
+                      RightTapped="ModGrid_RightTapped">
+                <GridView.ContextFlyout>
+                    <MenuFlyout>
+                        <MenuFlyoutItem Click="Button_LaunchXxmi_Click" Text="打开 XXMI Launcher">
+                            <MenuFlyoutItem.Icon>
+                                <FontIcon Glyph="&#xE768;" />
+                            </MenuFlyoutItem.Icon>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Click="Button_Refresh_Click" Text="刷新">
+                            <MenuFlyoutItem.Icon>
+                                <FontIcon Glyph="&#xE72C;" />
+                            </MenuFlyoutItem.Icon>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutSeparator />
+                        <MenuFlyoutItem Click="Button_ImportFolder_Click" Text="导入文件夹…">
+                            <MenuFlyoutItem.Icon>
+                                <FontIcon Glyph="&#xE8F4;" />
+                            </MenuFlyoutItem.Icon>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Click="Button_ImportZip_Click" Text="导入 zip…">
+                            <MenuFlyoutItem.Icon>
+                                <FontIcon Glyph="&#xE7C3;" />
+                            </MenuFlyoutItem.Icon>
+                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Click="Button_OpenMods_Click" Text="打开 Mods 目录">
+                            <MenuFlyoutItem.Icon>
+                                <FontIcon Glyph="&#xE8E5;" />
+                            </MenuFlyoutItem.Icon>
+                        </MenuFlyoutItem>
+                    </MenuFlyout>
+                </GridView.ContextFlyout>
+                <GridView.ItemContainerStyle>
+                    <!-- 容器内不加任何 padding，边框才不会被裁：卡片自己画边框，
+                         容器再多一层内边距的话，四边就会被切掉一点。 -->
+                    <Style BasedOn="{StaticResource DefaultGridViewItemStyle}" TargetType="GridViewItem">
+                        <Setter Property="Margin" Value="0,0,12,12" />
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="MinHeight" Value="0" />
+                        <Setter Property="MinWidth" Value="0" />
+                        <Setter Property="CornerRadius" Value="6" />
+                    </Style>
+                </GridView.ItemContainerStyle>
+                <GridView.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <!-- 要比卡片四周各大出几 px，给「右下外扩高亮」和阴影留地方，
+                             否则高亮会被容器裁掉（之前就是裁掉才看不见）。 -->
+                        <ItemsWrapGrid ItemHeight="308"
+                                       ItemWidth="224"
+                                       Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </GridView.ItemsPanel>
+                <GridView.ItemTemplate>
+                    <DataTemplate x:DataType="local:XxmiModItem">
+                        <!-- 整张卡片就是一张图，控件和名字**叠**在图上。
+                             外框给 216x296：卡片本体 208x288 + 右下外扩 3px + 余量。 -->
+                        <Grid Width="216"
+                              Height="296"
+                              Background="Transparent"
+                              Visibility="{x:Bind FilterVisibility, Mode=OneWay}"
+                              Loaded="ModCardRoot_Loaded"
+                              PointerEntered="ModCard_PointerEntered"
+                              PointerExited="ModCard_PointerExited"
+                              RightTapped="ModCard_RightTapped">
+                            <!-- 卡片内容：底色 + 一圈常规描边。
+                                 固定 208x288 并靠左上，右下空出来的地方留给高亮边框。 -->
+                            <Border Width="208"
+                                    Height="288"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="6">
+                                <Grid>
+                                    <!-- 预览图铺满整张卡片。悬停放大用代码改 Scale（x:Bind 不能直接绑 Transform 的比例）。
+                                         外面套一层 Border 专门做裁剪：只裁图片，不裁卡片边框
+                                         （裁整张卡会把边框一起裁掉）。 -->
+                                    <Border x:Name="Border_ImageClip"
+                                            CornerRadius="5">
+                                        <Image x:Name="Image_Preview"
+                                               Source="{x:Bind PreviewImage, Mode=OneWay}"
+                                               Stretch="UniformToFill"
+                                               RenderTransformOrigin="0.5,0.5">
+                                            <Image.RenderTransform>
+                                                <ScaleTransform x:Name="Scale_Preview" ScaleX="1" ScaleY="1" />
+                                            </Image.RenderTransform>
+                                        </Image>
+                                    </Border>
+
+                                    <!-- 占位图：没预览图时顶上 -->
+                                    <StackPanel HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"
+                                                Spacing="6"
+                                                Visibility="{x:Bind PlaceholderVisibility, Mode=OneWay}">
+                                        <FontIcon FontSize="30"
+                                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                  Glyph="&#xE91B;" />
+                                        <TextBlock HorizontalAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                   Text="无预览图" />
+                                    </StackPanel>
+
+                                    <!-- 顶部控件条：盖在图上。左=启用开关（常显），右=操作按钮（悬停才淡入） -->
+                                    <Grid Padding="8,7"
+                                          VerticalAlignment="Top"
+                                          ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- 左侧：左右切换式开关（常显）。字号压到最小，去掉内容文字免得占宽 -->
+                                        <ToggleSwitch Grid.Column="0"
+                                                      MinWidth="0"
+                                                      OffContent=""
+                                                      OnContent=""
+                                                      IsOn="{x:Bind Enabled, Mode=TwoWay}"
+                                                      Toggled="ToggleSwitch_ModEnabled_Toggled"
+                                                      ToolTipService.ToolTip="启用 / 禁用（改名加 DISABLED 后缀）">
+                                            <ToggleSwitch.Resources>
+                                                <x:Double x:Key="ToggleSwitchPreContentMargin">0</x:Double>
+                                                <x:Double x:Key="ToggleSwitchPostContentMargin">0</x:Double>
+                                            </ToggleSwitch.Resources>
+                                        </ToggleSwitch>
+
+                                        <!-- 右侧：删除、属性 —— 鼠标移上去才慢慢显示 -->
+                                        <StackPanel x:Name="Panel_CardActions"
+                                                    Grid.Column="2"
+                                                    Grid.ColumnSpan="2"
+                                                    Orientation="Horizontal"
+                                                    Spacing="4"
+                                                    Opacity="0"
+                                                    IsHitTestVisible="True">
+                                            <!-- 透明度过渡：改 Opacity 时自动做 0.18s 渐变，而不是硬切 -->
+                                            <StackPanel.OpacityTransition>
+                                                <ScalarTransition Duration="0:0:0.18" />
+                                            </StackPanel.OpacityTransition>
+
+                                            <!-- 只要图标：去掉按钮边框/底色，放大图标，加一圈黑影保证在亮背景上也看得清 -->
+                                            <Button MinWidth="0"
+                                                    Width="34"
+                                                    Height="34"
+                                                    Padding="0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Click="Button_DeleteMod_Click"
+                                                    CornerRadius="17"
+                                                    ToolTipService.ToolTip="删除这个 mod">
+                                                <!-- 阴影 + 描边：阴影用"深色图标往右下偏移"叠出来（模板里 ThemeShadow 不生效） -->
+                                                <Grid>
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE74D;"
+                                                              Translation="0,2,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE74D;"
+                                                              Translation="0,-1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE74D;"
+                                                              Translation="-1,1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE74D;"
+                                                              Translation="1,1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE74D;"
+                                                              Translation="0,0,0"
+                                                              Opacity="0.9" />
+                                                    <FontIcon FontSize="17" Foreground="White" Glyph="&#xE74D;" />
+                                                </Grid>
+                                            </Button>
+                                            <Button MinWidth="0"
+                                                    Width="34"
+                                                    Height="34"
+                                                    Padding="0"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    Click="Button_ModProperties_Click"
+                                                    CornerRadius="17"
+                                                    ToolTipService.ToolTip="属性 / 详情">
+                                                <Grid>
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE946;"
+                                                              Translation="0,2,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE946;"
+                                                              Translation="0,-1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE946;"
+                                                              Translation="-1,1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE946;"
+                                                              Translation="1,1,0" />
+                                                    <FontIcon FontSize="17"
+                                                              Foreground="#99000000"
+                                                              Glyph="&#xE946;"
+                                                              Translation="0,0,0"
+                                                              Opacity="0.9" />
+                                                    <FontIcon FontSize="17" Foreground="White" Glyph="&#xE946;" />
+                                                </Grid>
+                                            </Button>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- 有新版角标（放左下，避开右上角按钮） -->
+                                    <Border Margin="8"
+                                            Padding="6,2"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Bottom"
+                                            Background="{ThemeResource SystemFillColorCautionBrush}"
+                                            CornerRadius="3"
+                                            Visibility="{x:Bind UpdateBadgeVisibility, Mode=OneWay}">
+                                        <TextBlock FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="Black"
+                                                   Text="有新版本" />
+                                    </Border>
+
+                                    <!-- 底部名字条：真·磨砂玻璃，盖在图上。
+                                         高度跟着悬停状态变：平时 1 行、悬停 2 行 + 来源/作者两行。
+                                         用 MinHeight 而不是固定 Height —— 固定高度算少一点就会把标题上沿切掉
+                                         （之前 80px 装不下 2 行标题+两行小字）。 -->
+                                    <Grid VerticalAlignment="Bottom"
+                                          MinHeight="{x:Bind NameAreaHeight, Mode=OneWay}"
+                                          Margin="0,0,0,0">
+                                        <!-- 模糊载体：加载时用 Composition 把「它背后的主图」高斯模糊掉。
+                                             Background 是压在模糊之上的半透明纱（模糊失败时也靠它兜底）。 -->
+                                        <!-- 纱层调淡一点：之前 #B3（70%）压得太黑，图片几乎看不见了 -->
+                                        <Border x:Name="Border_NameBlur"
+                                                Background="#7A101014"
+                                                Loaded="Border_NameBlur_Loaded" />
+
+                                        <!-- 名字 + 来源 + 作者。
+                                             上下留一点呼吸空间（各 6），别贴边也别在文字上方留空模糊区。 -->
+                                        <StackPanel Margin="10,6,10,6"
+                                                    VerticalAlignment="Center"
+                                                    Spacing="0">
+                                            <!-- 平时 1 行，悬停放开到 2 行 -->
+                                            <TextBlock FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                                       MaxLines="{x:Bind TitleMaxLines, Mode=OneWay}"
+                                                       Text="{x:Bind DisplayName, Mode=OneWay}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       TextWrapping="Wrap"
+                                                       ToolTipService.ToolTip="{x:Bind DisplayName, Mode=OneWay}" />
+                                            <!-- 来源 + 作者：都只在悬停时才露出来（平时只留一行名字）。
+                                                 顺序：来源在上、作者在下 —— 和截图里期望的一致。
+                                                 注意只能各写一次，之前 Info 写了两处会重复显示。 -->
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       Text="{x:Bind Info, Mode=OneWay}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{x:Bind HoverMetaVisibility, Mode=OneWay}" />
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                       Text="{x:Bind AuthorLine, Mode=OneWay}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Visibility="{x:Bind HoverMetaVisibility, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+
+                            <!-- 悬停高亮：整圈四边都画，而且要画在卡片外面一点。
+                                 注意：空 Border 没有子元素会量成 0×0，什么都不画 —— 必须给显式尺寸。 -->
+                            <Border Width="212"
+                                    Height="292"
+                                    Margin="-2,-2,0,0"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top"
+                                    BorderBrush="{x:Bind AccentBrush, Mode=OneWay}"
+                                    BorderThickness="2"
+                                    CornerRadius="8"
+                                    IsHitTestVisible="False"
+                                    Visibility="{x:Bind AccentVisibility, Mode=OneWay}" />
+
+                            <!-- 右键菜单 -->
+                            <Grid.ContextFlyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Click="Button_ModProperties_Click" Text="属性 / 详情">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE946;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Click="Button_OpenMod_Click" Text="打开所在文件夹">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE8E5;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Click="MenuFlyout_RenameMod_Click" Text="重命名（只改显示）">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE8AC;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <!-- 只有 GameBanana 装的 mod 才有对应页面 -->
+                                    <MenuFlyoutItem Click="MenuFlyout_OpenBananaPage_Click"
+                                                    Text="在 GameBanana 打开"
+                                                    Visibility="{x:Bind BananaMenuVisibility, Mode=OneWay}">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE774;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem Click="Button_DeleteMod_Click" Text="删除">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE74D;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </Grid.ContextFlyout>
+                        </Grid>
+                    </DataTemplate>
+                </GridView.ItemTemplate>
+            </GridView>
+
+            <!-- 2 底部状态 -->
+            <TextBlock x:Name="TextBlock_Status"
+                       Grid.Row="2"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       TextWrapping="Wrap" />
         </Grid>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
-            <Button Click="Button_LaunchXxmi_Click" Content="打开 XXMI Launcher" ToolTipService.ToolTip="模型替换的注入必须由 XXMI Launcher 驱动（它那份 d3d11.dll 是受控版），这里直接帮你把它打开" />
-            <Button Click="Button_Refresh_Click" Content="刷新" />
-            <Button Click="Button_OpenMods_Click" Content="打开 Mods 目录" />
-            <Button Click="Button_ImportFolder_Click" Content="导入文件夹…" />
-            <Button Click="Button_ImportZip_Click" Content="导入 zip…" />
-            <TextBlock x:Name="TextBlock_ModsCount"
-                       VerticalAlignment="Center"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+        <!-- 右侧筛选侧边栏：先做壳（能开合、能收起），内容待定 -->
+        <Border x:Name="Panel_Filter"
+                Grid.Column="1"
+                Width="260"
+                Margin="12,0,0,0"
+                Padding="12"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Opacity="0"
+                Visibility="Collapsed">
+            <Grid RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-        <ListView x:Name="ListView_Mods" Grid.Row="3" SelectionMode="None">
-            <ListView.ItemTemplate>
-                <DataTemplate x:DataType="local:XxmiModItem">
-                    <Border Margin="0,0,0,6"
-                            Padding="14,10"
-                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4">
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                <Grid Grid.Row="0">
+                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="筛选" />
+                    <Button MinWidth="0"
+                            Padding="7,3"
+                            HorizontalAlignment="Right"
+                            Click="Button_CloseFilter_Click"
+                            ToolTipService.ToolTip="收起">
+                        <FontIcon FontSize="12" Glyph="&#xE711;" />
+                    </Button>
+                </Grid>
 
-                            <StackPanel Spacing="2">
-                                <TextBlock FontWeight="SemiBold" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Text="{x:Bind Info}"
-                                           TextTrimming="CharacterEllipsis" />
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="1"
-                                        Orientation="Horizontal"
-                                        Spacing="8"
-                                        VerticalAlignment="Center">
-                                <ToggleSwitch MinWidth="0"
-                                              OffContent="禁用"
-                                              OnContent="启用"
-                                              IsOn="{x:Bind Enabled, Mode=TwoWay}"
-                                              Toggled="ToggleSwitch_Mod_Toggled" />
-                                <Button MinWidth="0"
-                                        Padding="8,3"
-                                        Click="Button_OpenMod_Click"
-                                        Content="打开" />
-                                <Button MinWidth="0"
-                                        Padding="8,3"
-                                        Click="Button_DeleteMod_Click"
-                                        Content="删除" />
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-                </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
-
-        <TextBlock x:Name="TextBlock_Status"
-                   Grid.Row="4"
-                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                   TextWrapping="Wrap" />
+                <!-- 这里先空着：你说「应该是筛选什么的，先空着」 -->
+                <TextBlock Grid.Row="1"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                           Text="筛选条件待定。&#x0a;（先做成能开合的侧边栏壳子）"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Top" />
+            </Grid>
+        </Border>
     </Grid>
 </sf:PageBase>

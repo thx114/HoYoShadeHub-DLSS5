@@ -31,7 +31,9 @@ internal static class XxmiModManager
             {
                 string name = Path.GetFileName(dir);
 
-                if (name.StartsWith('.') || name.Equals("_cache", StringComparison.OrdinalIgnoreCase))
+                // 下划线开头的都是启动器自己用的内部目录（_cache = 解压暂存、_backup = 更新前的旧版本），
+                // 不是用户装的 mod，不该出现在卡片列表里。
+                if (name.StartsWith('.') || name.StartsWith('_'))
                 {
                     continue;
                 }
@@ -57,6 +59,19 @@ internal static class XxmiModManager
     public static bool IsEnabled(string name)
         => !name.EndsWith("DISABLED", StringComparison.OrdinalIgnoreCase)
             && !name.EndsWith("DISABLED ", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>把名字末尾的 DISABLED 后缀剥掉（纯展示用，不碰磁盘）</summary>
+    public static string StripDisabled(string name)
+    {
+        string clean = (name ?? string.Empty).Trim();
+
+        while (clean.EndsWith("DISABLED", StringComparison.OrdinalIgnoreCase))
+        {
+            clean = clean[..^"DISABLED".Length].TrimEnd();
+        }
+
+        return clean;
+    }
 
     /// <summary>启用/禁用：改名字（加/去掉 DISABLED 后缀）。返回新路径</summary>
     public static string SetEnabled(string path, bool enabled)
