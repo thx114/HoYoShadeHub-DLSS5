@@ -203,20 +203,7 @@ public sealed partial class GameSettingPage : PageBase
     }
 
 
-    /// <summary>原神帧率解锁开关。按游戏记，和启动页左侧启动选项是同一份</summary>
-    public bool FpsUnlockEnabled
-    {
-        get;
-        set
-        {
-            if (SetProperty(ref field, value))
-            {
-                IsApplyButtonEnable = true;
-            }
-        }
-    }
-
-    /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记</summary>
+    /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记，开关在启动页启动选项里</summary>
     private double _fpsUnlockTargetValue = 120;
     public double FpsUnlockTargetValue
     {
@@ -262,7 +249,6 @@ public sealed partial class GameSettingPage : PageBase
                 IsGraphicsSettingEnable = true;
                 StackPanel_GenshinHDR.Visibility = Visibility.Visible;
                 StackPanel_GenshinFpsUnlock.Visibility = Visibility.Visible;
-                FpsUnlockEnabled = AppConfig.GetUseFpsUnlockLaunchOption(CurrentGameId);
                 FpsUnlockTargetValue = AppConfig.GetFpsUnlockTarget(CurrentGameId);
                 EnableGenshinHDR = AppConfig.EnableGenshinHDR;
                 _displayInformation = DisplayInformation.CreateForWindowId(this.XamlRoot.GetAppWindow().Id);
@@ -465,7 +451,6 @@ public sealed partial class GameSettingPage : PageBase
                 {
                     AppConfig.EnableGenshinHDR = EnableGenshinHDR;
                     GameSettingService.SetGenshinEnableHDR(CurrentGameBiz, EnableGenshinHDR);
-                    AppConfig.SetUseFpsUnlockLaunchOption(CurrentGameId, FpsUnlockEnabled);
                     AppConfig.SetFpsUnlockTarget(CurrentGameId, (int)FpsUnlockTargetValue);
                 }
             }

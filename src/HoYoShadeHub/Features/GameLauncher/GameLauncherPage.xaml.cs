@@ -172,11 +172,7 @@ public sealed partial class GameLauncherPage : PageBase
     {
     }
 
-    /// <summary>启动选项里「帧率解锁」右侧小设置按钮：跳到游戏设置页编辑帧率解锁</summary>
-    private void Button_FpsUnlockSettings_Click(object sender, RoutedEventArgs e)
-    {
-        WeakReferenceMessenger.Default.Send(new MainViewNavigateMessage(typeof(GameSetting.GameSettingPage)));
-    }
+
 
     #endregion
 

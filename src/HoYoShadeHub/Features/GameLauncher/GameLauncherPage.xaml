@@ -638,46 +638,6 @@
                         </TextBlock>
                     </StackPanel>
                 </Border>
-
-                <!--  帧率解锁（原神）  -->
-                <Border Padding="10,0,10,0"
-                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
-                        CornerRadius="12"
-                        Visibility="{x:Bind FpsUnlockVisibility}">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <CheckBox MinWidth="0"
-                                  Margin="0,-2,0,-2"
-                                  VerticalAlignment="Center"
-                                  VerticalContentAlignment="Center"
-                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                  IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
-                                  Style="{ThemeResource CompactCheckBoxStyle}"
-                                  ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。">
-                            <TextBlock Margin="0,0,0,4"
-                                       FontSize="12"
-                                       FontWeight="Bold"
-                                       Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                                       IsTextScaleFactorEnabled="False"
-                                       Text="帧率解锁" />
-                        </CheckBox>
-                        <Button x:Name="Button_FpsUnlockSettings"
-                                Width="22"
-                                Height="22"
-                                MinWidth="0"
-                                Padding="0"
-                                VerticalAlignment="Center"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Click="Button_FpsUnlockSettings_Click"
-                                CornerRadius="11"
-                                ToolTipService.ToolTip="打开游戏设置里的帧率解锁">
-                            <FontIcon FontSize="12"
-                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                      Glyph="&#xE713;"
-                                      IsTextScaleFactorEnabled="False" />
-                        </Button>
-                    </StackPanel>
-                </Border>
             </StackPanel>
 
 
@@ -762,6 +722,14 @@
                       Margin="0,1"
                       Visibility="{x:Bind XxmiInjectVisibility, Mode=OneWay}"
                       ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
+
+            <!--  帧率解锁：原神，目标帧率在左侧「游戏设置」页改  -->
+            <CheckBox x:Name="CheckBox_UseFpsUnlock"
+                      Content="帧率解锁"
+                      IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
+                      Margin="0,1"
+                      Visibility="{x:Bind FpsUnlockVisibility, Mode=OneWay}"
+                      ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。目标帧率在左侧「游戏设置」页设置。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。" />
 
             <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
             <CheckBox x:Name="CheckBox_UseModules"
