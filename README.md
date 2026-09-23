@@ -1,6 +1,6 @@
 # HoYoShade Hub · DLSS5 魔改版
 
-> ⚠️ 这是 [DuolaD/HoYoShade-Hub](https://github.com/DuolaD/HoYoShade-Hub) 的**非官方魔改版**（fork）。
+> ⚠️ 这是 [DuolaD/HoYoShade-Hub](https://github.com/DuolaD/HoYoShade-Hub) 的**非官方Fork**。
 > 本 fork 的问题请提到本仓库的 Issues，**不要去打扰上游作者**。
 
 ## 这个版本多了什么
