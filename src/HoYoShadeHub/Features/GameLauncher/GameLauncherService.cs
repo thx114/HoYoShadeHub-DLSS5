@@ -326,6 +326,25 @@ internal partial class GameLauncherService
         return Process.GetProcessesByName(name).Where(x => x.SessionId == currentSessionId && !IsProcessPending(x)).FirstOrDefault();
     }
 
+    /// <summary>等游戏进程出现（用启动器/CMD 拉游戏时，真实进程会晚几秒），超时返回 null</summary>
+    public async Task<Process?> GetGameProcessAsync(GameId gameId, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            Process? process = await GetGameProcessAsync(gameId);
+            if (process is not null)
+            {
+                return process;
+            }
+
+            await Task.Delay(250);
+        }
+
+        return null;
+    }
+
 
 
     /// <summary>

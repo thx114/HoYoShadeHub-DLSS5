@@ -1531,6 +1531,28 @@ public static class AppConfig
         SetValue(value, BuildLaunchOptionKey(gameId, "use_optiscaler"));
     }
 
+    /// <summary>启动时解锁帧率（原神），按游戏记</summary>
+    public static bool GetUseFpsUnlockLaunchOption(GameId gameId)
+    {
+        return GetValue(false, BuildLaunchOptionKey(gameId, "use_fps_unlock"));
+    }
+
+    public static void SetUseFpsUnlockLaunchOption(GameId gameId, bool value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_fps_unlock"));
+    }
+
+    /// <summary>帧率解锁目标值（fps），默认 120，按游戏记</summary>
+    public static int GetFpsUnlockTarget(GameId gameId)
+    {
+        return GetValue(120, BuildLaunchOptionKey(gameId, "fps_unlock_target"));
+    }
+
+    public static void SetFpsUnlockTarget(GameId gameId, int value)
+    {
+        SetValue(Math.Clamp(value, 60, 1000), BuildLaunchOptionKey(gameId, "fps_unlock_target"));
+    }
+
     /// <summary>启动时注入 XXMI（3DMigoto 的 d3d11.dll），按游戏记</summary>
     public static bool GetUseXxmiInjectLaunchOption(GameId gameId)
     {

@@ -638,6 +638,42 @@
                         </TextBlock>
                     </StackPanel>
                 </Border>
+
+                <!--  帧率解锁（原神）  -->
+                <Border Padding="10,0,10,0"
+                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
+                        CornerRadius="12"
+                        Visibility="{x:Bind FpsUnlockVisibility}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <CheckBox MinWidth="0"
+                                  Margin="0,-2,0,-2"
+                                  VerticalAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                  IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
+                                  Style="{ThemeResource CompactCheckBoxStyle}"
+                                  ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。">
+                            <TextBlock Margin="0,0,0,4"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                       IsTextScaleFactorEnabled="False"
+                                       Text="帧率解锁" />
+                        </CheckBox>
+                        <TextBox x:Name="TextBox_FpsUnlockTarget"
+                                 Width="54"
+                                 Height="24"
+                                 VerticalAlignment="Center"
+                                 FontSize="12"
+                                 InputScope="Number"
+                                 IsEnabled="{x:Bind UseFpsUnlock, Mode=OneWay}"
+                                 MaxLength="4"
+                                 BeforeTextChanging="TextBox_FpsUnlockTarget_BeforeTextChanging"
+                                 Text="{x:Bind FpsUnlockTarget, Mode=TwoWay}"
+                                 TextAlignment="Center"
+                                 ToolTipService.ToolTip="目标帧率，60-1000" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
 

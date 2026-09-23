@@ -3,6 +3,13 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.4b3 · 启动选项内置帧率解锁（原神）
+
+- 启动选项新增「帧率解锁」+ 目标帧率输入框（60-1000，默认 120），只对原神显示，按游戏记设置。
+- C# 原生实现，启动器自身充当解锁器，不外挂 exe：游戏启动后扫描主模块 `.text` 段特征 `8B 0D ?? ?? ?? ?? EB ?? 33 C0` 定位帧率变量，写入 416 字节 shellcode 并启动同步线程；游戏内线程通过 `OpenProcess` 回启动器进程读目标帧数值，启动器后台循环每 2 秒校正一次（移植自 xiaonian233/genshin-fps-unlock，shellcode credit winTEuser）。
+- 普通启动与注入模式（含无 shade 分支）都生效；游戏退出 / 重新启动 / 停注入器时释放解锁器并让游戏内同步线程自行退出。
+- 游戏以管理员启动时，Hub 也必须用管理员启动，否则 OpenProcess 被拒。
+
 ## 1.3.4b2 · 新增 OptiScaler F5 源
 
 - OptiScaler 可下载列表新增「OptiScaler F5 DLSSNR Multipass (janblade)」：仓库 `janblade/OptiScaler-F5-DLSSNR-Multipass`，F5 版 DLSSNR + multipass（vit-reuse、nvidia-residual、pre/post-SR 预设、RTX 40 MFG 测试构建）；只取 `OptiScaler-DLSSNR-F5-*.zip`。

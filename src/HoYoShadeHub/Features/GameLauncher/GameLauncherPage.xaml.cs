@@ -172,6 +172,12 @@ public sealed partial class GameLauncherPage : PageBase
     {
     }
 
+    /// <summary>帧率目标框：只允许数字</summary>
+    private void TextBox_FpsUnlockTarget_BeforeTextChanging(TextBox sender, TextBoxBeforeTextChangingEventArgs args)
+    {
+        args.Cancel = args.NewText.Any(c => !char.IsDigit(c));
+    }
+
     #endregion
 
 
@@ -256,6 +262,9 @@ public sealed partial class GameLauncherPage : PageBase
 
             // XXMI：只对 XXMI 支持的游戏显示「启用XXMI」，注入模式下点不了
             UpdateXxmiInjectVisibility();
+
+            // 帧率解锁：只对原神显示
+            UpdateFpsUnlockVisibility();
 
             // 老配置里的「额外注入 DLL」（每个游戏一个路径）搬进「模块」页（一次性）
             if (CurrentGameId is not null)
@@ -556,6 +565,44 @@ public sealed partial class GameLauncherPage : PageBase
     {
         get => _isOptiScalerAvailable;
         set => SetProperty(ref _isOptiScalerAvailable, value);
+    }
+
+    /// <summary>启动时解锁帧率（原神）。按游戏记</summary>
+    private bool _useFpsUnlock;
+    public bool UseFpsUnlock
+    {
+        get => _useFpsUnlock;
+        set
+        {
+            if (SetProperty(ref _useFpsUnlock, value))
+            {
+                NotifyLaunchModeChanged();
+            }
+        }
+    }
+
+    /// <summary>帧率解锁目标值（fps），范围 60-1000。按游戏记</summary>
+    private int _fpsUnlockTarget = 120;
+    public int FpsUnlockTarget
+    {
+        get => _fpsUnlockTarget;
+        set => SetProperty(ref _fpsUnlockTarget, Math.Clamp(value, 60, 1000));
+    }
+
+    /// <summary>帧率解锁只支持原神</summary>
+    public Visibility FpsUnlockVisibility
+        => CurrentGameId is { GameBiz.Game: GameBiz.hk4e }
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    private void UpdateFpsUnlockVisibility()
+    {
+        OnPropertyChanged(nameof(FpsUnlockVisibility));
+
+        if (FpsUnlockVisibility != Visibility.Visible && _useFpsUnlock)
+        {
+            UseFpsUnlock = false;
+        }
     }
 
     /// <summary>注入模式下不能同时用 XXMI（XXMI 要自己把游戏拉起来）</summary>
@@ -894,6 +941,8 @@ public sealed partial class GameLauncherPage : PageBase
             bool useModules = AppConfig.GetUseModulesLaunchOption(CurrentGameId);
             bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(CurrentGameId);
             bool useXxmiInject = AppConfig.GetUseXxmiInjectLaunchOption(CurrentGameId);
+            bool useFpsUnlock = AppConfig.GetUseFpsUnlockLaunchOption(CurrentGameId);
+            int fpsUnlockTarget = AppConfig.GetFpsUnlockTarget(CurrentGameId);
 
             if (useHoYoShade && useOpenHoYoShade)
             {
@@ -920,6 +969,8 @@ public sealed partial class GameLauncherPage : PageBase
             _useModules = useModules;
             _useOptiScaler = useOptiScaler;
             _useXxmiInject = useXxmiInject;
+            _useFpsUnlock = useFpsUnlock;
+            _fpsUnlockTarget = fpsUnlockTarget;
 
             OnPropertyChanged(nameof(EnableGameLaunch));
             OnPropertyChanged(nameof(UseStarwardLauncher));
@@ -930,8 +981,11 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(UseModules));
             OnPropertyChanged(nameof(UseOptiScaler));
             OnPropertyChanged(nameof(UseXxmiInject));
+            OnPropertyChanged(nameof(UseFpsUnlock));
+            OnPropertyChanged(nameof(FpsUnlockTarget));
             OnPropertyChanged(nameof(XxmiInjectVisibility));
             OnPropertyChanged(nameof(CanUseXxmiInject));
+            OnPropertyChanged(nameof(FpsUnlockVisibility));
 
             UpdateGameLaunchCheckboxState();
 
@@ -962,6 +1016,8 @@ public sealed partial class GameLauncherPage : PageBase
         AppConfig.SetUseModulesLaunchOption(CurrentGameId, _useModules);
         AppConfig.SetUseOptiScalerLaunchOption(CurrentGameId, _useOptiScaler);
         AppConfig.SetUseXxmiInjectLaunchOption(CurrentGameId, _useXxmiInject);
+        AppConfig.SetUseFpsUnlockLaunchOption(CurrentGameId, _useFpsUnlock);
+        AppConfig.SetFpsUnlockTarget(CurrentGameId, _fpsUnlockTarget);
     }
 
     private bool _isStarwardProtocolAvailable;
@@ -1768,6 +1824,7 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     DispatcherQueue.TryEnqueue(CheckGameVersion);
                     GameProcess = null;
+                    StopFpsUnlocker();
                     // 游戏没了：让背景（含视频）回来
                     WeakReferenceMessenger.Default.Send(new GameExitedMessage());
                 }
@@ -1817,6 +1874,9 @@ public sealed partial class GameLauncherPage : PageBase
 
     /// <summary>「额外注入 DLL」那个等待/注入任务的取消源（停注入器时一起停）</summary>
     private static System.Threading.CancellationTokenSource? _extraInjectCts;
+
+    /// <summary>帧率解锁器实例（游戏退出/重新启动时释放）</summary>
+    private static FpsUnlocker? _fpsUnlocker;
 
     /// <summary>注入模式：当前这个 inject.exe（再启动游戏要先把它停掉）</summary>
     private static Process? _injectorProcess;
@@ -2122,6 +2182,62 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>停掉正在跑的注入器（再点一次开始游戏、或者点提示条上的「停止」）</summary>
+    /// <summary>
+    /// 启动帧率解锁：等真实游戏进程、扫描注入。fire-and-forget（游戏启动后异步进行）。
+    /// </summary>
+    private async Task StartFpsUnlockAsync(TimeSpan processTimeout, TimeSpan moduleTimeout)
+    {
+        if (CurrentGameId is not { } gameId || !UseFpsUnlock)
+        {
+            return;
+        }
+
+        StopFpsUnlocker();
+
+        Process? game = await _gameLauncherService.GetGameProcessAsync(gameId, processTimeout);
+        if (game is null)
+        {
+            _logger.LogWarning("FPS unlock: game process not found within {Timeout}", processTimeout);
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("帧率解锁",
+                $"没在 {Math.Round(processTimeout.TotalSeconds)} 秒内等到游戏进程，这次不解锁了。", 8000));
+            return;
+        }
+
+        FpsUnlocker unlocker = new();
+        bool ok;
+        try
+        {
+            ok = await unlocker.AttachAsync(game, FpsUnlockTarget, moduleTimeout);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "FPS unlock attach failed");
+            ok = false;
+        }
+
+        if (ok)
+        {
+            _fpsUnlocker = unlocker;
+            _logger.LogInformation("FPS unlock armed: {Target} fps (pid {Pid})", FpsUnlockTarget, game.Id);
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success("帧率解锁",
+                $"已把帧率上限同步为 {FpsUnlockTarget} fps（pid {game.Id}）。", 8000));
+            return;
+        }
+
+        string detail = string.IsNullOrWhiteSpace(unlocker.LastError)
+            ? "特征扫描或注入失败，游戏版本可能已更新。"
+            : unlocker.LastError!;
+        _logger.LogWarning("FPS unlock failed: {Detail}", detail);
+        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("帧率解锁", detail, 10000));
+        unlocker.Dispose();
+    }
+
+    private static void StopFpsUnlocker()
+    {
+        _fpsUnlocker?.Dispose();
+        _fpsUnlocker = null;
+    }
+
     private void StopInjector(string reason)
     {
         Process? process = _injectorProcess;
@@ -2131,6 +2247,7 @@ public sealed partial class GameLauncherPage : PageBase
         {
             _extraInjectCts?.Cancel();
             _extraInjectCts = null;
+            StopFpsUnlocker();
 
             if (process is not null && !process.HasExited)
             {
@@ -2482,6 +2599,11 @@ public sealed partial class GameLauncherPage : PageBase
                 GameState = GameState.GameIsRunning;
                 GameProcess = process;
                 WeakReferenceMessenger.Default.Send(new GameStartedMessage());
+
+                if (UseFpsUnlock)
+                {
+                    _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                }
             }
         }
         catch (FileNotFoundException)
@@ -2540,6 +2662,12 @@ public sealed partial class GameLauncherPage : PageBase
                 StopInjector("要重新注入");
                 _logger.LogInformation("Inject mode without HoYoShade/OpenHoYoShade: only extra DLL / OptiScaler for {Process}", onlyExtraProcess);
                 StartExtraDllInjection(onlyExtraProcess);
+
+                if (UseFpsUnlock)
+                {
+                    _ = StartFpsUnlockAsync(TimeSpan.FromMinutes(20), TimeSpan.FromSeconds(60));
+                }
+
                 InAppToast.MainWindow?.Information("注入模式",
                     $"没勾 HoYoShade / OpenHoYoShade，这次只等 {onlyExtraProcess} 起来注「额外注入 DLL」/ OptiScaler。", 8000);
                 return;
@@ -2643,6 +2771,11 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 额外的 DLL（OptiScaler / DLSS Enabler 那套）也等这个进程
             StartExtraDllInjection(processName);
+
+            if (UseFpsUnlock)
+            {
+                _ = StartFpsUnlockAsync(TimeSpan.FromMinutes(20), TimeSpan.FromSeconds(60));
+            }
         }
         catch (FileNotFoundException)
         {
