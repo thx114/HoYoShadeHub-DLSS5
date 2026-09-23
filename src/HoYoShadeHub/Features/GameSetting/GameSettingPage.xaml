@@ -114,8 +114,32 @@
                                    TextWrapping="Wrap" />
                     </StackPanel>
 
+                    <!--  原神帧率解锁  -->
+                    <StackPanel x:Name="StackPanel_GenshinFpsUnlock"
+                                Margin="0,8,0,0"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <TextBlock FontWeight="Bold" Text="帧率解锁" />
+                        <CheckBox Content="启动游戏时解锁帧率"
+                                  IsChecked="{x:Bind FpsUnlockEnabled, Mode=TwoWay}" />
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="8">
+                            <TextBlock VerticalAlignment="Center"
+                                       Text="目标帧率" />
+                            <NumberBox Width="120"
+                                       Minimum="60"
+                                       Maximum="1000"
+                                       SpinButtonPlacementMode="Inline"
+                                       Value="{x:Bind FpsUnlockTargetValue, Mode=TwoWay}" />
+                        </StackPanel>
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。游戏以管理员启动时，Hub 也要用管理员启动。特征和注入代码跟随上游 GitHub 更新。"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+
                     <!--  原神 HDR  -->
                     <StackPanel x:Name="StackPanel_GenshinHDR"
+                                Margin="0,12,0,0"
                                 Spacing="8"
                                 Visibility="Collapsed">
                         <TextBlock FontWeight="Bold" Text="HDR" />

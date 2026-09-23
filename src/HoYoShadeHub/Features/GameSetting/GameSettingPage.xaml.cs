@@ -203,6 +203,34 @@ public sealed partial class GameSettingPage : PageBase
     }
 
 
+    /// <summary>原神帧率解锁开关。按游戏记，和启动页左侧启动选项是同一份</summary>
+    public bool FpsUnlockEnabled
+    {
+        get;
+        set
+        {
+            if (SetProperty(ref field, value))
+            {
+                IsApplyButtonEnable = true;
+            }
+        }
+    }
+
+    /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记</summary>
+    private double _fpsUnlockTargetValue = 120;
+    public double FpsUnlockTargetValue
+    {
+        get => _fpsUnlockTargetValue;
+        set
+        {
+            double clamped = Math.Clamp(Math.Round(value), 60, 1000);
+            if (SetProperty(ref _fpsUnlockTargetValue, clamped))
+            {
+                IsApplyButtonEnable = true;
+            }
+        }
+    }
+
     public bool HDRNotSupported { get; set => SetProperty(ref field, value); }
 
     public bool HDRNotEnabled { get; set => SetProperty(ref field, value); }
@@ -233,6 +261,9 @@ public sealed partial class GameSettingPage : PageBase
             {
                 IsGraphicsSettingEnable = true;
                 StackPanel_GenshinHDR.Visibility = Visibility.Visible;
+                StackPanel_GenshinFpsUnlock.Visibility = Visibility.Visible;
+                FpsUnlockEnabled = AppConfig.GetUseFpsUnlockLaunchOption(CurrentGameId);
+                FpsUnlockTargetValue = AppConfig.GetFpsUnlockTarget(CurrentGameId);
                 EnableGenshinHDR = AppConfig.EnableGenshinHDR;
                 _displayInformation = DisplayInformation.CreateForWindowId(this.XamlRoot.GetAppWindow().Id);
                 _displayInformation.AdvancedColorInfoChanged += _displayInformation_AdvancedColorInfoChanged;
@@ -434,6 +465,8 @@ public sealed partial class GameSettingPage : PageBase
                 {
                     AppConfig.EnableGenshinHDR = EnableGenshinHDR;
                     GameSettingService.SetGenshinEnableHDR(CurrentGameBiz, EnableGenshinHDR);
+                    AppConfig.SetUseFpsUnlockLaunchOption(CurrentGameId, FpsUnlockEnabled);
+                    AppConfig.SetFpsUnlockTarget(CurrentGameId, (int)FpsUnlockTargetValue);
                 }
             }
             // 游戏运行时应用的设置无法生效

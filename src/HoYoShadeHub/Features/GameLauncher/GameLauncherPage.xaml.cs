@@ -172,10 +172,10 @@ public sealed partial class GameLauncherPage : PageBase
     {
     }
 
-    /// <summary>帧率目标框：只允许数字</summary>
-    private void TextBox_FpsUnlockTarget_BeforeTextChanging(TextBox sender, TextBoxBeforeTextChangingEventArgs args)
+    /// <summary>启动选项里「帧率解锁」右侧小设置按钮：跳到游戏设置页编辑帧率解锁</summary>
+    private void Button_FpsUnlockSettings_Click(object sender, RoutedEventArgs e)
     {
-        args.Cancel = args.NewText.Any(c => !char.IsDigit(c));
+        WeakReferenceMessenger.Default.Send(new MainViewNavigateMessage(typeof(GameSetting.GameSettingPage)));
     }
 
     #endregion

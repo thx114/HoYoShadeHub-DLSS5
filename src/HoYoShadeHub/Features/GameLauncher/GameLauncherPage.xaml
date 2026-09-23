@@ -660,18 +660,22 @@
                                        IsTextScaleFactorEnabled="False"
                                        Text="帧率解锁" />
                         </CheckBox>
-                        <TextBox x:Name="TextBox_FpsUnlockTarget"
-                                 Width="54"
-                                 Height="24"
-                                 VerticalAlignment="Center"
-                                 FontSize="12"
-                                 InputScope="Number"
-                                 IsEnabled="{x:Bind UseFpsUnlock, Mode=OneWay}"
-                                 MaxLength="4"
-                                 BeforeTextChanging="TextBox_FpsUnlockTarget_BeforeTextChanging"
-                                 Text="{x:Bind FpsUnlockTarget, Mode=TwoWay}"
-                                 TextAlignment="Center"
-                                 ToolTipService.ToolTip="目标帧率，60-1000" />
+                        <Button x:Name="Button_FpsUnlockSettings"
+                                Width="22"
+                                Height="22"
+                                MinWidth="0"
+                                Padding="0"
+                                VerticalAlignment="Center"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Click="Button_FpsUnlockSettings_Click"
+                                CornerRadius="11"
+                                ToolTipService.ToolTip="打开游戏设置里的帧率解锁">
+                            <FontIcon FontSize="12"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      Glyph="&#xE713;"
+                                      IsTextScaleFactorEnabled="False" />
+                        </Button>
                     </StackPanel>
                 </Border>
             </StackPanel>
