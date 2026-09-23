@@ -76,6 +76,16 @@ public static class OptiScalerCatalog
             Tags = ["dlssnr", "neurotic", "alpha"],
             Homepage = "https://github.com/MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork/releases",
         },
+        new OptiScalerSource
+        {
+            Id = "mfg-ada",
+            Name = "OptiScaler MFG Ada（本 fork）",
+            Repository = "thx114/OptiScaler-MFG-Ada",
+            Description = "本 fork：RTX 40（Ada）DX11 游戏多帧生成。门补丁 + 双向 NvAPI 架构伪装 + midpoint 修正（默认开），包内两处 dlssg 均为 310.9.1。runtime-* tag 只是 dlssg 单文件，会自动跳过。",
+            TagPattern = @"^mfg-ada-",
+            Tags = ["mfg", "ada", "dlssg", "fork"],
+            Homepage = "https://github.com/thx114/OptiScaler-MFG-Ada/releases",
+        },
     ];
 
     public static OptiScalerSource? Find(string id)

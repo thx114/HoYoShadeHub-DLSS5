@@ -1683,11 +1683,11 @@ Check(OptiScalerDownloader.IsInstaller(installerOnly[0]) && !OptiScalerDownloade
 Check(OptiScalerDownloader.PickAsset(installerOnly) == "dlssnr_on_amd_setup.exe", "只有 exe 时挑它");
 Check(OptiScalerDownloader.PickAsset(bothKinds) == "OptiScaler-NR-v0.8.6.zip", "有 zip 就不要顺手去跑人家的安装程序");
 
-// DLSS-NR on AMD 已经挪到「模块」了（它不是 OptiScaler），所以内置来源只剩 wilsjo2 / neurotic
-Check(OptiScalerCatalog.Builtin.Count == 2, "内置 2 个 OptiScaler 来源（DLSS-NR on AMD 挪去模块了）");
+// 内置来源：wilsjo2 / neurotic / mfg-ada（本 fork）
+Check(OptiScalerCatalog.Builtin.Count == 3, $"内置 3 个 OptiScaler 来源（实际 {OptiScalerCatalog.Builtin.Count}）");
 Check(OptiScalerCatalog.Builtin.All(s => s.Id != "dlssnr-amd"), "DLSS NR on AMD 不再挂在 OptiScaler 来源里");
 Check(OptiScalerCatalog.Builtin.All(s => s.Id != "multipass-mfg"), "404 的那个来源删掉了");
-Check(OptiScalerCatalog.Builtin.Select(s => s.Id).Distinct().Count() == 2, "来源 id 不重复（要当目录名用）");
+Check(OptiScalerCatalog.Builtin.Select(s => s.Id).Distinct().Count() == 3, "来源 id 不重复（要当目录名用）");
 Check(OptiScalerCatalog.Builtin.All(s => s.Tags is { Length: > 0 }), "每个来源都带 tags（卡片上要显示）");
 Check(OptiScalerCatalog.Builtin.All(s => s.Repository.Contains('/')), "每个来源都是 owner/repo");
 Check(OptiScalerLibrary.Sanitize("a/b:c") == "a_b_c", "版本号里的非法字符会被换掉");

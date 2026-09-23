@@ -3,6 +3,11 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.4b1 · 内置 OptiScaler MFG Ada 源
+
+- OptiScaler 可下载列表新增「OptiScaler MFG Ada（本 fork）」：仓库 `thx114/OptiScaler-MFG-Ada`，发布包含 Ada 门补丁 + NvAPI 双向架构伪装 + midpoint 修正的构建，包内两处 dlssg 均为 310.9.1。tag 过滤只取 `mfg-ada-*`，`runtime-*`（dlssg 单文件）自动跳过。
+- 内置来源表与远端 `catalog/optiscaler.json` 同步加该源。
+
 ## 1.3.4 · 多帧生成解锁配套 + 单实例
 
 - 启用 OptiScaler 启动游戏前检查游戏目录自带的 `nvngx_dlssg.dll`：版本低于 310.9 时弹窗「DLSSG 版本过低不支持解锁」，确认后用 OptiScaler 目录里的 310.9 替换（原文件备份为 `.bak`）；选择「仍然启动」则照常启动。搜索顺序与 OptiScaler 运行时一致（游戏 exe 目录根部 → 子目录广度优先）。
