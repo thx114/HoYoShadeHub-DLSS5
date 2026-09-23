@@ -78,6 +78,17 @@ public static class OptiScalerCatalog
         },
         new OptiScalerSource
         {
+            Id = "janblade-f5",
+            Name = "OptiScaler F5 DLSSNR Multipass (janblade)",
+            Repository = "janblade/OptiScaler-F5-DLSSNR-Multipass",
+            Description = "janblade 的 F5 分支：F5 版 DLSSNR + multipass，带 vit-reuse / nvidia-residual / pre/post-SR 预设，含 RTX 40 MFG 测试构建。",
+            TagPattern = @"^v\d",
+            AssetPattern = "OptiScaler-DLSSNR-F5-*.zip",
+            Tags = ["dlssnr", "f5", "multipass", "presr"],
+            Homepage = "https://github.com/janblade/OptiScaler-F5-DLSSNR-Multipass/releases",
+        },
+        new OptiScalerSource
+        {
             Id = "mfg-ada",
             Name = "OptiScaler MFG Ada（本 fork）",
             Repository = "thx114/OptiScaler-MFG-Ada",

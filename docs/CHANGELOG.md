@@ -3,6 +3,11 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.4b2 · 新增 OptiScaler F5 源
+
+- OptiScaler 可下载列表新增「OptiScaler F5 DLSSNR Multipass (janblade)」：仓库 `janblade/OptiScaler-F5-DLSSNR-Multipass`，F5 版 DLSSNR + multipass（vit-reuse、nvidia-residual、pre/post-SR 预设、RTX 40 MFG 测试构建）；只取 `OptiScaler-DLSSNR-F5-*.zip`。
+- 内置来源表与远端 `catalog/optiscaler.json` 同步加该源。
+
 ## 1.3.4b1 · 内置 OptiScaler MFG Ada 源
 
 - 源构建包为 `mfg-ada-0.1.2`：DLL/ini 在包根、streamline 在 `OptiScaler\streamline\`；出厂 ini 全部功能关闭（帧生成、Ada 解锁、NR 均关），装完游戏画面不受影响，进游戏按 Insert 在菜单里自行开启。（0.1.0 多嵌套一层导致路径重复、菜单不出现；0.1.1 布局正确但默认全开；两个旧 release 均已删除。）

@@ -38,6 +38,16 @@
       "homepage": "https://github.com/ShyVortex/dlss-unlocked/releases"
     },
     {
+      "id": "janblade-f5",
+      "name": "OptiScaler F5 DLSSNR Multipass (janblade)",
+      "repository": "janblade/OptiScaler-F5-DLSSNR-Multipass",
+      "description": "janblade 的 F5 分支：F5 版 DLSSNR + multipass，带 vit-reuse / nvidia-residual / pre/post-SR 预设，含 RTX 40 MFG 测试构建。",
+      "tagPattern": "^v\\d",
+      "assetPattern": "OptiScaler-DLSSNR-F5-*.zip",
+      "tags": ["dlssnr", "f5", "multipass", "presr"],
+      "homepage": "https://github.com/janblade/OptiScaler-F5-DLSSNR-Multipass/releases"
+    },
+    {
       "id": "mfg-ada",
       "name": "OptiScaler MFG Ada（本 fork）",
       "repository": "thx114/OptiScaler-MFG-Ada",
