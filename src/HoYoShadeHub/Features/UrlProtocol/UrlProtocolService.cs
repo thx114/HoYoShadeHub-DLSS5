@@ -1,9 +1,10 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.PlayTime;
+using HoYoShadeHub.Features.Xxmi;
 using System;
 using System.IO;
 using System.Threading.Tasks;
@@ -14,6 +15,10 @@ namespace HoYoShadeHub.Features.UrlProtocol;
 
 internal class UrlProtocolService
 {
+    // 协议进程没有主窗口，默认弹窗会被挡在后面且无任务栏按钮。置顶并抢前台。
+    private const User32.MB_FLAGS ProtocolBoxFlags =
+        User32.MB_FLAGS.MB_OK | User32.MB_FLAGS.MB_TOPMOST | User32.MB_FLAGS.MB_SETFOREGROUND;
+
 
 
 
@@ -97,19 +102,51 @@ internal class UrlProtocolService
                     }
                     return true;
                 }
+                if (uri.Host is "mod" && uri.AbsolutePath.Trim('/') is "install")
+                {
+                    await HandleModInstallAsync(uri);
+                    return true;
+                }
             }
         }
         catch (Exception ex)
         {
             log.LogError(ex, "Handle url protocol");
-            User32.MessageBox(HWND.NULL, ex.Message, "HoYoShadeHub");
+            User32.MessageBox(HWND.NULL, ex.Message, "HoYoShadeHub", ProtocolBoxFlags | User32.MB_FLAGS.MB_ICONERROR);
             return true;
         }
         return false;
     }
 
+    private static async Task HandleModInstallAsync(Uri uri)
+    {
+        var kvs = HttpUtility.ParseQueryString(uri.Query);
 
+        if (!int.TryParse(kvs["game_id"], out int gameId)
+            || !int.TryParse(kvs["mod_id"], out int modId)
+            || !long.TryParse(kvs["file_id"], out long fileId))
+        {
+            throw new ArgumentException("mod/install 缺少必要参数 game_id / mod_id / file_id。");
+        }
 
+        var request = new GameBananaInstallRequest(
+            gameId,
+            modId,
+            fileId,
+            kvs["file_name"],
+            kvs["mod_name"],
+            kvs["download_url"],
+            kvs["version"],
+            kvs["replace"] is "1" or "true");
 
+        await AppConfig.GetService<GameBananaModInstaller>().InstallAsync(request);
 
+        User32.MessageBox(
+            HWND.NULL,
+            request.Replace
+                ? $"模组「{request.ModName}」已更新，旧版本已备份到 Mods\\_backup。"
+                : $"模组「{request.ModName}」已安装到对应游戏的 Mods 目录。",
+            "HoYoShadeHub",
+            ProtocolBoxFlags | User32.MB_FLAGS.MB_ICONINFORMATION);
+    }
 }

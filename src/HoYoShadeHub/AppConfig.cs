@@ -16,6 +16,7 @@ using HoYoShadeHub.Features.RPC;
 using HoYoShadeHub.Features.Screenshot;
 using HoYoShadeHub.Features.Update;
 using HoYoShadeHub.Features.ViewHost;
+using HoYoShadeHub.Features.Xxmi;
 using HoYoShadeHub.Helpers;
 using HoYoShadeHub.RPC.Update;
 using System;
@@ -451,6 +452,8 @@ public static class AppConfig
             sc.AddSingleton<RpcService>();
 
             sc.AddSingleton<ScreenCaptureService>();
+
+            sc.AddSingleton<GameBananaModInstaller>();
 
             _serviceProvider = sc.BuildServiceProvider();
         }

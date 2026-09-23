@@ -111,7 +111,9 @@ public static class Program
 
             if (args[0].ToLower().StartsWith("hoyoshadehub://"))
             {
-                if (UrlProtocolService.HandleUrlProtocolAsync(args[0]).GetAwaiter().GetResult())
+                // ConfigureAwait(false)：协议处理在主线程上同步阻塞等待，
+                // 内部 HttpClient 的异步延续若要回到主线程会死锁。
+                if (UrlProtocolService.HandleUrlProtocolAsync(args[0]).ConfigureAwait(false).GetAwaiter().GetResult())
                 {
                     return;
                 }
