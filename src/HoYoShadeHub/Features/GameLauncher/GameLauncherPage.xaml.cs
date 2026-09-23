@@ -2183,7 +2183,8 @@ public sealed partial class GameLauncherPage : PageBase
 
     /// <summary>停掉正在跑的注入器（再点一次开始游戏、或者点提示条上的「停止」）</summary>
     /// <summary>
-    /// 启动帧率解锁：等真实游戏进程、扫描注入。fire-and-forget（游戏启动后异步进行）。
+    /// 启动帧率解锁：崩溃停用拦截 → 按游戏版本同步上游数据 → 等真实游戏进程 → 扫描注入。
+    /// fire-and-forget（游戏启动后异步进行）。
     /// </summary>
     private async Task StartFpsUnlockAsync(TimeSpan processTimeout, TimeSpan moduleTimeout)
     {
@@ -2194,6 +2195,20 @@ public sealed partial class GameLauncherPage : PageBase
 
         StopFpsUnlocker();
 
+        await EnsureFpsUnlockDataAsync(gameId);
+
+        byte[]? shellcode = FpsUnlockDataService.LoadShellcode();
+        (byte[] bytes, bool[] mask)? pattern = FpsUnlockDataService.LoadPattern();
+
+        if (shellcode is null || pattern is null)
+        {
+            shellcode ??= FpsUnlocker.FallbackShellcode;
+            pattern ??= (
+                [0x8B, 0x0D, 0x00, 0x00, 0x00, 0x00, 0xEB, 0x00, 0x33, 0xC0],
+                [true, true, false, false, false, false, true, false, true, true]);
+            _logger.LogWarning("FPS unlock: local data missing, using built-in fallback");
+        }
+
         Process? game = await _gameLauncherService.GetGameProcessAsync(gameId, processTimeout);
         if (game is null)
         {
@@ -2203,7 +2218,7 @@ public sealed partial class GameLauncherPage : PageBase
             return;
         }
 
-        FpsUnlocker unlocker = new();
+        FpsUnlocker unlocker = new(shellcode, pattern.Value);
         bool ok;
         try
         {
@@ -2230,6 +2245,53 @@ public sealed partial class GameLauncherPage : PageBase
         _logger.LogWarning("FPS unlock failed: {Detail}", detail);
         DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("帧率解锁", detail, 10000));
         unlocker.Dispose();
+    }
+
+    /// <summary>
+    /// 按游戏版本同步上游数据：版本变动 / 本地无数据时拉取；
+    /// 否则按 24 小时节流做后台静默检查。
+    /// </summary>
+    private async Task EnsureFpsUnlockDataAsync(GameId gameId)
+    {
+        Version? gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(gameId);
+        string versionText = gameVersion?.ToString() ?? string.Empty;
+        string? syncedVersion = AppConfig.GetFpsUnlockDataVersion(gameId);
+        bool needFetch = !FpsUnlockDataService.HasLocalData()
+                         || !string.Equals(syncedVersion, versionText, StringComparison.Ordinal);
+
+        if (!needFetch)
+        {
+            DateTime lastCheck = new(AppConfig.GetFpsUnlockLastCheckTicks(gameId), DateTimeKind.Utc);
+            if (DateTime.UtcNow - lastCheck < TimeSpan.FromHours(24))
+            {
+                return;
+            }
+        }
+
+        AppConfig.SetFpsUnlockLastCheckTicks(gameId, DateTime.UtcNow.Ticks);
+
+        FpsUnlockDataService.UpdateResult result;
+        try
+        {
+            result = await FpsUnlockDataService.UpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FPS unlock data update failed");
+            return;
+        }
+
+        _logger.LogInformation("FPS unlock data update: {Result} (game {Version})", result, versionText);
+
+        if (result is FpsUnlockDataService.UpdateResult.Updated)
+        {
+            AppConfig.SetFpsUnlockDataVersion(gameId, versionText);
+        }
+        else if (!FpsUnlockDataService.HasLocalData())
+        {
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("帧率解锁",
+                "没拉取到帧率解锁数据，这次使用内置兜底数据；可到设置页手动检查更新。", 8000));
+        }
     }
 
     private static void StopFpsUnlocker()

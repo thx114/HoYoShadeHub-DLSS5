@@ -15,6 +15,36 @@
     <ScrollViewer>
         <StackPanel Margin="0,0,0,20">
 
+            <!--  帧率解锁数据更新  -->
+            <TextBlock FontSize="20" Text="帧率解锁数据" />
+            <TextBlock Margin="0,8,0,0"
+                       FontSize="14"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="帧率解锁的特征和注入代码跟随上游 GitHub 更新。原神版本变动后会自动拉取，也可以在这里手动检查。"
+                       TextWrapping="Wrap" />
+            <StackPanel Margin="0,10,0,0"
+                        Orientation="Horizontal"
+                        Spacing="12">
+                <Button Height="36"
+                        Padding="16,0,16,0"
+                        Click="Button_CheckFpsUnlockUpdate_Click"
+                        CornerRadius="8"
+                        IsEnabled="{x:Bind CanCheckFpsUnlockUpdate, Mode=OneWay}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ProgressRing Width="16"
+                                      Height="16"
+                                      IsActive="{x:Bind IsCheckingFpsUnlockUpdate, Mode=OneWay}"
+                                      Visibility="{x:Bind IsCheckingFpsUnlockUpdate, Mode=OneWay}" />
+                        <TextBlock Text="检查更新" />
+                    </StackPanel>
+                </Button>
+                <TextBlock VerticalAlignment="Center"
+                           FontSize="13"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           IsTextSelectionEnabled="True"
+                           Text="{x:Bind FpsUnlockStatusText}" />
+            </StackPanel>
+
             <!--  URL Protocol  -->
             <TextBlock FontSize="20" Text="{x:Bind lang:Lang.SettingPage_URLProtocolExperimental}" />
             <TextBlock Margin="0,8,0,0"

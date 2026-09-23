@@ -1553,6 +1553,18 @@ public static class AppConfig
         SetValue(Math.Clamp(value, 60, 1000), BuildLaunchOptionKey(gameId, "fps_unlock_target"));
     }
 
+    /// <summary>帧率解锁数据已同步到的游戏版本（shellcode 按游戏版本适配），按游戏记</summary>
+    public static string? GetFpsUnlockDataVersion(GameId gameId)
+        => GetValue<string>(default, BuildLaunchOptionKey(gameId, "fps_unlock_data_version"));
+    public static void SetFpsUnlockDataVersion(GameId gameId, string? value)
+        => SetValue(value, BuildLaunchOptionKey(gameId, "fps_unlock_data_version"));
+
+    /// <summary>上次自动检查上游数据的时间（UTC ticks），用于节流，按游戏记</summary>
+    public static long GetFpsUnlockLastCheckTicks(GameId gameId)
+        => GetValue(0L, BuildLaunchOptionKey(gameId, "fps_unlock_last_check"));
+    public static void SetFpsUnlockLastCheckTicks(GameId gameId, long ticks)
+        => SetValue(ticks, BuildLaunchOptionKey(gameId, "fps_unlock_last_check"));
+
     /// <summary>启动时注入 XXMI（3DMigoto 的 d3d11.dll），按游戏记</summary>
     public static bool GetUseXxmiInjectLaunchOption(GameId gameId)
     {

@@ -3,12 +3,16 @@ using CommunityToolkit.Mvvm.Input;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
+using HoYoShadeHub.Core;
+using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.RPC;
 using HoYoShadeHub.Features.UrlProtocol;
 using HoYoShadeHub.Frameworks;
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.System;
 
@@ -35,7 +39,80 @@ public sealed partial class AdvancedSetting : PageBase
     {
         _ = GetRpcServerStateAsync();
         CheckUrlProtocol();
+        RefreshFpsUnlockStatus();
     }
+
+    #region 帧率解锁数据更新
+
+    [ObservableProperty]
+    private bool _isCheckingFpsUnlockUpdate;
+
+    public bool CanCheckFpsUnlockUpdate => !IsCheckingFpsUnlockUpdate;
+
+    partial void OnIsCheckingFpsUnlockUpdateChanged(bool value)
+        => OnPropertyChanged(nameof(CanCheckFpsUnlockUpdate));
+
+    [ObservableProperty]
+    private string? _fpsUnlockStatusText;
+
+    private void RefreshFpsUnlockStatus()
+    {
+        DateTimeOffset? updatedAt = FpsUnlockDataService.GetUpdatedAt();
+        FpsUnlockStatusText = updatedAt is { } at
+            ? $"数据更新于 {at.LocalDateTime:yyyy-MM-dd HH:mm}"
+            : "暂无本地数据";
+    }
+
+    private async void Button_CheckFpsUnlockUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        GameId gameId = GameId.FromGameBiz(GameBiz.hk4e_cn)
+                       ?? GameId.FromGameBiz(GameBiz.hk4e_global);
+
+        if (gameId is null)
+        {
+            FpsUnlockStatusText = "找不到原神游戏标识";
+            return;
+        }
+
+        string gameVersion = string.Empty;
+        try
+        {
+            GameLauncherService launcher = AppConfig.GetService<GameLauncherService>();
+            gameVersion = (await launcher.GetLocalGameVersionAsync(gameId))?.ToString() ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Read game version for manual fps unlock check");
+        }
+
+        IsCheckingFpsUnlockUpdate = true;
+        FpsUnlockStatusText = "正在拉取上游数据…";
+
+        FpsUnlockDataService.UpdateResult result;
+        try
+        {
+            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(60));
+            result = await FpsUnlockDataService.CheckManuallyAsync(gameId, gameVersion, cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Manual fps unlock data check failed");
+            result = FpsUnlockDataService.UpdateResult.Failed;
+        }
+
+        IsCheckingFpsUnlockUpdate = false;
+
+        FpsUnlockStatusText = result switch
+        {
+            FpsUnlockDataService.UpdateResult.Updated => "已更新到最新数据，帧率解锁恢复启用",
+            FpsUnlockDataService.UpdateResult.Unchanged => "已是最新数据（上游未发布新版本）",
+            _ => "检查失败，请确认网络/代理后重试",
+        };
+
+        _logger.LogInformation("Manual FPS unlock data check: {Result}", result);
+    }
+
+    #endregion
 
 
 

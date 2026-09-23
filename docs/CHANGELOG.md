@@ -3,6 +3,13 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.4b4 · 帧率解锁数据跟随上游 GitHub 更新
+
+- 帧率解锁的 shellcode 与扫描特征不再只靠内置固定数据：本地数据目录新增 `FpsUnlock`（`shellcode.bin` + `meta.json`），从上游 xiaonian233/genshin-fps-unlock 的 `unlockfps/main.cpp` 实时解析 `_shellcode_genshin_Const` 字节数组与 `PatternScan_Region` 特征（raw 地址失败自动回退 GitHub API）。
+- 启动前按游戏版本（游戏目录 `config.ini` 的 `game_version`）同步：版本变动或本地无数据时自动拉取；版本不变时按 24 小时节流做后台静默检查。
+- 设置页（高级设置）新增「帧率解锁数据」区块：显示本地数据更新时间，可手动「检查更新」；拉取到新数据后帧率解锁即按新数据工作。
+- 首次运行且离线拉取失败时使用随程序分发的内置兜底数据（416 字节，与当前上游一致）。
+
 ## 1.3.4b3 · 启动选项内置帧率解锁（原神）
 
 - 启动选项新增「帧率解锁」+ 目标帧率输入框（60-1000，默认 120），只对原神显示，按游戏记设置。
