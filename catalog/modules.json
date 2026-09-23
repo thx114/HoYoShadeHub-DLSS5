@@ -40,6 +40,18 @@
       "homepage": "https://github.com/matiasLombo/mfg-unlock/releases",
       "dllHint": "version.dll",
       "tags": ["mfg", "framegen"]
+    },
+    {
+      "id": "genshin-fsr-bridge",
+      "name": "Genshin FSR Bridge（原神 DX11 FSR2 桥）",
+      "description": "让 OptiScaler 在原神这种「FSR2 静态链进 exe、符号不导出」的 DX11 游戏里看见 FSR2：hook 游戏的 D3D11 与 GetProcAddress，把标准 ffxFsr2* 接口垫出来。注入进游戏进程后，游戏里抗锯齿必须选 FSR2、渲染精度低于 1 才生效。这是 DLSS5 链路必需的一环，不是 ReShade 插件。上游 AizawaHikaru233/genshin_fsr_brigde（GPL-3.0）只发含安装器的整包，所以直下 CXP 打包目录里的同一份二进制（SHA-256 1AB7FBD9...）。",
+      "repository": "CXP-2024/dlss5_for_genshinimpact",
+      "tagPattern": "^v",
+      "homepage": "https://github.com/AizawaHikaru233/genshin_fsr_brigde",
+      "dllHint": "Dx11FsrBridge.dll",
+      "directFiles": ["release/configs/Dx11FsrBridge.dll", "release/configs/Dx11FsrBridge.ini"],
+      "branch": "main",
+      "tags": ["dlss5", "fsr2", "genshin", "bridge"]
     }
   ]
 }

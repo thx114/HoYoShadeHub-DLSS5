@@ -1662,6 +1662,81 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
+    /// <summary>
+    /// 启用 OptiScaler 时启动前检查游戏目录自带的 dlssg：存在且版本不是 310.9 就提示。
+    /// 用户确认后用构建目录里的 310.9 替换（旧文件改名 .bak）；拒绝则照常启动（多帧生成解锁不可用）。
+    /// </summary>
+    /// <returns>false 表示中止本次启动</returns>
+    private async Task<bool> ConfirmGameDlssgAsync()
+    {
+        try
+        {
+            if (!UseOptiScaler || CurrentGameId is not { } gameId)
+            {
+                return true;
+            }
+
+            string? optiDll = AppConfig.GetSelectedOptiScalerDll(gameId);
+            string? buildDirectory = Path.GetDirectoryName(optiDll);
+            if (string.IsNullOrWhiteSpace(buildDirectory) || !Directory.Exists(buildDirectory))
+            {
+                return true;
+            }
+
+            string? installPath = GameInstallPath;
+            if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
+            {
+                return true;
+            }
+
+            // BFS 游戏目录放到后台，不在 UI 线程枚举
+            string? gameDlssg = await Task.Run(() => OptiScalerRuntime.FindGameDlssg(installPath));
+            if (gameDlssg is null || OptiScalerRuntime.IsUnlockDlssg(gameDlssg))
+            {
+                return true;
+            }
+
+            Version? version = OptiScalerRuntime.TryReadFileVersion(gameDlssg);
+            string versionText = version is null ? "未知版本" : $"{version.Major}.{version.Minor}";
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "DLSSG 版本过低",
+                Content = $"游戏目录里的 nvngx_dlssg.dll 是 {versionText}，不支持多帧生成解锁。\n\n" +
+                          "是否使用 310.9 的 nvngx_dlssg.dll？（原文件会备份为 .bak）",
+                PrimaryButtonText = "使用 310.9",
+                CloseButtonText = "仍然启动",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                _logger.LogInformation("Game dlssg {Version} kept by user, launch continues", versionText);
+                return true;
+            }
+
+            string? error = OptiScalerRuntime.ReplaceGameDlssg(gameDlssg, buildDirectory);
+            if (error is not null)
+            {
+                _logger.LogWarning("{Error}", error);
+                InAppToast.MainWindow?.Error("DLSSG", error, 10000);
+                return false;
+            }
+
+            _logger.LogInformation("Game dlssg replaced with 310.9: {Path}", gameDlssg);
+            InAppToast.MainWindow?.Success("DLSSG", "已用 310.9 替换游戏目录的 nvngx_dlssg.dll。", 8000);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // 检查本身出错不该拦着人玩游戏
+            _logger.LogWarning(ex, "Check game dlssg before launch");
+            return true;
+        }
+    }
+
 
 
     private async Task<bool> CheckGameRunningAsync()
@@ -1803,10 +1878,39 @@ public sealed partial class GameLauncherPage : PageBase
         return processName;
     }
 
+    /// <summary>
+    /// 这个游戏的进程当前是否在本会话运行。进程名按游戏条目 → 游戏库 → 内置表解析。
+    /// </summary>
+    private async Task<bool> IsTargetGameRunningAsync()
+    {
+        string? processName = await ResolveTargetProcessNameAsync();
+        if (string.IsNullOrWhiteSpace(processName))
+        {
+            return false;
+        }
+
+        string name = Path.GetFileNameWithoutExtension(processName);
+
+        try
+        {
+            int currentSessionId = Process.GetCurrentProcess().SessionId;
+            return Process.GetProcessesByName(name)
+                .Any(p => p.SessionId == currentSessionId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
 
-    /// <summary>要注入的一个 DLL（label 只用在提示文案上）</summary>
-    private sealed record InjectDllSpec(string Path, string Label);
+
+    /// <summary>
+    /// 要注入的一个 DLL（label 只用在提示文案上）。
+    /// BuildDirectory：OptiScaler 构建目录，用于按游戏切换 ini；null 表示普通模块。
+    /// GameKey：该构建对应的游戏标识（OptiDllPath ini profile 名）。
+    /// </summary>
+    private sealed record InjectDllSpec(string Path, string Label, string? BuildDirectory = null, string? GameKey = null);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
@@ -1838,7 +1942,41 @@ public sealed partial class GameLauncherPage : PageBase
                 && File.Exists(optiScaler)
                 && specs.All(s => !string.Equals(s.Path, optiScaler, StringComparison.OrdinalIgnoreCase)))
             {
-                specs.Add(new InjectDllSpec(optiScaler, "OptiScaler"));
+                string gameKey = optiGameId.GameBiz.ToString();
+                string? buildDirectory = Path.GetDirectoryName(optiScaler);
+
+                // ini 按游戏分离：注入前把这个游戏的那份激活为主 ini（首次从当前主 ini 继承）。
+                // 必须先 Activate 再钉 OptiDllPath，否则旧 profile（auto）会把修正覆盖掉
+                if (buildDirectory is not null
+                    && OptiScalerProfiles.Activate(buildDirectory, gameKey))
+                {
+                    _logger.LogInformation("OptiScaler ini profile activated: {Game} ({Build})", gameKey, buildDirectory);
+                }
+
+                // 旧构建（早于 v1.2.1）的 profile / ini 可能还是 OptiDllPath=auto，激活后再钉绝对路径；
+                // 游戏退出 Store 时修正后的主 ini 会回写 profile，下次启动即一致
+                if (buildDirectory is not null && OptiScalerRuntime.EnsureConfigDllPath(buildDirectory))
+                {
+                    _logger.LogInformation("OptiScaler ini: OptiDllPath pinned ({Build})", buildDirectory);
+                }
+
+                // dlss-unlocked 的 MFG 解锁只认 310.9 签名：把候选里版本最高的 dlssg 钉到 OptiDllPath 根，
+                // 避免 BFS 命中游戏目录自带的 310.6.0（unlock unavailable for this runtime）
+                if (buildDirectory is not null)
+                {
+                    string? dlssg = OptiScalerRuntime.EnsureDlssgForUnlock(buildDirectory,
+                    [
+                        Path.Combine(buildDirectory, "OptiScaler", OptiScalerRuntime.StreamlineFolderName),
+                        buildDirectory,
+                        Path.Combine(buildDirectory, "OptiScaler"),
+                    ]);
+                    if (dlssg is not null)
+                    {
+                        _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
+                    }
+                }
+
+                specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey));
             }
         }
 
@@ -1853,6 +1991,16 @@ public sealed partial class GameLauncherPage : PageBase
         {
             _logger.LogInformation("XXMI 注入已勾选（{Game}）：当前实现还未接上 Hook（3dmloader 的 HookLibrary 在 App 进程里会 200）",
                 xxmiGameId.GameBiz);
+        }
+
+        // 桥的 ini 必须和它**被注入的那个 DLL** 同目录（桥按 DLL 所在目录找 ini）。
+        // 模块装的时候会补一份，但手动放的 / 从别的构建目录解析出来的路径不一定有，这里再兜一次。
+        foreach (InjectDllSpec spec in specs)
+        {
+            if (string.Equals(Path.GetFileName(spec.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+            {
+                OptiScalerRuntime.EnsureFsrBridgeIni(Path.GetDirectoryName(spec.Path) ?? string.Empty);
+            }
         }
 
         if (specs.Count == 0)
@@ -1923,6 +2071,18 @@ public sealed partial class GameLauncherPage : PageBase
                     target.Exited += (_, _) =>
                     {
                         _logger.LogInformation("Injected game exited: {Process} (pid {Pid})", processName, pid);
+
+                        // OptiScaler ini 按游戏分离：把叠加层 Save 的主 ini 回写到该游戏 profile
+                        foreach (InjectDllSpec spec in specs)
+                        {
+                            if (spec.BuildDirectory is not null && spec.GameKey is not null
+                                && OptiScalerProfiles.Store(spec.BuildDirectory, spec.GameKey))
+                            {
+                                _logger.LogInformation("OptiScaler ini profile stored: {Game} ({Build})",
+                                    spec.GameKey, spec.BuildDirectory);
+                            }
+                        }
+
                         DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameExitedMessage()));
                     };
                 }
@@ -2031,8 +2191,26 @@ public sealed partial class GameLauncherPage : PageBase
     {
         try
         {
+            // 非注入模式：游戏进程已经在跑就阻止再启动（用户要求），避免双开 / 注入到旧实例
+            if (!UseInjectMode && await IsTargetGameRunningAsync())
+            {
+                string? processName = await ResolveTargetProcessNameAsync();
+                string name = string.IsNullOrWhiteSpace(processName) ? "游戏" : processName;
+                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
+                    "游戏已经在运行",
+                    $"检测到 {name} 的进程还在，先退出它再启动。",
+                    8000));
+                return;
+            }
+
             // 缺 DLSS5 的运行时（nvngx_dlssnr.dll）就先弹窗问一下：装了也白装，插件根本加载不了
             if (!await ConfirmDlssRuntimeAsync())
+            {
+                return;
+            }
+
+            // 启用 OptiScaler：游戏目录自带 dlssg 不是 310.9 就先提示，确认后再启动
+            if (!await ConfirmGameDlssgAsync())
             {
                 return;
             }

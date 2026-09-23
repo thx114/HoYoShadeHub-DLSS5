@@ -97,6 +97,11 @@
                                     <StackPanel Grid.Column="0" Spacing="4">
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Name, Mode=OneWay}" />
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                       Text="{x:Bind VersionText, Mode=OneWay}"
+                                                       Visibility="{x:Bind VersionVisibility, Mode=OneWay}" />
                                             <Border Padding="6,1"
                                                     VerticalAlignment="Center"
                                                     Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
@@ -129,21 +134,31 @@
                                                    Style="{ThemeResource CaptionTextBlockStyle}"
                                                    Text="{x:Bind FileName, Mode=OneWay}"
                                                    TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
 
-                                        <CheckBox Margin="0,2,0,0"
+                                    <!--  右侧：启用开关顶对齐，DllMain 开关沉到右下角并右对齐  -->
+                                    <Grid Grid.Column="1">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <ToggleSwitch Grid.Row="0"
+                                                      MinWidth="0"
+                                                      HorizontalAlignment="Right"
+                                                      IsEnabled="{x:Bind CanToggle, Mode=OneWay}"
+                                                      IsOn="{x:Bind Enabled, Mode=TwoWay}"
+                                                      OffContent="禁用"
+                                                      OnContent="启用" />
+
+                                        <CheckBox Grid.Row="1"
+                                                  Margin="0,4,0,0"
+                                                  HorizontalAlignment="Right"
                                                   Content="从 DllMain 加载（LoadFromDllMain）"
                                                   IsChecked="{x:Bind LoadFromDllMain, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind CanEditLoadFromDllMain, Mode=OneWay}"
                                                   ToolTipService.ToolTip="DLSS5 的帧生成需要在 DllMain 阶段就加载；空槽位会原样保留" />
-                                    </StackPanel>
-
-                                    <ToggleSwitch Grid.Column="1"
-                                                  MinWidth="0"
-                                                  VerticalAlignment="Center"
-                                                  IsEnabled="{x:Bind CanToggle, Mode=OneWay}"
-                                                  IsOn="{x:Bind Enabled, Mode=TwoWay}"
-                                                  OffContent="禁用"
-                                                  OnContent="启用" />
+                                    </Grid>
                                 </Grid>
                             </Border>
                         </DataTemplate>

@@ -520,36 +520,6 @@
                                 Grid.Column="1"
                                 CurrentGameBiz="{x:Bind CurrentGameBiz}" />
 
-            <!--  注入模式：样式跟下面的 DX12 选项一致，只影响当前这个游戏（开关存在游戏条目里）  -->
-            <Border Grid.Column="2"
-                    Margin="0,0,8,0"
-                    Padding="10,0,10,0"
-                    VerticalAlignment="Center"
-                    Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
-                    CornerRadius="12">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <CheckBox x:Name="CheckBox_InjectMode"
-                              MinWidth="0"
-                              Margin="0,-2,0,-2"
-                              VerticalAlignment="Center"
-                              VerticalContentAlignment="Center"
-                              Checked="CheckBox_InjectMode_Changed"
-                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                              IsChecked="{x:Bind UseInjectMode, Mode=TwoWay}"
-                              IsEnabled="{x:Bind CanUseInjectMode, Mode=OneWay}"
-                              Style="{ThemeResource CompactCheckBoxStyle}"
-                              ToolTipService.ToolTip="勾上后：点开始游戏会先确保这个游戏有 ReShade.ini，再跑 HoYoShade 自带的 inject.exe 等这个进程起来。注入模式下 Hub 不替你启动游戏 —— 要自己用启动器（HoYoPlay / WeGame 等）拉起，直接双击 exe 会导致注入失败。只影响这一个游戏。"
-                              Unchecked="CheckBox_InjectMode_Changed">
-                        <TextBlock Margin="0,0,0,4"
-                                   FontSize="12"
-                                   FontWeight="Bold"
-                                   Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                                   IsTextScaleFactorEnabled="False"
-                                   Text="注入模式" />
-                    </CheckBox>
-                </StackPanel>
-            </Border>
-
             <!--  启动游戏  -->
             <local:StartGameButton x:Name="Button_StartGame"
                                    Grid.Column="3"
@@ -598,49 +568,77 @@
                 </Hyperlink>
             </TextBlock>
 
-            <!--  DX12 选项  -->
-            <Border Grid.Row="1"
-                    Grid.Column="0"
-                    Grid.ColumnSpan="4"
-                    Padding="10,0,10,0"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center"
-                    Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
-                    CornerRadius="12">
+            <!--  启动选项（右对齐横排）：注入模式 + DX12 增强，各自按可用性显示  -->
+            <StackPanel Grid.Row="1"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="4"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal"
+                        Spacing="8">
 
-                <StackPanel Orientation="Horizontal"
-                            Spacing="8"
-                            Visibility="{x:Bind IsDX12OptionVisible}">
-                    <CheckBox MinWidth="0"
+                <!--  注入模式：只影响当前这个游戏（开关存在游戏条目里）  -->
+                <Border Padding="10,0,10,0"
+                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
+                        CornerRadius="12">
+                    <CheckBox x:Name="CheckBox_InjectMode"
+                              MinWidth="0"
                               Margin="0,-2,0,-2"
                               VerticalAlignment="Center"
                               VerticalContentAlignment="Center"
+                              Checked="CheckBox_InjectMode_Changed"
                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                              IsChecked="{x:Bind EnableDX12, Mode=TwoWay}"
-                              Style="{ThemeResource CompactCheckBoxStyle}">
+                              IsChecked="{x:Bind UseInjectMode, Mode=TwoWay}"
+                              IsEnabled="{x:Bind CanUseInjectMode, Mode=OneWay}"
+                              Style="{ThemeResource CompactCheckBoxStyle}"
+                              ToolTipService.ToolTip="勾上后：点开始游戏会先确保这个游戏有 ReShade.ini，再跑 HoYoShade 自带的 inject.exe 等这个进程起来。注入模式下 Hub 不替你启动游戏 —— 要自己用启动器（HoYoPlay / WeGame 等）拉起，直接双击 exe 会导致注入失败。只影响这一个游戏。"
+                              Unchecked="CheckBox_InjectMode_Changed">
                         <TextBlock Margin="0,0,0,4"
                                    FontSize="12"
                                    FontWeight="Bold"
                                    Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                    IsTextScaleFactorEnabled="False"
-                                   Text="{x:Bind lang:Lang.GameLauncherPage_GraphicsQualityEnhancement}" />
+                                   Text="注入模式" />
                     </CheckBox>
-                    <TextBlock VerticalAlignment="Center"
-                               FontSize="12"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               IsTextScaleFactorEnabled="False"
-                               Text="{x:Bind lang:Lang.GameLauncherPage_LaunchWithDX12}" />
-                    <TextBlock VerticalAlignment="Center"
-                               FontSize="12"
-                               IsTextScaleFactorEnabled="False">
-                        <Hyperlink x:Name="Hyperlink_DX12Intro"
-                                   Click="Hyperlink_DX12Intro_Click"
-                                   UnderlineStyle="None">
-                            <Run Text="{x:Bind lang:Lang.GameLauncherPage_DetailsGt}" />
-                        </Hyperlink>
-                    </TextBlock>
-                </StackPanel>
-            </Border>
+                </Border>
+
+                <!--  DX12 选项  -->
+                <Border Padding="10,0,10,0"
+                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
+                        CornerRadius="12"
+                        Visibility="{x:Bind IsDX12OptionVisible}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <CheckBox MinWidth="0"
+                                  Margin="0,-2,0,-2"
+                                  VerticalAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                  IsChecked="{x:Bind EnableDX12, Mode=TwoWay}"
+                                  Style="{ThemeResource CompactCheckBoxStyle}">
+                            <TextBlock Margin="0,0,0,4"
+                                       FontSize="12"
+                                       FontWeight="Bold"
+                                       Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                       IsTextScaleFactorEnabled="False"
+                                       Text="{x:Bind lang:Lang.GameLauncherPage_GraphicsQualityEnhancement}" />
+                        </CheckBox>
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   IsTextScaleFactorEnabled="False"
+                                   Text="{x:Bind lang:Lang.GameLauncherPage_LaunchWithDX12}" />
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="12"
+                                   IsTextScaleFactorEnabled="False">
+                            <Hyperlink x:Name="Hyperlink_DX12Intro"
+                                       Click="Hyperlink_DX12Intro_Click"
+                                       UnderlineStyle="None">
+                                <Run Text="{x:Bind lang:Lang.GameLauncherPage_DetailsGt}" />
+                            </Hyperlink>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
 
 
         </Grid>

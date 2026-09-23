@@ -98,7 +98,8 @@ public sealed class OptiScalerDownloader
         OptiScalerLibrary library,
         IProgress<DownloadProgress>? progress = null,
         CancellationToken cancellationToken = default,
-        Func<string, Task<bool>>? confirmBeforeRun = null)
+        Func<string, Task<bool>>? confirmBeforeRun = null,
+        DownloadPauseToken? pauseToken = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(library);
@@ -149,7 +150,7 @@ public sealed class OptiScalerDownloader
             Directory.CreateDirectory(setupTarget);
 
             string setupPath = Path.Combine(setupTarget, OptiScalerLibrary.Sanitize(artifact.AssetName));
-            await _downloads.DownloadToFileAsync(artifact.DownloadUrl, setupPath, null, progress, cancellationToken);
+            await _downloads.DownloadToFileAsync(artifact.DownloadUrl, setupPath, null, progress, cancellationToken, pauseToken);
 
             WriteBuildManifest(setupTarget, source, tag, artifact.AssetName);
 
@@ -169,7 +170,7 @@ public sealed class OptiScalerDownloader
         try
         {
             string zipPath = Path.Combine(workRoot, OptiScalerLibrary.Sanitize(artifact.AssetName));
-            await _downloads.DownloadToFileAsync(artifact.DownloadUrl, zipPath, null, progress, cancellationToken);
+            await _downloads.DownloadToFileAsync(artifact.DownloadUrl, zipPath, null, progress, cancellationToken, pauseToken);
 
             string extractRoot = Path.Combine(workRoot, "payload");
             Directory.CreateDirectory(extractRoot);
@@ -183,6 +184,9 @@ public sealed class OptiScalerDownloader
 
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             MoveDirectory(extractRoot, target);
+
+            // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll
+            OptiScalerLibrary.NormalizePrimaryDll(target);
 
             WriteBuildManifest(target, source, tag, artifact.AssetName);
 

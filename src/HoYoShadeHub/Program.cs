@@ -119,6 +119,18 @@ public static class Program
         }
 
 
+        using var singleInstanceMutex = new System.Threading.Mutex(true, "Local\\HoYoShadeHub.SingleInstance.v1", out bool createdNew);
+        if (!createdNew)
+        {
+            try
+            {
+                using var existing = System.Threading.EventWaitHandle.OpenExisting(App.ActivateEventName);
+                existing.Set();
+            }
+            catch { }
+            return;
+        }
+
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
         global::Microsoft.UI.Xaml.Application.Start((p) =>
         {

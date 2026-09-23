@@ -110,6 +110,26 @@ public static class ModuleRegistry
             "version.dll",
             ["dlssg", "framegen", "rtx20", "rtx30"],
             ["version.dll", "dlssg_sm86.ini"]),
+
+        // 原神 DLSS5 链路里「让 OptiScaler 看见 FSR2」的那一环。
+        // 它是被注入的原生 DLL，不是 ReShade 插件，也不是 OptiScaler 本身：
+        // hook 游戏的 D3D11 与 GetProcAddress，把标准 ffxFsr2* 接口垫出来。
+        // 上游是 AizawaHikaru233/genshin_fsr_brigde（GPL-3.0），但它只发「一键配置」整包
+        //（含 OptiScaler / ReShade / 安装器），没有单文件 Release，所以这里从 CXP 的
+        // 打包目录直下那两个文件（CXP 用的是同一份二进制，SHA-256 1AB7FBD9...）。
+        new ModuleDefinition(
+            "genshin-fsr-bridge",
+            "Genshin FSR Bridge（原神 DX11 FSR2 桥）",
+            "让 OptiScaler 在原神这种「FSR2 静态链进 exe、符号不导出」的 DX11 游戏里看见 FSR2：" +
+            "hook 游戏的 D3D11 与 GetProcAddress，把标准 ffxFsr2* 接口垫出来。" +
+            "注入进游戏进程后，游戏里抗锯齿必须选 FSR2、渲染精度低于 1 才生效。" +
+            "这是 DLSS5 链路必需的一环，不是 ReShade 插件。",
+            "CXP-2024/dlss5_for_genshinimpact",
+            @"^v",
+            "https://github.com/AizawaHikaru233/genshin_fsr_brigde",
+            "Dx11FsrBridge.dll",
+            ["dlss5", "fsr2", "genshin", "bridge"],
+            ["release/configs/Dx11FsrBridge.dll", "release/configs/Dx11FsrBridge.ini"]),
     ];
 
     /// <summary>远端目录（catalog/modules.json）里读到的模块；同 id 覆盖内置</summary>
@@ -244,6 +264,44 @@ public static class ModuleRegistry
     // ===================== DLL 解析 / 迁移 / 部署 =====================
 
     /// <summary>
+    /// 删除一个已安装模块：删掉模块目录、每游戏使用记录、全局开关与 DLL 路径记账。
+    /// 内置 / 远端目录里的定义本身保留（删的是装出来的文件，用户随时能再下）。
+    /// </summary>
+    public static bool DeleteInstalled(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        string directory = AppConfig.ModuleDirectory(id);
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        AppConfig.SetModuleEnabled(id, false);
+        AppConfig.SetModuleDllPath(id, null);
+
+        foreach (GameBiz biz in GameBiz.AllGameBizs)
+        {
+            if (GameId.FromGameBiz(biz) is { } gameId)
+            {
+                SetUsed(gameId, id, false);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 模块要注入的 DLL：用户手动指定的 &gt; 模块目录里找（先按提示名，再按代理 dll 名）
     /// &gt; 以前从「OptiScaler 可下载」装的那份（更新后自动接上，不用重装）。
     /// </summary>
@@ -355,6 +413,24 @@ public static class ModuleRegistry
     }
 
     /// <summary>
+    /// 装完之后的「补齐文件」。现在只有原神 FSR 桥需要：它的 DLL 下下来就够用，
+    /// 但 ini 缺失时补一份最小模板（桥的每个键都有代码默认值，ini 只是方便用户改）。
+    /// 已经有一份就一律不动。
+    /// </summary>
+    private static void EnsurePostInstallFiles(ModuleDefinition module, string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        if (string.Equals(module.DllHint, OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+        {
+            OptiScalerRuntime.EnsureFsrBridgeIni(directory);
+        }
+    }
+
+    /// <summary>
     /// 下载 / 更新一个模块（走 OptiScaler 那套下载器：它已经会处理 zip 和官方安装程序）。
     /// 界面用它。
     /// </summary>
@@ -380,6 +456,8 @@ public static class ModuleRegistry
                 string url = HysxHttp.Apply($"https://raw.githubusercontent.com/{module.Repository}/{branch}/{file}");
                 await downloads.DownloadToFileAsync(url, Path.Combine(directory, name), null, progress, cancellationToken);
             }
+
+            EnsurePostInstallFiles(module, directory);
 
             return $"仓库树直下 {module.DirectFiles.Length} 个文件（{branch}）";
         }
@@ -415,6 +493,9 @@ public static class ModuleRegistry
         }
 
         await downloader.InstallAsync(source, chosenTag, asset, library, progress, cancellationToken, confirmBeforeRun);
+
+        EnsurePostInstallFiles(module, AppConfig.ModuleDirectory(module.Id));
+
         return $"{chosenTag} / {asset}";
     }
 }

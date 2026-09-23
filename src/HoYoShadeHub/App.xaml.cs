@@ -19,6 +19,11 @@ public partial class App : Application
 
     private readonly Timer _gcTimer = new(TimeSpan.FromSeconds(60));
 
+    // 跨版本单实例：第二个实例通过这个命名事件把已有窗口叫到前台
+    public const string ActivateEventName = "Local\\HoYoShadeHub.Activate.v1";
+
+    private System.Threading.EventWaitHandle? _activateEvent;
+
     public static new App Current => (App)Application.Current;
 
 
@@ -90,6 +95,22 @@ public partial class App : Application
             m_MainWindow = new MainWindow();
             m_MainWindow.Activate();
         }
+
+        StartActivateWatcher();
+    }
+
+    private void StartActivateWatcher()
+    {
+        _activateEvent = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, ActivateEventName);
+        System.Threading.ThreadPool.RegisterWaitForSingleObject(
+            _activateEvent,
+            (_, _) => _uiDispatcherQueue.TryEnqueue(() =>
+            {
+                EnsureMainWindow();
+            }),
+            null,
+            System.Threading.Timeout.Infinite,
+            false);
     }
 
 

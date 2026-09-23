@@ -193,8 +193,7 @@ public sealed class OptiScalerLibrary
 
     /// <summary>在构建目录里找 OptiScaler 的主 DLL（可能在子目录里）。</summary>
     public static string? FindDll(string buildDirectory)
-    {
-        if (!Directory.Exists(buildDirectory))
+    {        if (!Directory.Exists(buildDirectory))
         {
             return null;
         }
@@ -239,6 +238,42 @@ public sealed class OptiScalerLibrary
 
         // ④ 实在认不出来，只有唯一候选时才拿它
         return dlls.Count == 1 ? dlls[0] : null;
+    }
+
+    /// <summary>
+    /// 把构建当前识别到的主 DLL 改名成固定的 <c>OptiScaler.dll</c>，让外部注入和依赖解析都用同一个名字。
+    /// dlss-unlocked 包发布出来的正身叫 <c>dxgi.dll</c>，落库后需要归一化。
+    /// 已经叫这个名字、或没有可识别主 DLL 时不做任何操作。
+    /// </summary>
+    public static bool NormalizePrimaryDll(string buildDirectory)
+    {
+        string? dll = FindDll(buildDirectory);
+        if (dll is null)
+        {
+            return false;
+        }
+
+        string target = Path.Combine(Path.GetDirectoryName(dll)!, "OptiScaler.dll");
+        if (string.Equals(dll, target, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // 极少数情况下目录里已存在同名文件，先收掉再改名。
+        if (File.Exists(target))
+        {
+            try
+            {
+                File.Delete(target);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        File.Move(dll, target);
+        return true;
     }
 
     /// <summary>

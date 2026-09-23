@@ -3,6 +3,24 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.4 · 多帧生成解锁配套 + 单实例
+
+- 启用 OptiScaler 启动游戏前检查游戏目录自带的 `nvngx_dlssg.dll`：版本低于 310.9 时弹窗「DLSSG 版本过低不支持解锁」，确认后用 OptiScaler 目录里的 310.9 替换（原文件备份为 `.bak`）；选择「仍然启动」则照常启动。搜索顺序与 OptiScaler 运行时一致（游戏 exe 目录根部 → 子目录广度优先）。
+- 安装 OptiScaler 时自动准备一份 310.9 的 `nvngx_dlssg.dll`：本地已有就复用，没有则从托管地址下载（带 SHA256 校验），统一放到构建目录的 `OptiScaler\streamline\` 与 `OptiScaler\` 两个加载位置。
+- dlss-unlocked 发布包的正身 `dxgi.dll` 落库后自动归一为 `OptiScaler.dll`，各构建路径识别一致。
+- 修复多个启动器实例 / 历代版本进程并存：全局单实例，再次启动会唤起已在运行的主窗口并退出。
+
+## 1.2.3 · 修复旧构建找不到 streamline
+
+- 修复 1.2.2 配置分离引入的顺序问题：启动时先激活该游戏的 ini profile，再把 `OptiDllPath` 钉为构建目录的绝对路径。此前顺序相反，已存在的 profile（旧构建在 ini 还是 `auto` 时继承下来的）会把修正覆盖回 `auto`，旧构建（如 wilsjo2 v0.8.8）启动报 `Can't init DLSSG Output / missing the streamline folder`。
+- `OptiDllPath` 自愈移到注入前：对所有已装 OptiScaler 构建生效，不再只在安装完成时处理；游戏退出回写 profile 后，下次启动路径即一致。
+
+## 1.2.2 · 模块删除 + OptiScaler 配置按游戏分离
+
+- 全局插件·模块卡片对所有已安装模块（含内置 / 远端目录模块）显示删除按钮：确认后真正删除模块目录（含下载的全部文件），清掉全局开关与每个游戏的勾选；删后可在「可下载」里重装。手动模块同时删除 DLL 文件本身。
+- OptiScaler 的 `OptiScaler.ini` 按游戏分离：同一构建被多个游戏注入时，设置存在构建目录的 `profiles\<游戏>.ini`，注入前激活、游戏退出回写，首次使用从当前 ini 继承；叠加层里 Save 的设置也按游戏保留。
+- 修 dlss-unlocked 叠加层显示 `unlock unavailable for this runtime`：运行时按 OptiDllPath 搜索 `nvngx_dlssg.dll`，找不到会沿目录 BFS 命中游戏自带的旧版（实测 310.6.0），而 MFG 解锁只认识 legacy 与 310.9 两套字节签名。现在安装 / 注入前自动把候选目录里版本最高的 dlssg（dlss-unlocked 0.9.10 自带 310.9.1）钉到 `OptiScaler\` 根。
+
 ## 1.2.1 · 修复 OptiScaler 帧生成初始化
 
 - 修：启用 OptiScaler 帧生成时报 `Can't init DLSSG Output — Are you missing the streamline folder?`。根因是 ini 默认 `OptiDllPath=auto` 按**游戏 exe 目录**解析 `.\OptiScaler`，外部注入（DLL 在启动器数据目录）时路径指向游戏目录，StreamlineProxy 加载不到自己的 `sl.interposer.dll`。现在安装 / 补 DLL 时自动把 `OptiDllPath` 钉成数据目录的绝对路径。

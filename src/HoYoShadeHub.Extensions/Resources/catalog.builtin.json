@@ -140,6 +140,26 @@
       ]
     },
     {
+      "id": "mavismmg.mfg-adam-unlock",
+      "name": "MFG Ada Unlock（RenoDx）",
+      "version": "latest",
+      "author": "mavismmg / Dreamt / dashdogy",
+      "description": "ReShade 插件：在 RTX 40 系（Ada）上解锁 DLSS 多帧生成 3X/4X/6X（NVIDIA 官方门控到 RTX 50 系），并修正插帧时序让多出的帧带新运动。所有补丁只在运行时内存里生效，不改动游戏安装，卸载即还原。需要 310.9 版 dlssg 提供方。",
+      "homepage": "https://github.com/mavismmg/MFGAdaUnlock-RenoDx",
+      "tags": ["mfg", "framegen", "rtx40", "ada"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "mavismmg/MFGAdaUnlock-RenoDx",
+        "tagPattern": "^\\d",
+        "assetPattern": "*.addon64"
+      },
+      "addonPatterns": ["renodx-mfgunlock*"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true }
+      ]
+    },
+    {
       "id": "hoyoshade.presets",
       "name": "HoYoShade 官方预设合集",
       "version": "main",

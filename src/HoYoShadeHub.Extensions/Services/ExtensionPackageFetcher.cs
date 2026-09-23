@@ -68,7 +68,8 @@ public sealed class ExtensionPackageFetcher
         ExtensionManifest manifest,
         IProgress<DownloadProgress>? progress = null,
         CancellationToken cancellationToken = default,
-        string? tagOverride = null)
+        string? tagOverride = null,
+        DownloadPauseToken? pauseToken = null)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ExtensionSource source = manifest.Source;
@@ -82,10 +83,10 @@ public sealed class ExtensionPackageFetcher
                 return FetchLocal(manifest, workRoot);
 
             case ExtensionSourceType.Direct:
-                return await FetchDirectAsync(manifest, workRoot, source, progress, cancellationToken);
+                return await FetchDirectAsync(manifest, workRoot, source, progress, cancellationToken, pauseToken);
 
             case ExtensionSourceType.GithubRelease:
-                return await FetchGithubAsync(manifest, workRoot, source, progress, cancellationToken, tagOverride);
+                return await FetchGithubAsync(manifest, workRoot, source, progress, cancellationToken, tagOverride, pauseToken);
 
             default:
                 HysxUtil.TryDeleteDirectory(workRoot);
@@ -140,13 +141,14 @@ public sealed class ExtensionPackageFetcher
         string workRoot,
         ExtensionSource source,
         IProgress<DownloadProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DownloadPauseToken? pauseToken = null)
     {
         string url = source.Url!;
         string fileName = GetFileNameFromUrl(url);
         string downloadPath = Path.Combine(workRoot, fileName);
 
-        await _downloadService.DownloadToFileAsync(url, downloadPath, manifest.Sha256, progress, cancellationToken);
+        await _downloadService.DownloadToFileAsync(url, downloadPath, manifest.Sha256, progress, cancellationToken, pauseToken);
 
         return ExtractOrKeep(manifest, workRoot, downloadPath, fileName, resolvedTag: null, downloadUrl: url);
     }
@@ -157,7 +159,8 @@ public sealed class ExtensionPackageFetcher
         ExtensionSource source,
         IProgress<DownloadProgress>? progress,
         CancellationToken cancellationToken,
-        string? tagOverride = null)
+        string? tagOverride = null,
+        DownloadPauseToken? pauseToken = null)
     {
         if (string.IsNullOrWhiteSpace(source.Repository))
         {
@@ -175,7 +178,7 @@ public sealed class ExtensionPackageFetcher
         }
 
         string downloadPath = Path.Combine(workRoot, Sanitize(artifact.AssetName));
-        await _downloadService.DownloadToFileAsync(artifact.DownloadUrl, downloadPath, manifest.Sha256, progress, cancellationToken);
+        await _downloadService.DownloadToFileAsync(artifact.DownloadUrl, downloadPath, manifest.Sha256, progress, cancellationToken, pauseToken);
 
         return ExtractOrKeep(manifest, workRoot, downloadPath, artifact.AssetName, artifact.Tag, artifact.DownloadUrl);
     }

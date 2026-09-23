@@ -100,7 +100,8 @@ public sealed class ExtensionManagerService
         ExtensionManifest manifest,
         IProgress<DownloadProgress>? progress = null,
         CancellationToken cancellationToken = default,
-        string? tagOverride = null)
+        string? tagOverride = null,
+        DownloadPauseToken? pauseToken = null)
     {
         if (!manifest.IsValid)
         {
@@ -114,7 +115,7 @@ public sealed class ExtensionManagerService
             throw new InvalidOperationException($"扩展 {manifest.Id} 不支持装到 {hostName}。");
         }
 
-        using ResolvedExtensionPayload payload = await Fetcher.FetchAsync(manifest, progress, cancellationToken, tagOverride);
+        using ResolvedExtensionPayload payload = await Fetcher.FetchAsync(manifest, progress, cancellationToken, tagOverride, pauseToken);
         return await Installer.InstallAsync(Host, manifest, payload, cancellationToken);
     }
 

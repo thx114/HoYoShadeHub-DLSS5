@@ -1,4 +1,6 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
+using HoYoShadeHub.Core;
+using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.I18n;
@@ -20,6 +22,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace HoYoShadeHub.Features.Plugins;
 
@@ -46,6 +49,12 @@ public sealed partial class GlobalPluginPage : PageBase
     private ExtensionManagerService? _manager;
 
     private bool _isWorking;
+
+    /// <summary>
+    /// 当前正在跑的下载任务。同一时间只允许一个，所以放页面级字段而不是每个按钮各管各的。
+    /// 界面上的「暂停」「取消」两个按钮都打到它身上。
+    /// </summary>
+    private DownloadJob? _downloadJob;
 
     /// <summary>这次进页面已经查过更新了没有（别每次刷新都打一遍网络）</summary>
     private bool _updatesChecked;
@@ -105,6 +114,8 @@ public sealed partial class GlobalPluginPage : PageBase
         ModuleList.ItemsSource = CurrentModules;
         ModuleDownloadList.ItemsSource = AvailableModules;
 
+
+        PluginDownloadProxy.Apply();
 
         _ = RefreshCatalogThenPageAsync();
     }
@@ -186,6 +197,20 @@ public sealed partial class GlobalPluginPage : PageBase
         }
 
         _isWorking = true;
+
+        try
+        {
+            await ReloadPluginDataAsync();
+        }
+        finally
+        {
+            _isWorking = false;
+        }
+    }
+
+    /// <summary>重读插件数据（不带 _isWorking 锁，供已在 RunAsync 内的流程装完调用）。</summary>
+    private async Task ReloadPluginDataAsync()
+    {
         TextBlock_Status.Text = "正在读取插件目录…";
 
         try
@@ -279,10 +304,6 @@ public sealed partial class GlobalPluginPage : PageBase
         {
             _logger.LogError(ex, "Refresh plugins");
             TextBlock_Status.Text = "刷新失败：" + ex.Message;
-        }
-        finally
-        {
-            _isWorking = false;
         }
     }
 
@@ -1089,6 +1110,29 @@ public sealed partial class GlobalPluginPage : PageBase
             }
         }
 
+        // FSR-only 游戏（原神）要的替代实现：OptiScaler README 明确写「FSR2-only 游戏需要
+        // 手动提供 nvngx_dlss.dll」。它找的是 Util::DllPath()（OptiScaler 自己所在目录），
+        // 所以文件要落在构建目录，而不是游戏目录。
+        List<string> replacements = OptiScalerRuntime.EnsureUpscalerReplacements(
+            item.Build.Directory,
+            _manager?.Host.AddonsPath,
+            OptiScalerBuilds
+                .Where(v => !string.Equals(v.Id, item.Id, StringComparison.OrdinalIgnoreCase))
+                .Select(v => v.Build.Directory));
+
+        if (replacements.Count > 0)
+        {
+            TextBlock_Status.Text += $" 已补上采样替代实现：{string.Join("\u3001", replacements)}。";
+        }
+        else if (!OptiScalerRuntime.HasUpscalerReplacements(item.Build.Directory))
+        {
+            ShowInfo("\u7f3a nvngx_dlss.dll",
+                "\u6784\u5efa\u76ee\u5f55\u91cc\u6ca1\u6709 nvngx_dlss.dll\u3002\u53ea\u6709 FSR \u7684\u6e38\u620f\uff08\u539f\u795e\uff09\u5fc5\u987b\u9760\u5b83\u505a\u66ff\u4ee3\u5b9e\u73b0\uff0c"
+                + "\u5426\u5219 OptiScaler \u4f1a\u62a5\u300cCan't find nvngx.dll and libxess.dll and FSR inputs\u300d\u3002"
+                + "\u5148\u5230\u300cDLL \u914d\u7f6e\u300d\u88c5\u4e00\u4efd\uff0c\u6216\u628a\u5b83\u653e\u5230\u63d2\u4ef6\u76ee\u5f55\u3002",
+                InfoBarSeverity.Warning);
+        }
+
         if (OptiScalerRuntime.EnsureConfigDllPath(item.Build.Directory))
         {
             _logger.LogInformation("OptiScaler ini: OptiDllPath pinned to absolute path under {Directory}", item.Build.Directory);
@@ -1227,6 +1271,10 @@ public sealed partial class GlobalPluginPage : PageBase
 
         string finalStatus = string.Empty;
 
+        // 一个可取消 / 可暂停的下载任务。进度显示仍用下面这个 progress（它还兼着写 item.StatusText）
+        // 但取消令牌和暂停信号从这里来  之前没有它，所以下载根本停不下来。
+        using var job = BeginDownloadJob($"\u6b63\u5728\u4e0b\u8f7d OptiScaler\uff08{tag}\uff09");
+
         var progress = new Progress<DownloadProgress>(p =>
         {
             string text = p.Percent is null
@@ -1273,7 +1321,9 @@ public sealed partial class GlobalPluginPage : PageBase
                     bool run = await ConfirmOptiScalerSetupAsync(targetDirectory);
                     setupDeclined = !run;
                     return run;
-                });
+                },
+                cancellationToken: job.Token,
+                pauseToken: job.Pause);
 
             // 各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边 —— 装完顺手从插件目录补一份
             NrdllPlaceResult nrdll = OptiScalerRuntime.EnsureNrdll(
@@ -1292,6 +1342,20 @@ public sealed partial class GlobalPluginPage : PageBase
                 _logger.LogInformation("OptiScaler ini: OptiDllPath pinned under {Directory}", build.Directory);
             }
 
+            // dlss-unlocked 的 MFG 解锁只认 310.9 签名：本地没有就下载一份，分发到构建目录 2 个位置，
+            // 避免运行时 BFS 命中游戏目录旧版（310.6.0 → unlock unavailable）
+            DlssgEnsureResult unlockDlssg = await OptiScalerRuntime.EnsureDlssgForUnlockAsync(
+                build.Directory,
+                [
+                    _manager?.Host.AddonsPath,
+                    Path.Combine(build.Directory, "OptiScaler", OptiScalerRuntime.StreamlineFolderName),
+                    build.Directory,
+                    Path.Combine(build.Directory, "OptiScaler"),
+                ],
+                cancellationToken: job.Token);
+            _logger.LogInformation("OptiScaler MFG unlock dlssg: ok={Ok} - {Message}",
+                unlockDlssg.Ok, unlockDlssg.Message);
+
             finalStatus = installer
                 ? setupDeclined
                     ? $"安装程序已下载（{build.SizeBytes / 1024d / 1024d:F1} MB），还没运行 —— 点「打开目录」可以自己双击它。"
@@ -1299,7 +1363,15 @@ public sealed partial class GlobalPluginPage : PageBase
                         ? "安装程序跑完了，但没在目录里找到可注入的 dll（version.dll / dxgi.dll 之类）。"
                         : $"装好了：注入目标 = {Path.GetFileName(build.DllPath)}。{nrdll.Message}到启动器页勾「启动 OptiScaler」即可。"
                 : $"已装好 {build.Id}（{build.SizeBytes / 1024d / 1024d:F1} MB）。" +
-                  (build.DllPath is null ? "注意：包里没找到 OptiScaler.dll。" : string.Empty);
+                  (build.DllPath is null ? "注意：包里没找到 OptiScaler.dll。" : string.Empty) +
+                  (unlockDlssg.Ok ? string.Empty : $"（{unlockDlssg.Message}）");
+
+            // 全库只有这一个构建：还没选过的游戏默认用它
+            int autoEnabled = AutoEnableSoleOptiScalerBuild();
+            if (autoEnabled > 0)
+            {
+                finalStatus += $"　已为 {autoEnabled} 个游戏默认启用此 OptiScaler。";
+            }
 
             item.StatusText = finalStatus;
             TextBlock_Status.Text = $"OptiScaler「{build.Id}」安装完成：{build.Directory}";
@@ -1325,8 +1397,16 @@ public sealed partial class GlobalPluginPage : PageBase
         }
         finally
         {
+            if (job.IsCancellationRequested)
+            {
+                item.StatusText = "\u5df2\u53d6\u6d88\u4e0b\u8f7d\u3002";
+                TextBlock_Status.Text = "\u5df2\u53d6\u6d88\u4e0b\u8f7d\u3002";
+            }
+
             item.CanInteract = true;
             ProgressBar_Overall.IsIndeterminate = false;
+            Button_CancelDownload.IsEnabled = true;
+            EndDownloadJob();
         }
     }
 
@@ -1601,16 +1681,21 @@ public sealed partial class GlobalPluginPage : PageBase
 
     private async void Button_DeleteModule_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { DataContext: ModuleItemViewModel item } || item.IsBuiltin)
+        if (sender is not FrameworkElement { DataContext: ModuleItemViewModel item })
         {
             return;
         }
 
+        string title = item.IsBuiltin ? "删除模块" : "删除手动模块";
+        string body = item.IsBuiltin
+            ? $"确定删掉这个模块吗？\n\n{item.Name}\n\n模块目录（含下载的所有文件）会被真正删除，每个游戏对它的勾选与全局开关一并清掉；以后想再用，在下面「可下载」里重装即可。"
+            : $"确定把这个手动模块删掉吗？\n\n{item.Key}\n\n会同时移除列表记录，并删除该 DLL 文件。";
+
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "删除手动模块",
-            Content = $"确定把这条从手动模块列表里去掉吗？\n\n{item.Key}\n\n只删记录，不动磁盘上的文件。",
+            Title = title,
+            Content = body,
             PrimaryButtonText = "删除",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close,
@@ -1621,11 +1706,39 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
-        List<string> list = [.. AppConfig.GetManualModuleDlls()
-            .Where(p => !string.Equals(p, item.Key, StringComparison.OrdinalIgnoreCase))];
-        AppConfig.SetManualModuleDlls(list);
+        if (item.IsBuiltin)
+        {
+            if (!ModuleRegistry.DeleteInstalled(item.Key))
+            {
+                TextBlock_Status.Text = $"删除失败：{item.Name}（目录可能被占用，游戏还开着吗）";
+                return;
+            }
 
-        TextBlock_Status.Text = $"已从模块列表里去掉：{item.Name}";
+            TextBlock_Status.Text = $"已删除模块：{item.Name}";
+        }
+        else
+        {
+            string? deleteWarning = null;
+            try
+            {
+                if (File.Exists(item.Key))
+                {
+                    File.Delete(item.Key);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Delete manual module file {Path}", item.Key);
+                deleteWarning = $"记录已移除，但 DLL 文件没删掉：{ex.Message}";
+            }
+
+            List<string> list = [.. AppConfig.GetManualModuleDlls()
+                .Where(p => !string.Equals(p, item.Key, StringComparison.OrdinalIgnoreCase))];
+            AppConfig.SetManualModuleDlls(list);
+
+            TextBlock_Status.Text = deleteWarning ?? $"已删除手动模块：{item.Name}";
+        }
+
         RefreshModules();
     }
 
@@ -1847,36 +1960,138 @@ public sealed partial class GlobalPluginPage : PageBase
 
     private async void Button_InstallLocal_Click(object sender, RoutedEventArgs e)
     {
-        if (_manager is null)
+        if (_isWorking)
         {
             return;
         }
 
-        try
+        await RunAsync(InstallLocalAsync);
+    }
+
+    /// <summary>
+    /// 本地安装：GitHub 原始 zip / 单个 addon / 模块 DLL 都收。
+    /// 自动识别类型，OptiScaler 缺的 dlssnr / streamline / dlssg 由安装器补齐。
+    /// </summary>
+    private async Task InstallLocalAsync()
+    {
+        string? file = await FileDialogHelper.PickSingleFileAsync(
+            XamlRoot,
+            ("支持的包", ".zip"),
+            ("ReShade 插件", ".addon64"),
+            ("ReShade 插件", ".addon32"),
+            ("DLL", ".dll"),
+            ("所有文件", ".*"));
+
+        if (string.IsNullOrWhiteSpace(file))
         {
-            string? file = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("插件包", ".zip"));
-            if (string.IsNullOrWhiteSpace(file))
+            return;
+        }
+
+        // 标准 hysx 扩展包（带 manifest.json）走原有扩展安装流水线
+        ExtensionManifest? manifest = ReadManifestFromPackage(file);
+        if (manifest is not null)
+        {
+            manifest.Source = new ExtensionSource { Type = ExtensionSourceType.Local, Url = file };
+            await RunInstallAsync(manifest);
+            return;
+        }
+
+        var installer = new LocalPackageInstaller(
+            AppConfig.OptiScalerRootPath,
+            _manager?.Host.AddonsPath ?? string.Empty,
+            AppConfig.ModulesRootPath,
+            OptiScalerBuilds.Select(b => b.Build.Directory));
+
+        LocalPackageInstallResult result = await installer.InstallAsync(file);
+
+        switch (result.Kind)
+        {
+            case LocalPackageKind.Addon:
+                await ReloadPluginDataAsync();
+                break;
+            case LocalPackageKind.OptiScaler:
+                RefreshOptiScaler();
+                int auto = AutoEnableSoleOptiScalerBuild();
+                if (auto > 0)
+                {
+                    TextBlock_Status.Text = result.Summary + $"；已为 {auto} 个游戏默认启用。";
+                    return;
+                }
+                break;
+            case LocalPackageKind.Module:
+                RefreshModules();
+                break;
+        }
+
+        TextBlock_Status.Text = result.Summary;
+    }
+
+    /// <summary>拖文件经过：zip / addon / dll 显示复制光标。</summary>
+    private void Grid_DragOver(object sender, DragEventArgs e)
+    {
+        e.AcceptedOperation = e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)
+            ? DataPackageOperation.Copy
+            : DataPackageOperation.None;
+
+        e.DragUIOverride.Caption = "松开以本地安装";
+        e.DragUIOverride.IsCaptionVisible = true;
+    }
+
+    /// <summary>拖放：取第一个文件，走和「本地安装」完全相同的流程。</summary>
+    private async void Grid_Drop(object sender, DragEventArgs e)
+    {
+        if (_isWorking || !e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+        {
+            return;
+        }
+
+        await RunAsync(async () =>
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            string? file = items.FirstOrDefault()?.Path;
+
+            if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
             {
                 return;
             }
 
             ExtensionManifest? manifest = ReadManifestFromPackage(file);
-            if (manifest is null)
+            if (manifest is not null)
             {
-                ShowInfo("这个包里没有清单",
-                    "压缩包根目录（或任意子目录）需要有一个 manifest.json，描述 id / 名字 / rules。",
-                    InfoBarSeverity.Error);
+                manifest.Source = new ExtensionSource { Type = ExtensionSourceType.Local, Url = file };
+                await RunInstallAsync(manifest);
                 return;
             }
 
-            manifest.Source = new ExtensionSource { Type = ExtensionSourceType.Local, Url = file };
-            await RunInstallAsync(manifest);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Install local package");
-            TextBlock_Status.Text = "安装本地包失败：" + ex.Message;
-        }
+            var installer = new LocalPackageInstaller(
+                AppConfig.OptiScalerRootPath,
+                _manager?.Host.AddonsPath ?? string.Empty,
+                AppConfig.ModulesRootPath,
+                OptiScalerBuilds.Select(b => b.Build.Directory));
+
+            LocalPackageInstallResult result = await installer.InstallAsync(file);
+
+            switch (result.Kind)
+            {
+                case LocalPackageKind.Addon:
+                    await ReloadPluginDataAsync();
+                    break;
+                case LocalPackageKind.OptiScaler:
+                    RefreshOptiScaler();
+                    int auto = AutoEnableSoleOptiScalerBuild();
+                    if (auto > 0)
+                    {
+                        TextBlock_Status.Text = result.Summary + $"；已为 {auto} 个游戏默认启用。";
+                        return;
+                    }
+                    break;
+                case LocalPackageKind.Module:
+                    RefreshModules();
+                    break;
+            }
+
+            TextBlock_Status.Text = result.Summary;
+        });
     }
 
     #endregion
@@ -2140,6 +2355,8 @@ public sealed partial class GlobalPluginPage : PageBase
 
         await RunAsync(async () =>
         {
+            using var job = BeginDownloadJob($"\u6b63\u5728\u83b7\u53d6\u300c{manifest.Name}\u300d");
+
             var progress = new Progress<DownloadProgress>(p =>
             {
                 string text = p.Percent is null
@@ -2160,7 +2377,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
             try
             {
-                ExtensionInstallResult result = await _manager.InstallAsync(manifest, progress, default, tagOverride);
+                ExtensionInstallResult result = await _manager.InstallAsync(manifest, progress, job.Token, tagOverride, job.Pause);
 
                 var parts = new List<string> { $"安装 {result.InstalledFiles.Count} 个文件" };
                 if (result.RemovedStaleFiles.Count > 0)
@@ -2191,12 +2408,20 @@ public sealed partial class GlobalPluginPage : PageBase
             finally
             {
                 if (item is not null)
+                if (job.IsCancellationRequested)
+                {
+                    TextBlock_Status.Text = $"\u5df2\u53d6\u6d88\u5b89\u88c5\u300c{manifest.Name}\u300d\u3002";
+                }
+
                 {
                     item.IsBusy = false;
+
+                Button_CancelDownload.IsEnabled = true;
+                EndDownloadJob();
                 }
             }
 
-            await RefreshAsync();
+            await ReloadPluginDataAsync();
         });
     }
 
@@ -2221,7 +2446,134 @@ public sealed partial class GlobalPluginPage : PageBase
         });
     }
 
+    /// <summary>
+    /// 库里只有一个 OptiScaler 构建时，给还没选过构建的游戏默认选中它并启用。
+    /// 下载完成（远端 / 本地安装）后调用；已经有多个构建或用户已选过的不动。
+    /// </summary>
+    /// <returns>这次被默认启用的游戏数量</returns>
+    private static int AutoEnableSoleOptiScalerBuild()
+    {
+        string root = AppConfig.OptiScalerRootPath;
+        if (root.Length == 0)
+        {
+            return 0;
+        }
+
+        var library = new OptiScalerLibrary(root);
+        List<OptiScalerBuild> builds = library.List();
+        if (builds.Count != 1)
+        {
+            return 0;
+        }
+
+        OptiScalerBuild sole = builds[0];
+        if (string.IsNullOrWhiteSpace(sole.DllPath))
+        {
+            return 0;
+        }
+
+        int count = 0;
+
+        foreach (GameBiz biz in GameBiz.AllGameBizs)
+        {
+            if (GameId.FromGameBiz(biz) is not { } gameId)
+            {
+                continue;
+            }
+
+            // 用户已经给这个游戏选过（含手动清空为 null 无法区分，罕见情况一并视为已决定）
+            if (AppConfig.GetSelectedOptiScalerId(gameId) is not null)
+            {
+                continue;
+            }
+
+            AppConfig.SetSelectedOptiScalerId(gameId, sole.Id);
+            AppConfig.SetUseOptiScalerLaunchOption(gameId, true);
+            count++;
+        }
+
+        if (count > 0)
+        {
+            try
+            {
+                library.Select(sole.Id);
+            }
+            catch
+            {
+                // state.json 同步失败不影响每游戏选择
+            }
+        }
+
+        return count;
+    }
+
     /// <summary>串行化操作 + 统一收尾</summary>
+    #region 下载任务（取消 / 暂停）
+
+    /// <summary>
+    /// Starts a cancellable download task and shows the pause / cancel buttons. 
+    /// The returned job owns a CancellationTokenSource -- always dispose it, otherwise the
+    /// token source leaks and a stale cancel button handler stays wired up.
+    /// </summary>
+    private DownloadJob BeginDownloadJob(string label)
+    {
+        // 上一单还没收尾就先收掉，避免两个任务抢同一组按钮
+        EndDownloadJob();
+
+        var job = DownloadJob.Start(ProgressBar_Overall, TextBlock_Status, Button_CancelDownload, label);
+        job.PauseStateChanged += OnDownloadPauseStateChanged;
+        Button_PauseDownload.Content = "\u6682\u505c";
+        Button_PauseDownload.Visibility = Visibility.Visible;
+        Button_CancelDownload.Visibility = Visibility.Visible;
+        _downloadJob = job;
+        return job;
+    }
+
+    /// <summary>Hides the download controls. Does not dispose -- callers own the job.</summary>
+    private void EndDownloadJob()
+    {
+        if (_downloadJob is null)
+        {
+            return;
+        }
+
+        Button_PauseDownload.Visibility = Visibility.Collapsed;
+        Button_CancelDownload.Visibility = Visibility.Collapsed;
+        Button_PauseDownload.Content = "\u6682\u505c";
+        _downloadJob = null;
+    }
+
+    private void OnDownloadPauseStateChanged(object? sender, EventArgs e)
+    {
+        if (_downloadJob is null)
+        {
+            return;
+        }
+
+        Button_PauseDownload.Content = _downloadJob.IsPaused ? "\u7ee7\u7eed" : "\u6682\u505c";
+    }
+
+    private void Button_PauseDownload_Click(object sender, RoutedEventArgs e)
+    {
+        _downloadJob?.TogglePause();
+    }
+
+    private void Button_CancelDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (_downloadJob is null)
+        {
+            return;
+        }
+
+        _downloadJob.Cancel();
+        Button_CancelDownload.IsEnabled = false;
+    }
+
+    /// <summary>True when the user pressed cancel on the running download.</summary>
+    private bool IsDownloadCancelled => _downloadJob?.IsCancellationRequested == true;
+
+    #endregion
+
     private async Task RunAsync(Func<Task> action)
     {
         if (_isWorking)
@@ -2510,6 +2862,12 @@ public partial class PluginItemViewModel : ObservableObject
     public Visibility BusyVisibility => IsBusy ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility InstalledVisibility => IsInstalled ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>版本徽章：装着的版本直接显示在未展开的卡片上。</summary>
+    public string VersionBadgeText => CurrentVersion;
+
+    public Visibility VersionBadgeVisibility =>
+        !string.IsNullOrWhiteSpace(CurrentVersion) ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
 
@@ -2835,6 +3193,12 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
     /// <summary>收起时标题行右边的摘要（资产名，没有就版本号）</summary>
     public string SummaryText => string.IsNullOrWhiteSpace(Build.AssetName) ? Build.Version : Build.AssetName!;
 
+    /// <summary>版本徽章：直接显示在未展开卡片上。</summary>
+    public string VersionBadgeText => Build.Version;
+
+    public Visibility VersionBadgeVisibility =>
+        !string.IsNullOrWhiteSpace(Build.Version) ? Visibility.Visible : Visibility.Collapsed;
+
     /// <summary>展开箭头：收起朝下，展开朝上</summary>
     public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
 
@@ -3058,10 +3422,34 @@ public sealed partial class ModuleItemViewModel : ObservableObject
         Homepage = entry.Homepage ?? string.Empty;
         DllPath = entry.DllPath ?? string.Empty;
         IsBuiltin = entry.IsBuiltin;
+        Version = HasDll ? ReadDllVersion(DllPath) : null;
 
         _suppress = true;
         GloballyEnabled = entry.GloballyEnabled;
         _suppress = false;
+    }
+
+    /// <summary>模块 DLL 的 PE 版本。</summary>
+    public string? Version { get; }
+
+    public string VersionBadgeText => Version ?? string.Empty;
+
+    public Visibility VersionBadgeVisibility =>
+        !string.IsNullOrWhiteSpace(Version) ? Visibility.Visible : Visibility.Collapsed;
+
+    private static string? ReadDllVersion(string path)
+    {
+        try
+        {
+            return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion is { } text
+                   && !string.IsNullOrWhiteSpace(text)
+                ? text.Trim()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>内置模块 = 模块 id；手动加的 = DLL 全路径</summary>
@@ -3087,8 +3475,8 @@ public sealed partial class ModuleItemViewModel : ObservableObject
 
     public Visibility MissingDllVisibility => HasDll ? Visibility.Collapsed : Visibility.Visible;
 
-    /// <summary>内置模块只能「打开目录」，不给删；手动加的可以删</summary>
-    public Visibility DeleteVisibility => IsBuiltin ? Visibility.Collapsed : Visibility.Visible;
+    /// <summary>已安装模块（内置/远端目录/手动）都给删：真正删文件</summary>
+    public Visibility DeleteVisibility => Visibility.Visible;
 
     public Visibility HomepageVisibility => string.IsNullOrWhiteSpace(Homepage) ? Visibility.Collapsed : Visibility.Visible;
 
@@ -3204,5 +3592,3 @@ public sealed partial class ModuleDownloadItemViewModel : ObservableObject
     [ObservableProperty]
     private string? selectedVersion;
 }
-
-

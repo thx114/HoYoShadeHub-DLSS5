@@ -88,6 +88,8 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
+                <!--  这条分割线把「游戏自带功能」（启动器/设置/截图）和下面的增强工具 4 连项分开  -->
+                <NavigationViewItemSeparator />
                 <!--  插件：按游戏分开（插件文件全局一份，开关写各游戏自己的 ReShade.ini）  -->
                 <NavigationViewItem Name="NavigationViewItem_Plugins"
                                     Tag="GamePluginPage"
@@ -101,16 +103,16 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
-                <!--  模型替换（XXMI）：MI 实例 + Mods 管理  -->
-                <NavigationViewItem Name="NavigationViewItem_Xxmi"
-                                    Tag="XxmiPage"
-                                    ToolTipService.ToolTip="模型替换（XXMI）">
+                <!--  OptiScaler：总开关 + 每个游戏选一个构建  -->
+                <NavigationViewItem Name="NavigationViewItem_OptiScaler"
+                                    Tag="OptiScalerPage"
+                                    ToolTipService.ToolTip="OptiScaler">
                     <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE7B8;" />
+                        <FontIcon Glyph="&#xE9D9;" />
                     </NavigationViewItem.Icon>
                     <NavigationViewItem.Content>
                         <Border Height="40">
-                            <TextBlock x:Name="TextBlock_XxmiNav" VerticalAlignment="Center" Text="模型替换" />
+                            <TextBlock VerticalAlignment="Center" Text="OptiScaler" />
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
@@ -127,16 +129,16 @@
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>
-                <!--  OptiScaler：总开关 + 每个游戏选一个构建  -->
-                <NavigationViewItem Name="NavigationViewItem_OptiScaler"
-                                    Tag="OptiScalerPage"
-                                    ToolTipService.ToolTip="OptiScaler">
+                <!--  模型替换（XXMI）：MI 实例 + Mods 管理  -->
+                <NavigationViewItem Name="NavigationViewItem_Xxmi"
+                                    Tag="XxmiPage"
+                                    ToolTipService.ToolTip="模型替换（XXMI）">
                     <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE9D9;" />
+                        <FontIcon Glyph="&#xE7B8;" />
                     </NavigationViewItem.Icon>
                     <NavigationViewItem.Content>
                         <Border Height="40">
-                            <TextBlock VerticalAlignment="Center" Text="OptiScaler" />
+                            <TextBlock x:Name="TextBlock_XxmiNav" VerticalAlignment="Center" Text="模型替换" />
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>

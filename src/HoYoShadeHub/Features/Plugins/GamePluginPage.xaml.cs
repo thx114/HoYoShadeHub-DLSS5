@@ -786,6 +786,7 @@ public partial class AddonItemViewModel : ObservableObject
 
         FileName = state.FileName;
         Name = state.DisplayName;
+        Version = state.Version;
         CanToggle = state.CanToggle;
         IsDlss5 = state.IsDlss5;
 
@@ -810,6 +811,14 @@ public partial class AddonItemViewModel : ObservableObject
     public string FileName { get; }
 
     public string Name { get; }
+
+    /// <summary>插件版本（显示在名字右侧）。</summary>
+    public string? Version { get; }
+
+    public string VersionText => Version;
+
+    public Visibility VersionVisibility =>
+        !string.IsNullOrWhiteSpace(Version) ? Visibility.Visible : Visibility.Collapsed;
 
     public string MetaText { get; }
 

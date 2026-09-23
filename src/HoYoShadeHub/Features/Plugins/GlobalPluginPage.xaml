@@ -59,7 +59,11 @@
         </DataTemplate>
     </Page.Resources>
 
-    <Grid Padding="36,4,36,12" RowSpacing="8">
+    <Grid Padding="36,4,36,12"
+          RowSpacing="8"
+          AllowDrop="True"
+          DragOver="Grid_DragOver"
+          Drop="Grid_Drop">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -204,6 +208,16 @@
                                                             <TextBlock VerticalAlignment="Center"
                                                                        Style="{ThemeResource BodyStrongTextBlockStyle}"
                                                                        Text="{x:Bind Name}" />
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                                    CornerRadius="3"
+                                                                    ToolTipService.ToolTip="当前装着的版本"
+                                                                    Visibility="{x:Bind VersionBadgeVisibility}">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                           Text="{x:Bind VersionBadgeText}" />
+                                                            </Border>
                                                             <ItemsControl VerticalAlignment="Center"
                                                                           ItemTemplate="{StaticResource CatalogTagTemplate}"
                                                                           ItemsSource="{x:Bind Tags}">
@@ -576,6 +590,16 @@
                                                         <TextBlock VerticalAlignment="Center"
                                                                    Style="{ThemeResource BodyStrongTextBlockStyle}"
                                                                    Text="{x:Bind Title}" />
+                                                        <Border Padding="6,1"
+                                                                VerticalAlignment="Center"
+                                                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                                CornerRadius="3"
+                                                                ToolTipService.ToolTip="构建版本"
+                                                                Visibility="{x:Bind VersionBadgeVisibility}">
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                       Text="{x:Bind VersionBadgeText}" />
+                                                        </Border>
                                                         <ItemsControl VerticalAlignment="Center"
                                                                       ItemTemplate="{StaticResource CatalogTagTemplate}"
                                                                       ItemsSource="{x:Bind Tags}">
@@ -832,6 +856,16 @@
                                                             <TextBlock VerticalAlignment="Center"
                                                                        Style="{ThemeResource BodyStrongTextBlockStyle}"
                                                                        Text="{x:Bind Name}" />
+                                                            <Border Padding="6,1"
+                                                                    VerticalAlignment="Center"
+                                                                    Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                                    CornerRadius="3"
+                                                                    ToolTipService.ToolTip="模块版本"
+                                                                    Visibility="{x:Bind VersionBadgeVisibility}">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                           Text="{x:Bind VersionBadgeText}" />
+                                                            </Border>
                                                             <ItemsControl VerticalAlignment="Center"
                                                                           ItemTemplate="{StaticResource CatalogTagTemplate}"
                                                                           ItemsSource="{x:Bind Tags}">
@@ -882,7 +916,7 @@
                                                     <Button Click="Button_DeleteModule_Click"
                                                             Content="删除"
                                                             Style="{StaticResource CatalogRowButtonStyle}"
-                                                            ToolTipService.ToolTip="从手动模块列表里去掉（内置模块不给删）"
+                                                            ToolTipService.ToolTip="真正删除模块文件（内置/远端目录模块删后可在可下载里重装）"
                                                             Visibility="{x:Bind DeleteVisibility}" />
                                                 </StackPanel>
                                             </Grid>
@@ -1015,10 +1049,36 @@
                          Height="3"
                          Maximum="100"
                          Visibility="Collapsed" />
-            <TextBlock x:Name="TextBlock_Status"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Style="{ThemeResource CaptionTextBlockStyle}"
-                       TextWrapping="Wrap" />
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="TextBlock_Status"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           TextWrapping="Wrap" />
+
+                <!--  下载暂停 / 继续；只有在有下载任务时才出现  -->
+                <Button x:Name="Button_PauseDownload"
+                        Grid.Column="1"
+                        VerticalAlignment="Center"
+                        Click="Button_PauseDownload_Click"
+                        Content="暂停"
+                        Visibility="Collapsed" />
+
+                <!--  下载取消  -->
+                <Button x:Name="Button_CancelDownload"
+                        Grid.Column="2"
+                        VerticalAlignment="Center"
+                        Click="Button_CancelDownload_Click"
+                        Content="取消"
+                        Visibility="Collapsed" />
+            </Grid>
         </StackPanel>
     </Grid>
 

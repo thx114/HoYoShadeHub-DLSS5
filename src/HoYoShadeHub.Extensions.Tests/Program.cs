@@ -1396,6 +1396,17 @@ File.WriteAllText(Path.Combine(bothDir, "version.dll"), "fake");
 File.WriteAllText(Path.Combine(bothDir, "OptiScaler.dll"), "fake");
 Check(Path.GetFileName(OptiScalerLibrary.FindDll(bothDir)!) == "OptiScaler.dll", "正主 OptiScaler.dll 优先于代理名");
 
+Console.WriteLine("-- OptiScaler 主 DLL 归一化（dlss-unlocked 的 dxgi.dll → OptiScaler.dll）--");
+string normalizeDir = library.DirectoryFor("dlss-unlocked", "NR-v0.9.10");
+Directory.CreateDirectory(Path.Combine(normalizeDir, "OptiScaler"));
+File.WriteAllText(Path.Combine(normalizeDir, "OptiScaler", "dxgi.dll"), "fake real body");
+File.WriteAllText(Path.Combine(normalizeDir, "OptiScaler.ini"), "fake ini");
+Check(Path.GetFileName(OptiScalerLibrary.FindDll(normalizeDir)!) == "dxgi.dll", "归一化前正身识别为 dxgi.dll");
+Check(OptiScalerLibrary.NormalizePrimaryDll(normalizeDir), "dxgi.dll 改名成 OptiScaler.dll");
+Check(!File.Exists(Path.Combine(normalizeDir, "OptiScaler", "dxgi.dll")), "旧的 dxgi.dll 已不存在");
+Check(Path.GetFileName(OptiScalerLibrary.FindDll(normalizeDir)!) == "OptiScaler.dll", "归一化后注入目标是 OptiScaler.dll");
+Check(!OptiScalerLibrary.NormalizePrimaryDll(normalizeDir), "已经叫 OptiScaler.dll 时不重复操作");
+
 Console.WriteLine("-- OptiScaler 的 nvngx_dlssnr.dll（各分支手册都要求放在包旁边）--");
 string nrdllAddonsDir = Path.Combine(root, "fake-addons");
 Directory.CreateDirectory(nrdllAddonsDir);
@@ -1425,6 +1436,32 @@ File.WriteAllText(Path.Combine(nrdllNoSourceBuild, "OptiScaler.dll"), "fake");
 NrdllPlaceResult nrdllMissing = OptiScalerRuntime.EnsureNrdll(nrdllNoSourceBuild, Path.Combine(root, "nope"));
 Check(nrdllMissing.Status == NrdllPlaceStatus.NotFound && !nrdllMissing.Ok, "找不到源头时明确报 NotFound（界面据此提示去 DLL 配置装一个）");
 
+Console.WriteLine("-- 原神 FSR 桥（模块的 DLL/ini + 补齐）--");
+Check(OptiScalerRuntime.FsrBridgeDllName == "Dx11FsrBridge.dll" && OptiScalerRuntime.FsrBridgeIniName == "Dx11FsrBridge.ini",
+    "桥的两个文件名固定（模块 dllHint 与补齐逻辑都按它们来）");
+
+string bridgeDir = Path.Combine(root, "bridge-module");
+Directory.CreateDirectory(bridgeDir);
+Check(!OptiScalerRuntime.HasFsrBridge(bridgeDir), "一开始目录里没有桥");
+
+Check(OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDir), "ini 缺失时补一份");
+string bridgeIni = Path.Combine(bridgeDir, OptiScalerRuntime.FsrBridgeIniName);
+Check(File.Exists(bridgeIni), "ini 真的写出来了");
+string bridgeIniText = File.ReadAllText(bridgeIni);
+Check(bridgeIniText.Contains("[Dx11FsrBridge]"), "补齐的 ini 用了桥认的段名");
+Check(bridgeIniText.Contains("EnableFsr2GetProcAddressShim=1"), "补上了关键的那个垫片开关（OptiScaler 就靠它看见 FSR2）");
+Check(bridgeIniText.All(c => c < 128), "ini 是纯 ASCII（桥按窄字符读，不赌中文注释的编码）");
+
+File.WriteAllText(bridgeIni, "user-tuned-ini");
+Check(!OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDir), "已经有一份就不动（用户可能照 CXP 那份调过 RVA）");
+Check(File.ReadAllText(bridgeIni) == "user-tuned-ini", "内容原样保留，没被覆盖");
+
+Check(!OptiScalerRuntime.EnsureFsrBridgeIni(Path.Combine(root, "no-such-bridge-dir")), "目录不存在时返回 false，不炸");
+
+string bridgeWithDll = Path.Combine(root, "bridge-module-2");
+Directory.CreateDirectory(bridgeWithDll);
+File.WriteAllText(Path.Combine(bridgeWithDll, OptiScalerRuntime.FsrBridgeDllName), "fake");
+Check(OptiScalerRuntime.HasFsrBridge(bridgeWithDll), "DLL 在就算有桥（ini 只是覆盖项，桥自带代码默认值）");
 Console.WriteLine("-- 插件汉化（白名单原地替换 + 备份 / 还原）--");
 AddonI18nDocument builtinTable = AddonLocalizer.LoadBuiltin();
 Check(builtinTable.Tables.Count >= 3, $"内置翻译表至少 3 个插件族，实际 {builtinTable.Tables.Count}");

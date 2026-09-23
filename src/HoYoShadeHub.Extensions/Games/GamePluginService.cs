@@ -394,6 +394,92 @@ public sealed class GamePluginService
     /// <summary>键不存在也返回 0（= off）</summary>
     public int GetHookPoint() => Profile?.GetHookPoint() ?? 0;
 
+
+    #region OptiScaler upscaler runtime (game directory)
+
+    /// <summary>
+    /// OptiScaler's Config::CheckUpscalerFiles() only looks in the GAME EXE directory:
+    ///   nvngxExists  = exists(Util::ExePath().parent_path() / L"nvngx.dll");
+    ///   libxessExists = exists(Util::ExePath().parent_path() / L"libxess.dll");
+    /// When both miss, the overlay shows
+    /// "Can't find nvngx.dll and libxess.dll and FSR inputs / Upscaling support will NOT work."
+    ///
+    /// nvngx.dll (the ~10 KB shim) forwards the game's DLSS calls to FSR, which is what a
+    /// FSR-only title like Genshin needs -- without it OptiScaler has nothing to hook.
+    /// </summary>
+    public static readonly string[] UpscalerRuntimeDlls =
+    [
+        "nvngx.dll",
+        "libxess.dll",
+    ];
+
+    /// <summary>
+    /// Copies the upscaler runtime into the game directory. Sources are tried in order
+    /// (plugin directory first, then any OptiScaler build directory). A target that already
+    /// exists with the same size is left alone, so user-swapped versions survive.
+    /// </summary>
+    /// <returns>file names actually copied this time</returns>
+    public static List<string> EnsureUpscalerRuntimeDlls(
+        string? gameDirectory,
+        IEnumerable<string?>? sourceDirectories)
+    {
+        var copied = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
+        {
+            return copied;
+        }
+
+        var candidates = (sourceDirectories ?? [])
+            .Where(d => !string.IsNullOrWhiteSpace(d) && Directory.Exists(d))
+            .Select(d => d!)
+            .ToList();
+
+        foreach (string dll in UpscalerRuntimeDlls)
+        {
+            string? source = null;
+            foreach (string directory in candidates)
+            {
+                string path = Path.Combine(directory, dll);
+                if (File.Exists(path))
+                {
+                    source = path;
+                    break;
+                }
+            }
+
+            if (source is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                string target = Path.Combine(gameDirectory, dll);
+                if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(source).Length)
+                {
+                    continue;
+                }
+
+                File.Copy(source, target, overwrite: true);
+                copied.Add(dll);
+            }
+            catch
+            {
+                // A failed copy must not fail the caller.
+            }
+        }
+
+        return copied;
+    }
+
+    /// <summary>Are the upscaler runtime files present in the game directory?</summary>
+    public static bool HasUpscalerRuntimeDlls(string? gameDirectory)
+        => !string.IsNullOrWhiteSpace(gameDirectory)
+           && File.Exists(Path.Combine(gameDirectory, "nvngx.dll"));
+
+    #endregion
+
     #endregion
 
     #region 写

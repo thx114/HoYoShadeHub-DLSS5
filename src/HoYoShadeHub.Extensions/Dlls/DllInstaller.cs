@@ -102,7 +102,8 @@ public static class DllInstaller
         string addonsDirectory,
         DllComponent component,
         IProgress<DownloadProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DownloadPauseToken? pauseToken = null)
     {
         string? tempZip = null;
 
@@ -118,7 +119,7 @@ public static class DllInstaller
             tempZip = Path.Combine(Path.GetTempPath(), $"hysx-dll-{Guid.NewGuid():N}.zip");
 
             var downloader = new DownloadService();
-            await downloader.DownloadToFileAsync(component.Url, tempZip, expectedSha256: null, progress, cancellationToken);
+            await downloader.DownloadToFileAsync(component.Url, tempZip, expectedSha256: null, progress, cancellationToken, pauseToken);
 
             var installed = new List<string>();
             var overwritten = new List<string>();
