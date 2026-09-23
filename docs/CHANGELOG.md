@@ -5,6 +5,8 @@
 
 ## 1.3.4b1 · 内置 OptiScaler MFG Ada 源
 
+- 源构建包修正为 `mfg-ada-0.1.1`：0.1.0 把 `OptiScaler.dll` 与 ini 多嵌套了一层，启动器钉的 `OptiDllPath` 变成 `OptiScaler\OptiScaler`，只找到 dlssg、找不到 `sl.interposer.dll`，结果帧生成初始化失败、菜单不出现。0.1.1 布局为 DLL/ini 在包根、streamline 在 `OptiScaler\streamline\`；ini 改为真正的出厂初始状态（帧生成开、Ada 解锁开、NR 关）。
+
 - OptiScaler 可下载列表新增「OptiScaler MFG Ada（本 fork）」：仓库 `thx114/OptiScaler-MFG-Ada`，发布包含 Ada 门补丁 + NvAPI 双向架构伪装 + midpoint 修正的构建，包内两处 dlssg 均为 310.9.1。tag 过滤只取 `mfg-ada-*`，`runtime-*`（dlssg 单文件）自动跳过。
 - 内置来源表与远端 `catalog/optiscaler.json` 同步加该源。
 
