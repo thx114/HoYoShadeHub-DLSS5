@@ -1179,3 +1179,49 @@ ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UT
   gh-proxy.org  ghfast.top  腾讯云  随机(Cloudflare/阿里云)  GitHub 直连兜底，且刚失败的服务器冷却 5 分钟。
 - 下载**不是直连**：`cdn.xxx.tx.storage.hub.hoyosha.de/https://github.com/...` 是前缀式代理。
   卡片下方显示 CDN 是如实反映当前线路，不是没生效。
+
+
+
+
+### 13 上游同步（1.3.7-hotfix4）
+
+对照上游 `DuolaD/HoYoShade-Hub` 1.3.7 之后的 8 个提交，按本分支结构手工挑（没有 cherry-pick）。
+
+#### (1) 内测 / Beta 服没有 config.ini 也能启动
+- 问题：Beta / 内测 / 创作者体验服常常没有 `config.ini`，读不出版本号，
+  Hub 于是判成「游戏未安装」、启动按钮也不可用（上游 `d90b6dd`）。
+- 改法：正式服仍要求「exe 在 + 能读出版本」；Beta 服只要主程序 exe 在就当作已安装 / 可启动。
+- 文件：`GameLauncherPage.xaml.cs`（`canStart`）、`GameSettingPage.xaml.cs`（`isInstalled`）。
+
+#### (2) 下载服务器的多 host 重试
+- 问题：自动选择下载服务器时，每个服务器只随机取**一个** host；那个 host 不通，
+  整个服务器就白给，直接跳到下一台（上游 `4a070dd`）。
+- 改法：一个服务器名下的**所有** host 按随机顺序逐个试；接口返回空列表也算这次失败；
+  手动指定服务器同样走多 host 重试；全失败才抛错。
+- 文件：`HoYoShadeDownloadView.xaml.cs`（`GetOrderedProxies` + 取版本列表的两条路径）。
+
+#### (3) 管理员模式下顶部游戏图标无法排列
+- 问题：以管理员身份运行 Hub 时，顶部游戏图标拖不动、顺序改不了。
+- 根因：WinUI 的拖动重排（`ListView.CanReorderItems`）在提权进程里本来就不可用 ——
+  OLE 拖放跨完整性级别会被 UIPI 拦，管理员下开着它还可能崩（microsoft-ui-xaml#7690）。
+  Hub 里它被绑成 `CanReorderItems="{x:Bind IsAdmin, Converter=BoolReversedConverter}"`，
+  管理员下正好把拖动关掉，而右键菜单里又没有别的排序入口，于是谁也改不了顺序。
+- 改法（不依赖拖动）：图标右键菜单加「左移 / 右移」，纯命令式移动
+  （`GameBizIcons.Move` → `CollectionChanged` → `SelectedGameBizs` 照旧落盘）；
+  菜单打开期间不收起图标行；到边界时对应项置灰。
+  另外自定义游戏本来就不写进 `SelectedGameBizs`，它们的顺序仍不落盘（已知限制）。
+- 文件：`GameSelector.xaml`（菜单项 + `Opening`/`Closed`）、`GameSelector.xaml.cs`
+  （`_isContextMenuOpen` 守卫 + `MenuFlyoutItem_MoveLeft/Right_Click`）。
+
+#### (4) 向导页安装请求漏字段 + 文案走语言资源
+- 问题：向导页（快速开始）安装框架的 RPC 请求没带 `EnableEch` / `DohUrl` / `TotalBytes`，
+  开了 ECH/DoH 的机器在这里安装不生效，进度条也因为没有总大小算不出百分比（上游 `102ec2d`）。
+- 顺手：向导页底部按钮与 ReShade 下载页「下一步」改用 `WelcomeView_HoYoShadeHubStart`（上游 `190254f`）。
+- 文件：`QuickSetupView.xaml.cs`、`QuickSetupView.xaml`、`ReShadeDownloadView.xaml`。
+
+#### (5) 核对过、本分支已有等价实现（不用再搬）
+- `4cef52d`「忽略 DX12 兼容性检测」= 已有（`AppConfig.GetIgnoreDX12Check` + 设置对话框 + `HoYoPlayService`）。
+- `9b6e0fa`「安装状态」= 框架下载页（`HoYoShadeDownloadView`）已有已装 / 版本面板。
+- `bdadc23` / `23469a6`：独立的框架与启动器自动检查开关、两者「有新版本」提示都已有
+  （自研更新渠道 + 24 小时节流）。上游把框架自动检查再拆成 HoYoShade / OpenHoYoShade 两个开关这点没做。
+- `687318e`（快速开始页整体重做，含退回全量安装）与本分支「只装必要」语义冲突，不整体搬。
