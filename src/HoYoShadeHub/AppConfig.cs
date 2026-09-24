@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -1028,8 +1028,10 @@ public static class AppConfig
     /// </summary>
     public static int UpdateChannel
     {
-        get => GetValue(1);
-        set => SetValue(value);
+        // 本 fork 只从自己的仓库更新，渠道不再给用户切（关于页里的下拉也删了）。
+        // 这里直接写死 1，老配置里存过 0 的也会被纠正回来。
+        get => 1;
+        set { /* 固定本分支，忽略写入 */ }
     }
 
     /// <summary>上次成功拉取远端目录的时间（UTC，空 = 从没拉过）</summary>
@@ -1053,21 +1055,53 @@ public static class AppConfig
     }
 
     /// <summary>
-    /// 启动器更新下载服务器选择 (-1=Auto Select, 1=Cloudflare, 2=Tencent, 3=Alibaba)
+    /// 下载服务器选择（**全局一份**）：-1=自动选择, 0=GitHub 直连, 1=Cloudflare, 2=腾讯云,
+    /// 3=阿里云, 4=gh-proxy.org, 5=ghfast.top。
+    ///
+    /// <para>
+    /// 以前「关于页/更新窗口」和「HoYoShade/ReShade/OptiScaler 下载卡片」各存一份
+    /// （LauncherUpdateDownloadServer / HoYoShadeFrameworkDownloadServer），于是出现
+    /// 「关于页明明选了 GitHub 直连，下载卡片下面还是自家 CDN」 两个键不是一回事。
+    /// 现在读写同一个键 DownloadServer_V3；老键只在第一次读时用来做迁移。
+    /// </para>
     /// </summary>
-    public static int LauncherUpdateDownloadServer
+    public static int DownloadServer
     {
-        get => GetValue(-1, "LauncherUpdateDownloadServer_V2");
-        set => SetValue(value, "LauncherUpdateDownloadServer_V2");
+        get
+        {
+            if (HasValue("DownloadServer_V3"))
+            {
+                return GetValue(-1, "DownloadServer_V3");
+            }
+
+            // 迁移：老配置里哪份设过就用哪份（框架那份才是下载卡片用的，优先）
+            if (HasValue("HoYoShadeFrameworkDownloadServer_V2"))
+            {
+                return GetValue(-1, "HoYoShadeFrameworkDownloadServer_V2");
+            }
+
+            if (HasValue("LauncherUpdateDownloadServer_V2"))
+            {
+                return GetValue(-1, "LauncherUpdateDownloadServer_V2");
+            }
+
+            return -1;
+        }
+        set => SetValue(value, "DownloadServer_V3");
     }
 
-    /// <summary>
-    /// HoYoShade框架下载服务器选择 (-1=Auto Select, 0=GitHub Direct, 1=Cloudflare, 2=Tencent, 3=Alibaba)
-    /// </summary>
+    /// <summary>启动器自身更新用的服务器  和 DownloadServer 是同一个设置</summary>
+    public static int LauncherUpdateDownloadServer
+    {
+        get => DownloadServer;
+        set => DownloadServer = value;
+    }
+
+    /// <summary>HoYoShade / ReShade / OptiScaler 下载用的服务器  和 DownloadServer 是同一个设置</summary>
     public static int HoYoShadeFrameworkDownloadServer
     {
-        get => GetValue(-1, "HoYoShadeFrameworkDownloadServer_V2");
-        set => SetValue(value, "HoYoShadeFrameworkDownloadServer_V2");
+        get => DownloadServer;
+        set => DownloadServer = value;
     }
 
 
@@ -1196,6 +1230,28 @@ public static class AppConfig
     public static void SetModuleDllPath(string moduleId, string? value)
     {
         SetValue(value, $"module_dll_{moduleId}");
+    }
+
+    /// <summary>
+    /// 模块注入顺序（一行一个 key，列表里没有的排在后面、按默认顺序）。
+    /// <para>
+    /// 注入顺序是有意义的：桥 / 解锁类模块要在 OptiScaler 之前进进程，
+    /// 否则 hook 链顺序不对会互相打架。key 就是 <see cref="ModuleRegistry"/> 里的
+    /// 模块 id，或者手动加的那个 DLL 全路径。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> GetModuleOrder()
+    {
+        string? raw = GetValue<string>(default, "module_order");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : [.. raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    public static void SetModuleOrder(IEnumerable<string> keys)
+    {
+        string value = string.Join("\n", keys.Where(k => !string.IsNullOrWhiteSpace(k)).Distinct(StringComparer.OrdinalIgnoreCase));
+        SetValue(value.Length == 0 ? null : value, "module_order");
     }
 
     /// <summary>用户手动加的模块 DLL（一行一个路径）—— 原来「额外注入 DLL」里的那些</summary>
@@ -1363,15 +1419,86 @@ public static class AppConfig
 
 
 
-    /// <summary>OptiScaler 本地库根目录：&lt;用户数据目录&gt;\OptiScaler</summary>
+    /// <summary>
+    /// OptiScaler / 模块的本地库根目录。
+    ///
+    /// <para>
+    /// 放在 <b>HoYoShade 目录旁边</b>（<c>&lt;HoYoShade 根&gt;\..\OptiScaler</c>），
+    /// 而不是跟用户数据目录走。
+    /// </para>
+    ///
+    /// <para>
+    /// 原因（用户反馈）：插件（addon）装在 HoYoShade 目录下，而 OptiScaler/模块 原来跟
+    /// &lt;用户数据目录&gt; 走 —— 于是同一台机器上同时装了便携版和安装版时，两边各有各的
+    /// OptiScaler 库：从便携版装的构建，在安装版里看不到（反之亦然），用户会以为「装丢了」。
+    /// 统一到 HoYoShade 旁边之后，这一类东西整体跟着当前用的 HoYoShade 走。
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// 这个游戏注入 OptiScaler 时用的 DLL 文件名（默认 OptiScaler  OptiScaler.dll）。
+    /// 有些游戏会按 dll 名字判断是不是代理，所以允许改（用户要求）。
+    /// </summary>
+    public static string GetOptiScalerDllName(GameId gameId)
+        => GetValue("OptiScaler", $"opti_dll_name_{gameId.GameBiz}") ?? "OptiScaler";
+
+    public static void SetOptiScalerDllName(GameId gameId, string? name)
+        => SetValue(string.IsNullOrWhiteSpace(name) ? "OptiScaler" : name.Trim(), $"opti_dll_name_{gameId.GameBiz}");
+
     public static string OptiScalerRootPath
     {
         get
         {
+            // 基准跟着「插件所在的那个 HoYoShade 根」走，和插件同一个根。
+            // 不能只看 UserDataFolder：HoYoShade 可能被手动指定到别处
+            // （PluginHostLocator.ManualShadeRoot），那样插件在 A 盘、OptiScaler 却跑到 B 盘。
+            string? shadeParent = ResolveShadeParentFolder();
+
+            if (!string.IsNullOrWhiteSpace(shadeParent))
+            {
+                return Path.Combine(shadeParent, "OptiScaler");
+            }
+
             string? userData = UserDataFolder;
             return string.IsNullOrWhiteSpace(userData)
                 ? string.Empty
                 : Path.Combine(userData, "OptiScaler");
+        }
+    }
+
+    /// <summary>
+    /// 当前 HoYoShade 根目录的上一级（OptiScaler / 模块 就跟它并排）。
+    /// 找不到返回 null，调用方退回用户数据目录。
+    /// </summary>
+    private static string? ResolveShadeParentFolder()
+    {
+        try
+        {
+            // 用户在插件页「指定目录」指定过的那份优先
+            string? manual = Features.Plugins.PluginHostLocator.ManualShadeRoot;
+            if (!string.IsNullOrWhiteSpace(manual))
+            {
+                string? manualParent = Path.GetDirectoryName(manual.TrimEnd('\\', '/'));
+                if (!string.IsNullOrWhiteSpace(manualParent))
+                {
+                    return manualParent;
+                }
+            }
+
+            // 否则用默认位置（<用户数据目录>\HoYoShade）的上一级
+            string? userData = UserDataFolder;
+            if (string.IsNullOrWhiteSpace(userData))
+            {
+                return null;
+            }
+
+            string defaultRoot = Path.Combine(userData,
+                HoYoShadeHub.Extensions.Services.ShadeHostLocator.HoYoShadeFolderName);
+
+            return Directory.Exists(defaultRoot) ? userData : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -1821,6 +1948,39 @@ public static class AppConfig
         }
     }
 
+
+    /// <summary>这个设置键在库里有没有  用来区分「没设过」和「设成了默认值」</summary>
+    public static bool HasValue(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(UserDataFolder))
+        {
+            return false;
+        }
+
+        InitializeSettingProvider();
+        if (_settingCache is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (_settingCache.TryGetValue(key, out string? cached))
+            {
+                return cached is not null;
+            }
+
+            using var dapper = DatabaseService.CreateConnection();
+            string? value = dapper.QueryFirstOrDefault<string>(
+                "SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
+            _settingCache[key] = value;
+            return value is not null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static T? ConvertFromString<T>(string? value, T? defaultValue = default)
     {

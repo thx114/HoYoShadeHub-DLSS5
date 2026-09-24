@@ -54,6 +54,12 @@ public sealed partial class DllConfigPage : PageBase
     protected override void OnLoaded()
     {
         InstalledList.ItemsSource = Installed;
+
+        // 先把「下载服务器」这个设置推给 HysxHttp，再去拉组件清单。
+        // 不推的话 ProxyUrl 是 null，清单会直连 raw.githubusercontent.com ——
+        // 国内基本连不上，报出来就是一句 SSL connection could not be established。
+        PluginDownloadProxy.Apply();
+
         _ = RefreshAsync();
     }
 

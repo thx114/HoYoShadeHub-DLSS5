@@ -129,7 +129,7 @@ public sealed class ExtensionManagerService
     /// <summary>
     /// 查某个扩展在 GitHub 上有没有新版本。只对 github-release 来源有效。
     /// </summary>
-    public async Task<string?> CheckUpdateAsync(ExtensionManifest manifest, CancellationToken cancellationToken = default)
+    public async Task<string?> CheckUpdateAsync(ExtensionManifest manifest, CancellationToken cancellationToken = default, bool forceRefresh = false)
     {
         if (manifest.Source.Type != ExtensionSourceType.GithubRelease)
         {
@@ -138,7 +138,7 @@ public sealed class ExtensionManagerService
 
         var installed = await Store.FindAsync(manifest.Id, cancellationToken);
         var resolver = new GithubReleaseResolver();
-        GithubArtifact? artifact = await resolver.ResolveAsync(manifest.Source, null, cancellationToken);
+        GithubArtifact? artifact = await resolver.ResolveAsync(manifest.Source, null, cancellationToken, forceRefresh);
 
         if (artifact is null)
         {
@@ -157,10 +157,7 @@ public sealed class ExtensionManagerService
     /// 这个扩展能装哪些版本（新 → 旧）。
     /// 用户要求：「最好是可以直接下拉选择插件版本」。只对 github-release 来源有效，全程不碰 API 限额。
     /// </summary>
-    public async Task<List<ExtensionVersion>> ListVersionsAsync(
-        ExtensionManifest manifest,
-        int max = 30,
-        CancellationToken cancellationToken = default)
+    public async Task<List<ExtensionVersion>> ListVersionsAsync(ExtensionManifest manifest, int max = 30, CancellationToken cancellationToken = default, bool forceRefresh = false)
     {
         if (manifest.Source.Type != ExtensionSourceType.GithubRelease)
         {
@@ -168,7 +165,7 @@ public sealed class ExtensionManagerService
         }
 
         var resolver = new GithubReleaseResolver();
-        return await resolver.ListVersionsAsync(manifest.Source, max, cancellationToken);
+        return await resolver.ListVersionsAsync(manifest.Source, max, cancellationToken, forceRefresh);
     }
 
 

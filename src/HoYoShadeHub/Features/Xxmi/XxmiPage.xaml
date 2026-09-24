@@ -10,7 +10,7 @@
              mc:Ignorable="d">
 
     <!-- 顶部多留一点：第一行控件直接顶在窗口上沿会显得贴到标题栏 -->
-    <Grid Padding="36,24,36,12">
+    <Grid Padding="18,24,30,12">
         <!-- 侧边栏开合动画放在页面级资源里（放 Border.Resources 里 x:Name 生不成字段） -->
         <Grid.Resources>
             <Storyboard x:Name="Storyboard_ShowFilter">

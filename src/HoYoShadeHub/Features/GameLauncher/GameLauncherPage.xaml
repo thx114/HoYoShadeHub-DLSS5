@@ -9,7 +9,6 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:sch="using:HoYoShadeHub.Core.HoYoPlay"
              xmlns:sf="using:HoYoShadeHub.Frameworks"
-             xmlns:sfp="using:HoYoShadeHub.Features.PlayTime"
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
@@ -512,14 +511,6 @@
 
 
 
-            <!--  预下载  -->
-            
-
-            <!--  游戏时间  -->
-            <sfp:PlayTimeButton x:Name="Button_PlayTime"
-                                Grid.Column="1"
-                                CurrentGameBiz="{x:Bind CurrentGameBiz}" />
-
             <!--  启动游戏  -->
             <local:StartGameButton x:Name="Button_StartGame"
                                    Grid.Column="3"
@@ -527,6 +518,7 @@
                                    EnableGameLaunch="{x:Bind ShouldEnableStartButton}"
                                    IsInjectMode="{x:Bind IsShadeInjectMode, Mode=OneWay}"
                                    IsWaitProcessMode="{x:Bind IsWaitProcessMode, Mode=OneWay}"
+                                     IsWaitProcessOnlyMode="{x:Bind IsWaitProcessOnlyMode, Mode=OneWay}"
                                    IsShaderOnlyLaunchMode="{x:Bind IsShaderOnlyLaunchMode}"
                                    GameCommand="{x:Bind ClickStartGameButtonCommand}"
                                    GameState="{x:Bind GameState}"
@@ -724,12 +716,25 @@
                       ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
 
             <!--  帧率解锁：原神，目标帧率在左侧「游戏设置」页改  -->
-            <CheckBox x:Name="CheckBox_UseFpsUnlock"
-                      Content="帧率解锁"
-                      IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
-                      Margin="0,1"
-                      Visibility="{x:Bind FpsUnlockVisibility, Mode=OneWay}"
-                      ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。目标帧率在左侧「游戏设置」页设置。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。" />
+            <StackPanel Orientation="Horizontal"
+                        Spacing="2"
+                        Visibility="{x:Bind FpsUnlockVisibility, Mode=OneWay}">
+                <CheckBox x:Name="CheckBox_UseFpsUnlock"
+                          Content="帧率解锁"
+                          IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
+                          Margin="0,1"
+                          ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。目标帧率在左侧「游戏设置」页设置。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。" />
+                <!--  直接跳到游戏设置页去改目标帧率（省得用户自己找）  -->
+                <Button Width="28"
+                        Height="28"
+                        Margin="0,1,0,0"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Click="Button_FpsUnlockSettings_Click"
+                        ToolTipService.ToolTip="打开「游戏设置」页改目标帧率">
+                    <FontIcon FontSize="12" Glyph="&#xE713;" />
+                </Button>
+            </StackPanel>
 
             <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
             <CheckBox x:Name="CheckBox_UseModules"

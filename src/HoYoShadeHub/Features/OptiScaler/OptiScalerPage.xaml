@@ -9,7 +9,7 @@
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
-    <Grid Padding="36,4,36,12" RowSpacing="8">
+    <Grid Padding="18,4,30,12" RowSpacing="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -19,9 +19,6 @@
 
         <StackPanel Grid.Row="0" Spacing="2">
             <TextBlock FontSize="28" FontWeight="SemiBold" Text="OptiScaler" />
-            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="这个游戏用哪个 OptiScaler 构建（单选）。没选 = 这个游戏不注入。「全局开关」和「下载 / 删除构建」在左下角「全局插件 → OptiScaler」里。"
-                       TextWrapping="Wrap" />
         </StackPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
@@ -30,7 +27,19 @@
                        Style="{ThemeResource BodyStrongTextBlockStyle}" />
             <Button Click="Button_Refresh_Click" Content="刷新" />
             <Button Click="Button_OpenLibrary_Click" Content="打开 OptiScaler 目录" />
-            <Button Click="Button_ClearChoice_Click" Content="这个游戏不注入" />
+            <Button Click="Button_OpenPresetFolder_Click" Content="配置目录" />
+            <!--  注入用的 DLL 文件名（游戏会按名字认代理 dll）。默认 OptiScaler，最下面「自定义」可选其它名字  -->
+            <TextBlock VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="DLL 名称" />
+            <ComboBox x:Name="ComboBox_DllName"
+                      MinWidth="140"
+                      SelectionChanged="ComboBox_DllName_SelectionChanged" />
+            <TextBox x:Name="TextBox_CustomDllName"
+                     MinWidth="140"
+                     PlaceholderText="xxx.dll"
+                     TextChanged="TextBox_CustomDllName_TextChanged"
+                     Visibility="Collapsed" />
             <TextBlock x:Name="TextBlock_Count"
                        VerticalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -45,7 +54,14 @@
                   SelectionChanged="ListView_Builds_SelectionChanged">
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
-                    <Grid ColumnSpacing="10" Padding="0,6">
+                    <!--  单选卡片：加卡片样式（描边 + 圆角 + 内边距），比原来紧凑  -->
+                    <Border Margin="0,0,0,6"
+                            Padding="12,8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                    <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -53,25 +69,58 @@
 
                         <RadioButton Grid.Column="0"
                                      VerticalAlignment="Center"
+                                     MinWidth="0"
+                                     Padding="0,0,4,0"
                                      GroupName="OptiScalerBuild"
                                      IsChecked="{x:Bind IsSelected, Mode=OneWay}"
                                      IsHitTestVisible="False" />
 
-                        <StackPanel Grid.Column="1" Spacing="2">
-                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Title}" />
-                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Text="{x:Bind Detail}"
-                                       TextWrapping="Wrap" />
-                            <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Text="{x:Bind TagsText}" />
-                            <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                                       Style="{ThemeResource CaptionTextBlockStyle}"
-                                       Text="这个包里没有 OptiScaler.dll"
-                                       Visibility="{x:Bind DllMissingVisibility}" />
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <!--  第一行：名称（贴单选框）+ 位置 + 标签，全挤在一行  -->
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                           Text="{x:Bind Title}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock VerticalAlignment="Bottom"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="{x:Bind Detail}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock VerticalAlignment="Bottom"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="{x:Bind TagsText}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock VerticalAlignment="Bottom"
+                                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="这个包里没有 OptiScaler.dll"
+                                           Visibility="{x:Bind DllMissingVisibility}" />
+                            </StackPanel>
+                            <!--  第二行：下拉=直接切换；修改=改配置内容；保存当前=把当前生效的 ini 存回配置 -->
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock VerticalAlignment="Center"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="当前配置：" />
+                                <ComboBox MinWidth="160"
+                                          ItemsSource="{x:Bind PresetOptions, Mode=OneWay}"
+                                          SelectedItem="{x:Bind CurrentPreset, Mode=TwoWay}" />
+                                <Button Padding="8,2" Click="Button_PresetAdd_Click" ToolTipService.ToolTip="新增配置（空配置 / 复制现有 / 从网络下载）">
+                                    <FontIcon FontSize="14" Glyph="&#xE710;" />
+                                </Button>
+                                <Button Padding="8,2" Click="Button_PresetOpenFile_Click" ToolTipService.ToolTip="修改：用编辑器打开这份配置">
+                                    <FontIcon FontSize="14" Glyph="&#xE70F;" />
+                                </Button>
+                                <Button Padding="10,2" Click="Button_PresetRename_Click" Content="重命名" />
+                                <TextBlock VerticalAlignment="Center"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="{x:Bind CurrentProfileText}"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
                         </StackPanel>
                     </Grid>
+                    </Border>
                 </DataTemplate>
             </ListView.ItemTemplate>
         </ListView>

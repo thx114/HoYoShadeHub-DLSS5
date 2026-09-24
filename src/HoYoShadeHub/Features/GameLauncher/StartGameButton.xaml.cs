@@ -49,6 +49,9 @@ public sealed partial class StartGameButton : UserControl
     /// <summary>注入模式但没勾 HoYoShade / OpenHoYoShade：只等游戏进程注额外 DLL / OptiScaler</summary>
     public bool IsWaitProcessMode { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
 
+    /// <summary>静态提示：这次配置只会等进程起来注入，不会自己启动游戏（看勾选项，不看运行状态）</summary>
+    public bool IsWaitProcessOnlyMode { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
+
 
     public GameState GameState { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
 
@@ -77,7 +80,9 @@ public sealed partial class StartGameButton : UserControl
             ? "等游戏进程"
             : IsInjectMode
                 ? "启动注入器"
-                : IsShaderOnlyLaunchMode ? Lang.LauncherPage_StartMod : Lang.LauncherPage_StartGame,
+                : IsWaitProcessOnlyMode
+                    ? "启动（只等进程注入）"
+                    : IsShaderOnlyLaunchMode ? Lang.LauncherPage_StartMod : Lang.LauncherPage_StartGame,
         GameState.GameIsRunning => Lang.LauncherPage_GameIsRunning,
         GameState.InstallGame => Lang.InstallGameDialog_LocateGame,
         GameState.UpdateGame => Lang.LauncherPage_UpdateGame,

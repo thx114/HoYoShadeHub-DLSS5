@@ -165,7 +165,14 @@ public sealed class GameDiscoveryService
         };
 
         Store.Capture(entry);
-        Store.Save(StorePath);
+
+        // 存不下来就等于没加上（重启就没），当场说清楚比让用户自己发现好
+        if (!Store.Save(StorePath, out string? saveError))
+        {
+            return new AddCustomResult(null, false,
+                $"写不进游戏列表（{StorePath}）：{saveError}");
+        }
+
         return new AddCustomResult(entry, true, null);
     }
 

@@ -44,6 +44,25 @@ public sealed partial class AboutSetting : PageBase
         {
             UpdateDownloadServers();
         });
+
+    }
+
+    private bool _versionsLoaded;
+
+    /// <summary>
+    /// 用户点开「版本」下拉时才去拉列表。
+    /// 不在进页面时自动拉 —— 只是路过设置页不该打一次网络。
+    /// 拉过一次就记住，反复点开不会重复打。
+    /// </summary>
+    private async void ComboBox_GithubVersions_DropDownOpened(object sender, object e)
+    {
+        if (_versionsLoaded)
+        {
+            return;
+        }
+
+        _versionsLoaded = true;
+        await RefreshGithubVersionsAsync();
     }
     
     public ObservableCollection<DownloadServerItem> DownloadServers { get; }
@@ -71,12 +90,21 @@ public sealed partial class AboutSetting : PageBase
         int savedIndex = AppConfig.LauncherUpdateDownloadServer;
         
         DownloadServers.Clear();
-        // Add Auto Select option
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AutoSelect, ServerIndex = -1 });
-        // Skip GitHub direct for launcher updates
-        DownloadServers.Add(new DownloadServerItem { Name = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare, ServerIndex = 1 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_TencentCloud, ServerIndex = 2 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AlibabaCloud, ServerIndex = 3 });
+
+        // 统一从 DownloadServerCatalog 取。启动器更新跳过 GitHub 直连（走直连基本连不上）。
+        // 统一从 DownloadServerCatalog 取。
+        // 这里也列出 GitHub 直连 —— 用户要能自己选（以前跳过它，结果下拉里根本看不到）。
+        foreach (DownloadServerItem server in DownloadServerCatalog.Create(new Dictionary<int, string>
+        {
+            [-1] = Lang.HoYoShadeDownloadView_Server_AutoSelect,
+            [0] = Lang.HoYoShadeDownloadView_Server_GithubDirect,
+            [1] = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare,
+            [2] = Lang.HoYoShadeDownloadView_Server_TencentCloud,
+            [3] = Lang.HoYoShadeDownloadView_Server_AlibabaCloud,
+        }))
+        {
+            DownloadServers.Add(server);
+        }
         
         var toSelect = DownloadServers.FirstOrDefault(x => x.ServerIndex == savedIndex);
         _selectedDownloadServer = toSelect ?? DownloadServers[0];
@@ -118,20 +146,6 @@ public sealed partial class AboutSetting : PageBase
 
 
 
-
-    /// <summary>
-    /// 预览版
-    /// </summary>
-    public bool EnablePreviewRelease
-    {
-        get; set
-        {
-            if (SetProperty(ref field, value))
-            {
-                AppConfig.EnablePreviewRelease = value;
-            }
-        }
-    } = AppConfig.EnablePreviewRelease;
 
 
     public bool AutoCheckLauncherUpdateOnStartup
@@ -175,28 +189,6 @@ public sealed partial class AboutSetting : PageBase
 
     /// <summary>GitHub 渠道的版本列表</summary>
     public ObservableCollection<GithubVersionInfo> GithubVersions { get; } = [];
-
-    /// <summary>更新渠道下拉的选中项：0 官方 / 1 GitHub</summary>
-    public int UpdateChannelIndex
-    {
-        get => AppConfig.UpdateChannel;
-        set
-        {
-            if (AppConfig.UpdateChannel == value)
-            {
-                return;
-            }
-
-            AppConfig.UpdateChannel = value;
-            OnPropertyChanged(nameof(UpdateChannelIndex));
-            OnPropertyChanged(nameof(IsOfficialChannel));
-            OnPropertyChanged(nameof(IsGithubChannel));
-        }
-    }
-
-    public Visibility IsOfficialChannel => UpdateChannelIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
-
-    public Visibility IsGithubChannel => UpdateChannelIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>选中的 GitHub 版本</summary>
     public GithubVersionInfo? SelectedGithubVersion { get; set => SetProperty(ref field, value); }

@@ -52,29 +52,6 @@
             </StackPanel>
 
 
-            <!--  预览版更新  -->
-            <StackPanel Margin="0,12,0,0"
-                        Orientation="Horizontal"
-                        Spacing="8">
-                <ToggleSwitch IsOn="{x:Bind EnablePreviewRelease, Mode=TwoWay}"
-                              OffContent="{x:Bind lang:Lang.SettingPage_JoinPreviewReleaseChannel}"
-                              OnContent="{x:Bind lang:Lang.SettingPage_JoinPreviewReleaseChannel}" />
-                <Button Margin="0,2,0,0"
-                        Padding="4"
-                        VerticalAlignment="Center"
-                        Style="{ThemeResource DateTimePickerFlyoutButtonStyle}">
-                    <FontIcon FontSize="16"
-                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                              Glyph="&#xE9CE;" />
-                    <Button.Flyout>
-                        <Flyout>
-                            <TextBlock MaxWidth="380"
-                                       Text="{x:Bind lang:Lang.SettingPage_JoinPreviewReleaseChannelTip}"
-                                       TextWrapping="Wrap" />
-                        </Flyout>
-                    </Button.Flyout>
-                </Button>
-            </StackPanel>
 
             <ToggleSwitch Margin="0,8,0,0"
                           IsOn="{x:Bind AutoCheckLauncherUpdateOnStartup, Mode=TwoWay}"
@@ -112,23 +89,14 @@
                 </ComboBox.ItemTemplate>
             </ComboBox>
             
-            <!--  更新渠道：官方（RPC 元数据）/ GitHub（本 fork 的仓库，能一键更新 + 退回）  -->
-            <StackPanel Margin="0,12,0,0" Orientation="Horizontal" Spacing="8">
-                <TextBlock VerticalAlignment="Center" Text="更新渠道：" />
-                <ComboBox MinWidth="260" SelectedIndex="{x:Bind UpdateChannelIndex, Mode=TwoWay}">
-                    <ComboBoxItem Content="官方（RPC 元数据）" />
-                    <ComboBoxItem Content="GitHub · 本分支（thx114/HoYoShadeHub-DLSS5）" />
-                </ComboBox>
-            </StackPanel>
-
             <!--  GitHub 渠道：版本列表（比当前旧的就是退回）+ 一键安装  -->
-            <StackPanel Margin="0,8,0,0" Spacing="8" Visibility="{x:Bind IsGithubChannel, Mode=OneWay}">
+            <StackPanel Margin="0,8,0,0" Spacing="8">
                 <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Button Height="40" Command="{x:Bind RefreshGithubVersionsCommand}" Content="刷新版本列表" />
                     <ComboBox MinWidth="260"
                               Header="版本"
+                              DropDownOpened="ComboBox_GithubVersions_DropDownOpened"
                               ItemsSource="{x:Bind GithubVersions, Mode=OneWay}"
-                              PlaceholderText="点「刷新版本列表」"
+                              PlaceholderText="点开自动获取"
                               SelectedItem="{x:Bind SelectedGithubVersion, Mode=TwoWay}" />
                     <Button Height="40"
                             VerticalAlignment="Bottom"
@@ -152,42 +120,6 @@
                         Visibility="{x:Bind IsGithubRestartVisible, Mode=OneWay}" />
             </StackPanel>
 
-            <Grid Margin="0,12,0,0" ColumnSpacing="16" Visibility="{x:Bind IsOfficialChannel, Mode=OneWay}">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <!--  检查更新  -->
-                <Button Height="40"
-                        Padding="12,0,16,0"
-                        BorderThickness="0"
-                        Command="{x:Bind CheckUpdateCommand}"
-                        CornerRadius="4,20,20,4"
-                        Style="{ThemeResource AccentButtonStyle}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE752;" />
-                        <TextBlock Text="{x:Bind lang:Lang.SettingPage_CheckForUpdate}" />
-                    </StackPanel>
-                </Button>
-                <FontIcon Grid.Column="1"
-                          HorizontalAlignment="Left"
-                          FontSize="20"
-                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                          Glyph="&#xF78C;"
-                          Visibility="{x:Bind IsUpdated}" />
-                <ProgressRing Grid.Column="1"
-                              Width="20"
-                              Height="20"
-                              HorizontalAlignment="Left"
-                              IsIndeterminate="{x:Bind CheckUpdateCommand.IsRunning}"
-                              Visibility="{x:Bind CheckUpdateCommand.IsRunning}" />
-                <TextBlock Grid.Column="1"
-                           VerticalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           Text="{x:Bind UpdateErrorText}"
-                           TextWrapping="Wrap" />
-            </Grid>
 
             <!--  远端目录（插件 + OptiScaler）：平时每天自动拉一次，这里是手动拉  -->
             <Grid Margin="0,12,0,0" ColumnSpacing="16">

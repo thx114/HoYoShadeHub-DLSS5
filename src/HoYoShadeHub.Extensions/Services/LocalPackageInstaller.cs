@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using HoYoShadeHub.Extensions.Archives;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Services;
@@ -190,7 +191,7 @@ public sealed class LocalPackageInstaller
 
             if (Path.GetExtension(file).Equals(".zip", StringComparison.OrdinalIgnoreCase))
             {
-                ZipFile.ExtractToDirectory(file, Path.Combine(work, "payload"), overwriteFiles: true);
+                ZipExtractor.ExtractToDirectory(file, Path.Combine(work, "payload"));
                 addonFiles.AddRange(Directory.EnumerateFiles(
                     Path.Combine(work, "payload"), "*", SearchOption.AllDirectories)
                     .Where(f => IsAddonFile(f)));
@@ -263,7 +264,7 @@ public sealed class LocalPackageInstaller
             string extract = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
             try
             {
-                ZipFile.ExtractToDirectory(file, extract, overwriteFiles: true);
+                ZipExtractor.ExtractToDirectory(file, extract);
                 CopyTree(extract, target);
 
                 // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll
@@ -366,7 +367,7 @@ public sealed class LocalPackageInstaller
             string extract = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
             try
             {
-                ZipFile.ExtractToDirectory(file, extract, overwriteFiles: true);
+                ZipExtractor.ExtractToDirectory(file, extract);
                 CopyTree(extract, target);
             }
             finally

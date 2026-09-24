@@ -47,9 +47,9 @@ public sealed partial class AppBackground : UserControl
         WeakReferenceMessenger.Default.Register<BackgroundChangedMessage>(this, OnBackgroundChanged);
         WeakReferenceMessenger.Default.Register<MainWindowStateChangedMessage>(this, OnMainWindowStateChanged);
         WeakReferenceMessenger.Default.Register<VideoBgVolumeChangedMessage>(this, OnVideoBgVolumeChanged);
-        // 游戏跑起来就把视频背景停掉、显存放掉（用户要求）；游戏退出再reload回来
-        WeakReferenceMessenger.Default.Register<GameStartedMessage>(this, OnGameStarted);
-        WeakReferenceMessenger.Default.Register<GameExitedMessage>(this, OnGameExited);
+        // 【已按用户要求去掉】以前这里订阅 GameStarted/GameExited：游戏跑起来就 DisposeVideoResource()
+        // 停直播放（释放显存）、退出再 reload 回来。现在游戏运行时背景照常播，不再停/不再重载。
+        // 注：OnGameStarted / OnGameExited / _videoReleasedForGame 保留但不再被触发，便于日后需要时恢复。
         this.Loaded += AppBackground_Loaded;
         this.Unloaded += AppBackground_Unloaded;
     }

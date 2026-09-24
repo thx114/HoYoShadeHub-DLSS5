@@ -370,6 +370,10 @@ public sealed partial class GameSelector : UserControl
             }
             catch { }
         }
+
+        // 抠不出图标（exe 不在 / 缩略图取不到）也必须刷一次：刷新原本只写在「抠到了」的分支里，
+        // 于是新加的游戏进不了「选择游戏」面板，用户看到的表现就是「加了却在列表里找不到」。
+        RefreshCustomGameDisplays();
     }
 
 
@@ -544,11 +548,18 @@ public sealed partial class GameSelector : UserControl
             string? exe = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("游戏主程序", ".exe"));
             if (string.IsNullOrWhiteSpace(exe))
             {
+                // 用户取消 和 选择器没弹出来，都走这里。记一条，免得线上只报「加不了游戏」却查不出是哪一种。
+                _logger.LogInformation("Add custom game: no exe picked (cancelled, or the picker never showed)");
                 return;
             }
 
+            _logger.LogInformation("Add custom game: picked {Exe}", exe);
+
             GameDiscoveryService service = GameCatalog.CreateService();
             AddCustomResult result = service.AddCustom(exe);
+
+            _logger.LogInformation("Add custom game: added={Added}, biz={Biz}, error={Error}",
+                result.Added, result.Entry?.CustomBiz.Value, result.Error);
 
             if (result.Entry is null)
             {
@@ -595,6 +606,7 @@ public sealed partial class GameSelector : UserControl
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Add custom game failed");
             Debug.WriteLine(ex);
             InAppToast.MainWindow?.Error("添加游戏", ex.Message, 6000);
         }

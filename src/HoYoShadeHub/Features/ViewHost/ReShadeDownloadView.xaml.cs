@@ -99,11 +99,19 @@ public sealed partial class ReShadeDownloadView : UserControl
     {
         var selectedIndex = SelectedDownloadServer?.ServerIndex ?? AppConfig.HoYoShadeFrameworkDownloadServer;
         DownloadServers.Clear();
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AutoSelect, ServerIndex = -1 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_GithubDirect, ServerIndex = 0 });
-        DownloadServers.Add(new DownloadServerItem { Name = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare, ServerIndex = 1 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_TencentCloud, ServerIndex = 2 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AlibabaCloud, ServerIndex = 3 });
+
+        // 统一从 DownloadServerCatalog 取，免得以后加服务器时这里漏改
+        foreach (DownloadServerItem server in DownloadServerCatalog.Create(new Dictionary<int, string>
+        {
+            [-1] = Lang.HoYoShadeDownloadView_Server_AutoSelect,
+            [0] = Lang.HoYoShadeDownloadView_Server_GithubDirect,
+            [1] = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare,
+            [2] = Lang.HoYoShadeDownloadView_Server_TencentCloud,
+            [3] = Lang.HoYoShadeDownloadView_Server_AlibabaCloud,
+        }))
+        {
+            DownloadServers.Add(server);
+        }
         
         var toSelect = DownloadServers.FirstOrDefault(x => x.ServerIndex == selectedIndex);
         SelectedDownloadServer = toSelect ?? DownloadServers[0];

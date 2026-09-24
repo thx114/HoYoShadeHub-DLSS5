@@ -346,12 +346,25 @@ public sealed class GamePluginService
         }
     }
 
-    /// <summary>是不是 DLSS5 那一类插件</summary>
-    public bool IsDlss5Addon(string addonFileName) => DlssDllRequirements.IsDlss5(TagsOf(addonFileName));
+    /// <summary>
+    /// 是不是 DLSS5 那一类插件。两条判据取并集：
+    /// <list type="bullet">
+    /// <item>扩展目录里给的 tags 里有 <c>dlss5</c>（首选）</item>
+    /// <item>文件名 slug 里带 <c>dlss5</c>（标签表没配到 / 没更新时的兜底）</item>
+    /// </list>
+    /// 只看 tags 会漏判 —— 用户手里明明是 DLSS5 的插件，标签表里没有，
+    /// 结果「从 DllMain 加载」被灰掉、写盘也被拒。
+    /// </summary>
+    public bool IsDlss5Addon(string addonFileName)
+        => DlssDllRequirements.IsDlss5(TagsOf(addonFileName))
+           || (AddonFileInfo.Parse(addonFileName)?.IsDlss5ByName ?? false);
 
     /// <summary>
-    /// 把「开着但没勾 LoadFromDllMain」的 DLSS5 插件补上。
-    /// 用户要求：DLSS5 类插件只要启用了就默认从 DllMain 加载。
+    /// 把 LoadFromDllMain 对齐「只有 DLSS5 插件才该在里面」这条规则：
+    /// <list type="bullet">
+    /// <item>开着但没勾的 DLSS5 插件 —— 补上（用户要求：DLSS5 插件启用就默认从 DllMain 加载）</item>
+    /// <item>不是 DLSS5 却已经在里面的 —— 摘掉（老版本留下的脏数据）</item>
+    /// </list>
     /// </summary>
     /// <returns>补了几个</returns>
     public int SyncDlss5LoadFromDllMain()
@@ -362,15 +375,26 @@ public sealed class GamePluginService
         }
 
         int added = 0;
+        bool pruned = false;
 
         foreach (AddonFileInfo file in AddonFileInfo.ScanDirectory(AddonDirectory ?? string.Empty))
         {
-            if (file.IsRenamedDisabled || !IsDlss5Addon(file.FileName))
+            bool isDlss5 = IsDlss5Addon(file.FileName);
+            bool inList = Profile.IsLoadFromDllMain(file.FileName);
+
+            // 非 DLSS5 却挂在 LoadFromDllMain 上 —— 清掉
+            if (!isDlss5)
             {
+                if (inList)
+                {
+                    Profile.RemoveLoadFromDllMain(file.FileName);
+                    pruned = true;
+                }
+
                 continue;
             }
 
-            if (Profile.IsDisabled(file.FileName) || Profile.IsLoadFromDllMain(file.FileName))
+            if (file.IsRenamedDisabled || Profile.IsDisabled(file.FileName) || inList)
             {
                 continue;
             }
@@ -379,7 +403,7 @@ public sealed class GamePluginService
             added++;
         }
 
-        if (added > 0)
+        if (added > 0 || pruned)
         {
             Profile.Save();
         }
@@ -537,9 +561,19 @@ public sealed class GamePluginService
     }
 
     /// <summary>写 LoadFromDllMain（**空槽位保留**，不能整串重排）</summary>
+    /// <remarks>
+    /// 只有 DLSS5 那一类插件允许「从 DllMain 加载」。别的插件要开就直接拒掉：
+    /// 界面上的勾本来就是灰的，这里是兜底（旧配置、自动同步、将来别处调用都走这里）。
+    /// </remarks>
     public bool SetLoadFromDllMain(string addonFileName, bool value)
     {
         if (Profile is null || string.IsNullOrWhiteSpace(addonFileName))
+        {
+            return false;
+        }
+
+        // 关掉一律放行；开只有 DLSS5 插件可以
+        if (value && !IsDlss5Addon(addonFileName))
         {
             return false;
         }

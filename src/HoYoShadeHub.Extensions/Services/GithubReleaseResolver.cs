@@ -69,6 +69,104 @@ public sealed class GithubReleaseResolver
     private static readonly Regex _assetHrefRegex = new(
         @"/releases/download/(?<tag>[^/""]+)/(?<asset>[^""<]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    #region 缓存（用户要求：一天只自动拉一次；手动按钮强制刷新）
+
+    /// <summary>
+    /// 缓存目录。默认落在 <c>%LOCALAPPDATA%\HoYoShadeHub\github-cache</c>（纯缓存，丢了就重拉）。
+    /// 不依赖主程序的用户数据目录  Extensions 层拿不到 AppConfig。
+    /// </summary>
+    public static string? CacheDirectory { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "HoYoShadeHub", "github-cache");
+
+    /// <summary>自动检查的缓存有效期。默认 24 小时：一天之内进页面/切标签都用缓存，不再打 GitHub。</summary>
+    public static TimeSpan CacheTtl { get; set; } = TimeSpan.FromHours(24);
+
+    private sealed record CacheEntry(DateTime FetchedUtc, string Json);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CacheEntry> _cache = new();
+
+    /// <summary>读缓存；<paramref name="forceRefresh"/> = true（手动按钮）时直接不读。</summary>
+    private static T? ReadCache<T>(string key, bool forceRefresh) where T : class
+    {
+        try
+        {
+            if (forceRefresh)
+            {
+                return null;
+            }
+
+            if (_cache.TryGetValue(key, out CacheEntry? hot) && DateTime.UtcNow - hot.FetchedUtc < CacheTtl)
+            {
+                return JsonSerializer.Deserialize<T>(hot.Json);
+            }
+
+            string? path = CachePathOf(key);
+            if (path is null || !File.Exists(path))
+            {
+                return null;
+            }
+
+            // 文件格式：第一行 ISO 抓取时间，其余是 JSON
+            string text = File.ReadAllText(path);
+            int split = text.IndexOf(char.Parse("\n"));
+            if (split <= 0)
+            {
+                return null;
+            }
+
+            string stamp = text[..split].Trim();
+            string json = text[(split + 1)..];
+            if (!DateTime.TryParse(stamp, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime when)
+                || DateTime.UtcNow - when >= CacheTtl)
+            {
+                return null;
+            }
+
+            _cache[key] = new CacheEntry(when, json);
+            return JsonSerializer.Deserialize<T>(json);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void WriteCache<T>(string key, T value)
+    {
+        try
+        {
+            string json = JsonSerializer.Serialize(value);
+            _cache[key] = new CacheEntry(DateTime.UtcNow, json);
+
+            string? path = CachePathOf(key);
+            if (path is not null)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + "\n" + json);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string? CachePathOf(string key)
+    {
+        string? dir = CacheDirectory;
+        if (string.IsNullOrWhiteSpace(dir))
+        {
+            return null;
+        }
+
+        string hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key)))[..24];
+        return Path.Combine(dir, hash + ".json");
+    }
+
+    #endregion
+
     public GithubReleaseResolver(HttpClient? httpClient = null)
     {
         _httpClient = httpClient ?? HysxHttp.CreateClient(timeout: TimeSpan.FromSeconds(60));
@@ -79,17 +177,42 @@ public sealed class GithubReleaseResolver
     /// <summary>
     /// 解析一个 github-release 来源，得到「下哪个地址」。
     /// </summary>
-    public async Task<GithubArtifact?> ResolveAsync(ExtensionSource source, CancellationToken cancellationToken = default)
-        => await ResolveAsync(source, null, cancellationToken);
-
     /// <summary>
     /// 解析一个 github-release 来源；<paramref name="tagOverride"/> 不为空时**装指定版本**
     /// （用户要求：可以下拉选插件版本）。
     /// </summary>
     public async Task<GithubArtifact?> ResolveAsync(
         ExtensionSource source,
+        string? tagOverride = null,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false)
+    {
+        string? repo = HysxUtil.NormalizeRepository(source.Repository);
+        if (repo is null)
+        {
+            throw new ArgumentException($"不是合法的 GitHub 仓库: {source.Repository}", nameof(source));
+        }
+
+        string key = $"art|{repo}|{tagOverride}|{source.AssetName}|{source.AssetPattern}";
+        if (ReadCache<GithubArtifact>(key, forceRefresh) is { } cached)
+        {
+            return cached;
+        }
+
+        GithubArtifact? resolved = await ResolveCoreAsync(source, tagOverride, cancellationToken);
+        if (resolved is not null)
+        {
+            WriteCache(key, resolved);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>真正干活的版本（包装层负责缓存）</summary>
+    private async Task<GithubArtifact?> ResolveCoreAsync(
+        ExtensionSource source,
         string? tagOverride,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         string? repo = HysxUtil.NormalizeRepository(source.Repository);
         if (repo is null)
@@ -257,7 +380,36 @@ public sealed class GithubReleaseResolver
     public async Task<List<ExtensionVersion>> ListVersionsAsync(
         ExtensionSource source,
         int max = 30,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false)
+    {
+        string? repo = HysxUtil.NormalizeRepository(source.Repository);
+        if (repo is null)
+        {
+            throw new ArgumentException($"不是合法的 GitHub 仓库: {source.Repository}", nameof(source));
+        }
+
+        // 用户要求：自动检查一天只拉一次；点「检查更新」这类手动动作传 forceRefresh: true
+        string key = $"ver|{repo}|{max}|{source.TagPattern}";
+        if (ReadCache<List<ExtensionVersion>>(key, forceRefresh) is { } cached)
+        {
+            return cached;
+        }
+
+        List<ExtensionVersion> list = await ListVersionsCoreAsync(source, max, cancellationToken);
+        if (list.Count > 0)
+        {
+            WriteCache(key, list);
+        }
+
+        return list;
+    }
+
+    /// <summary>真正干活的版本（包装层负责缓存）</summary>
+    private async Task<List<ExtensionVersion>> ListVersionsCoreAsync(
+        ExtensionSource source,
+        int max,
+        CancellationToken cancellationToken)
     {
         string? repo = HysxUtil.NormalizeRepository(source.Repository);
         if (repo is null)
@@ -562,7 +714,36 @@ public sealed class GithubReleaseResolver
     public async Task<List<string>> GetAssetNamesFromHtmlAsync(
         string repository,
         string tag,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false)
+    {
+        string? repo = HysxUtil.NormalizeRepository(repository);
+        if (repo is null)
+        {
+            throw new ArgumentException($"不是合法的 GitHub 仓库: {repository}", nameof(repository));
+        }
+
+        // 某个 tag 的资产清单不会变，缓存一天  选版本 / 安装时别反复打 GitHub（用户要求）
+        string key = $"assets|{repo}|{tag}";
+        if (ReadCache<List<string>>(key, forceRefresh) is { } cached)
+        {
+            return cached;
+        }
+
+        List<string> names = await GetAssetNamesFromHtmlCoreAsync(repository, tag, cancellationToken);
+        if (names.Count > 0)
+        {
+            WriteCache(key, names);
+        }
+
+        return names;
+    }
+
+    /// <summary>真正去抓 expanded_assets 的那个（包装层负责缓存）</summary>
+    private async Task<List<string>> GetAssetNamesFromHtmlCoreAsync(
+        string repository,
+        string tag,
+        CancellationToken cancellationToken)
     {
         var names = new List<string>();
 

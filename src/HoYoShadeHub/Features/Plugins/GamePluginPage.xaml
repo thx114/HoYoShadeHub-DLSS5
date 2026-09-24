@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8" ?>
+<?xml version="1.0" encoding="utf-8" ?>
 <sf:PageBase x:Class="HoYoShadeHub.Features.Plugins.GamePluginPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -9,7 +9,7 @@
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
-    <Grid Padding="36,8,36,20" RowSpacing="12">
+    <Grid Padding="18,8,30,20" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -24,14 +24,34 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
+            <!--  「插件」标题右边紧跟 NV 驱动提示（用户要求：放右侧，不放下面）  -->
             <StackPanel Grid.Column="0" Spacing="2">
-                <TextBlock Style="{ThemeResource TitleTextBlockStyle}" Text="插件" />
-                <!--  用 DLSS5 插件时检查 NVIDIA 驱动版本（用户要求的红/黄区间）  -->
-                <TextBlock x:Name="TextBlock_DriverWarning"
-                           Margin="0,2,0,0"
-                           Style="{ThemeResource CaptionTextBlockStyle}"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed" />
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <TextBlock VerticalAlignment="Center"
+                               Style="{ThemeResource TitleTextBlockStyle}"
+                               Text="插件" />
+                    <!--  用 DLSS5 插件时检查 NVIDIA 驱动版本（用户要求的红/黄区间）  -->
+                    <TextBlock x:Name="TextBlock_DriverWarning"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed" />
+                </StackPanel>
+                <!--  第 1 列：游戏名 - 主程序；第 2 列：插件目录  -->
+                <StackPanel Margin="0,2,0,0"
+                            Orientation="Horizontal"
+                            Spacing="16">
+                    <TextBlock x:Name="TextBlock_GameMeta"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               TextWrapping="Wrap" />
+                    <TextBlock x:Name="TextBlock_TargetPath"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Text="正在检测 HoYoShade…"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
                 <!--  这份 ini 的 AddonPath 和当前 HoYoShade 不一致时提示（红黄标是按这个游戏的目录算的）  -->
                 <TextBlock x:Name="TextBlock_PathHint"
                            Margin="0,4,0,0"
@@ -151,13 +171,15 @@
                                                       OffContent="禁用"
                                                       OnContent="启用" />
 
+                                        <!--  只有 DLSS5 类插件才显示这条（非 DLSS5 直接不出现，不是变灰）  -->
                                         <CheckBox Grid.Row="1"
                                                   Margin="0,4,0,0"
                                                   HorizontalAlignment="Right"
-                                                  Content="从 DllMain 加载（LoadFromDllMain）"
+                                                  Content="LoadFromDllMain"
                                                   IsChecked="{x:Bind LoadFromDllMain, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind CanEditLoadFromDllMain, Mode=OneWay}"
-                                                  ToolTipService.ToolTip="DLSS5 的帧生成需要在 DllMain 阶段就加载；空槽位会原样保留" />
+                                                  ToolTipService.ToolTip="DLSS5 的帧生成需要在 DllMain 阶段就加载；空槽位会原样保留"
+                                                  Visibility="{x:Bind LoadFromDllMainVisibility, Mode=OneWay}" />
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -189,45 +211,41 @@
                                    Style="{ThemeResource SubtitleTextBlockStyle}"
                                    Text="未选择游戏"
                                    TextWrapping="Wrap" />
-                        <TextBlock x:Name="TextBlock_GameMeta"
+                        <!--  「N 个插件，启用 M 个」：原来在页面最底部，现在提到这儿（配置栏第一屏）  -->
+                        <TextBlock x:Name="TextBlock_AddonSummary"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                    Style="{ThemeResource CaptionTextBlockStyle}"
-                                   TextWrapping="Wrap" />
-                        <TextBlock x:Name="TextBlock_TargetPath"
-                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                   Text="正在检测 HoYoShade…"
-                                   TextTrimming="CharacterEllipsis" />
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
 
                         <MenuFlyoutSeparator Margin="0,4,0,0" />
 
                         <!--  插件配置（目前只有 hook 点）。
                              注入模式不在这儿 —— 它是启动相关的东西，放在启动器页开始游戏按钮左边。  -->
                         <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="插件配置" />
-                        <ComboBox x:Name="ComboBox_HookPoint"
-                                  HorizontalAlignment="Stretch"
-                                  Header="HookPoint"
-                                  SelectionChanged="ComboBox_HookPoint_SelectionChanged">
-                            <ComboBoxItem Content="off" />
-                            <ComboBoxItem Content="1" />
-                            <ComboBoxItem Content="2" />
-                            <ComboBoxItem Content="3" />
-                            <ComboBoxItem Content="4" />
-                        </ComboBox>
-                        <TextBlock x:Name="TextBlock_HookPointHint"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                   TextWrapping="Wrap" />
+                        <!--  HookPoint 标签和下拉框横向并排（竖着摆会白占一行高度）  -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock VerticalAlignment="Center" Text="HookPoint" />
+                            <ComboBox x:Name="ComboBox_HookPoint"
+                                      MinWidth="140"
+                                      SelectionChanged="ComboBox_HookPoint_SelectionChanged">
+                                <ComboBoxItem Content="off" />
+                                <ComboBoxItem Content="1" />
+                                <ComboBoxItem Content="2" />
+                                <ComboBoxItem Content="3" />
+                                <ComboBoxItem Content="4" />
+                            </ComboBox>
+                        </StackPanel>
                         <CheckBox x:Name="CheckBox_ForceHookOff"
                                   Checked="CheckBox_ForceHookOff_Changed"
                                   Content="启动游戏时强制 off"
                                   ToolTipService.ToolTip="勾上后，每次从这里启动/注入这个游戏之前，先把 hook 点写成 0（免得忘了改回来导致游戏起不来）"
                                   Unchecked="CheckBox_ForceHookOff_Changed" />
-                        <CheckBox x:Name="CheckBox_HookStreamline"
-                                  Checked="CheckBox_HookStreamline_Changed"
-                                  Content="HookStreamline（跳过 Streamline Present 钩子）"
-                                  ToolTipService.ToolTip="外部注入时 Streamline 已先挂好 Present 钩子。勾上后往 [INSTALL] 写 HookStreamline=1，让 DLSS 插件跳过 Streamline 的 Present 钩子，避免双重 hook / 顺序错乱（ShortFuse 给的兜底）。"
-                                  Unchecked="CheckBox_HookStreamline_Changed" />
+                        <TextBlock x:Name="TextBlock_HookPointHint"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   TextWrapping="Wrap"
+                                   Visibility="Collapsed" />
 
                         <MenuFlyoutSeparator Margin="0,4,0,0" />
 

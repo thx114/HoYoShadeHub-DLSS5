@@ -199,12 +199,27 @@ public static class ModuleRegistry
         foreach (string path in AppConfig.GetManualModuleDlls())
         {
             bool exists = File.Exists(path);
+            string fileName = Path.GetFileName(path);
+
+            // 需求3：手动加的 DLL 如果文件名能对上目录里某个模块要装的 DLL，
+            // 就把它当成那个模块 —— 复用可下载卡片的介绍 / 标签 / 主页，
+            // 界面上显示的也是模块本名，而不是一串裸文件名。
+            // 版本号未知没关系，先留空，PE 里读到就显示。
+            ModuleDefinition? matched = All().FirstOrDefault(
+                m => !string.IsNullOrWhiteSpace(m.DllHint)
+                     && string.Equals(Path.GetFileName(m.DllHint), fileName, StringComparison.OrdinalIgnoreCase));
+
             entries.Add(new ModuleEntry
             {
                 Key = path,
-                Name = Path.GetFileName(path),
-                Description = exists ? path : path + "（文件已经不在了）",
+                Name = matched?.Name ?? fileName,
+                Description = exists
+                    ? matched?.Description ?? path
+                    : path + "（文件已经不在了）",
+                Tags = matched?.Tags,
+                Homepage = matched?.Homepage,
                 IsBuiltin = false,
+                Definition = null,
                 DllPath = exists ? path : null,
                 GloballyEnabled = AppConfig.IsManualModuleDllEnabled(path),
             });
@@ -238,10 +253,16 @@ public static class ModuleRegistry
         AppConfig.SetUsedModuleKeys(gameId, keys);
     }
 
-    /// <summary>这个游戏启动时真正要注入的模块：勾了 ∩ 全局开着 ∩ 文件在</summary>
+    /// <summary>
+    /// 这个游戏启动时真正要注入的模块：勾了 ∩ 全局开着 ∩ 文件在。
+    /// <para>
+    /// 顺序按用户在「模块」页排的来（<see cref="AppConfig.GetModuleOrder"/>）；
+    /// 没排过的排在后面，保持默认顺序 —— 这样新装的模块不会插队到用户排好的前面。
+    /// </para>
+    /// </summary>
     public static List<(string Name, string DllPath)> ResolveInjectionDlls(GameId gameId)
     {
-        var result = new List<(string Name, string DllPath)>();
+        var result = new List<(string Key, string Name, string DllPath)>();
 
         foreach (ModuleEntry entry in List())
         {
@@ -255,10 +276,71 @@ public static class ModuleRegistry
                 continue;
             }
 
-            result.Add((entry.Name, entry.DllPath));
+            result.Add((entry.Key, entry.Name, entry.DllPath));
         }
 
-        return result;
+        IReadOnlyList<string> order = AppConfig.GetModuleOrder();
+
+        return [.. result
+            .OrderBy(r =>
+            {
+                int index = -1;
+                for (int i = 0; i < order.Count; i++)
+                {
+                    if (string.Equals(order[i], r.Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                // 没排过的统一给一个大值，稳定排序保证它们保持 List() 的默认次序
+                return index < 0 ? int.MaxValue : index;
+            })
+            .Select(r => (r.Name, r.DllPath))];
+    }
+
+    /// <summary>当前注入顺序下的全部模块 key（含没装的）——「模块」页排序用</summary>
+    public static List<string> OrderedKeys()
+    {
+        List<string> all = [.. List().Select(e => e.Key)];
+        IReadOnlyList<string> order = AppConfig.GetModuleOrder();
+
+        return [.. all.OrderBy(k =>
+        {
+            int index = -1;
+            for (int i = 0; i < order.Count; i++)
+            {
+                if (string.Equals(order[i], k, StringComparison.OrdinalIgnoreCase))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            return index < 0 ? int.MaxValue : index;
+        })];
+    }
+
+    /// <summary>把 key 上移 / 下移一位，落盘。返回 false = 已经在头 / 尾</summary>
+    public static bool MoveModule(string key, int delta)
+    {
+        List<string> ordered = OrderedKeys();
+        int index = ordered.FindIndex(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            return false;
+        }
+
+        int target = index + delta;
+        if (target < 0 || target >= ordered.Count)
+        {
+            return false;
+        }
+
+        (ordered[index], ordered[target]) = (ordered[target], ordered[index]);
+        AppConfig.SetModuleOrder(ordered);
+        return true;
     }
 
     // ===================== DLL 解析 / 迁移 / 部署 =====================

@@ -1130,3 +1130,52 @@ ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UT
 
 
 
+
+### 12 启动器四条功能（1.3.6b1）
+
+#### (1) 驱动配置：DLSS-FG 多帧生成数量改为 N/A
+
+- 用户要在「兼容性检测」里查这项，并且「启用 opt 启动游戏」时也要查、不对就弹窗。
+- **事实来源（别再猜）**：`OptiScaler-MFG-Ada/external/nvapi/` 里有 NVAPI 官方头。
+  - `nvapi_interface.h`：全部接口 ID（例如 `NvAPI_DRS_GetSettingIdFromName = 0xcb7309cd`、
+    `NvAPI_DRS_FindApplicationByName = 0xeee566b2`、`NvAPI_DRS_SetSetting = 0x577dd202`）。
+  - `NvApiDriverSettings.h`：设置项 **ID 与取值**。这条就是
+    `NGX_DLSSG_MULTI_FRAME_COUNT_ID = 0x104D6667`（"Override DLSSG multi-frame count"），
+    取值 `OFF=0 / MIN=1 / MAX=15 / DEFAULT=OFF`；Profile Inspector 的「N/A」= `0xFFFFFFFF`。
+- **结构体布局**（手算，别再照抄网上的 C# 绑定）：`NvAPI_UnicodeString` 是内联的 `NvU16[2048]`（4096 字节），
+  且 `NVAPI_BINARY_DATA_MAX = 4096`。于是 `NVDRS_SETTING_V1`：version@0、settingName@4(4096B)、settingId@4100、
+  settingType@4104、settingLocation@4108、isCurrentPredefined@4112、isPredefinedValid@4116、
+  union@4120(4100B) 2，**sizeof = 12320**，version 字段 = `12320 | (1<<16)`。
+  `NVDRS_APPLICATION_V4` sizeof = 20492（version@0、isPredefined@4、appName@8、userFriendlyName@4104、
+  launcher@8200、fileInFolder@12296、bits@16392、commandLine@16396）。
+- 实现：`Features/Plugins/NvDrsMfgCount.cs`（`nvapi64.dll` + `nvapi_QueryInterface`；
+  读/写都走「先读原值  写  回读确认」）；检测项在 `Dlss5CompatibilityCheck.cs` 第 17 条；
+  启动前弹窗在 `GameLauncherPage.ConfirmNvMfgCountAsync()`。
+- 读不到 / 没覆盖 / 已是 N/A / 写失败一律放行  驱动配置写坏了很难手工找回来，所以宁可不改也不拦。
+
+#### (2) OptiScaler 配置预设
+
+- 布局（用户原话）：卡片最左单选框不变；名称往左贴近单选框、**位置挪到名称右侧**；
+  名称下方改成「当前配置：【下拉框】新增 修改」。
+- `Features/OptiScaler/OptiScalerPresets.cs`：预设 = `<OptiScaler 根>\presets\<名字>.ini`；
+  套用 = 写 `profiles\<游戏>.ini` + `OptiScalerProfiles.Activate()` 顶成主 ini。
+  「修改」= 把构建当前生效的 `OptiScaler.ini` 覆盖回预设（`CaptureFromBuild`）。
+- `Features/OptiScaler/OptiScalerPresetCatalog.cs`：远端索引 `catalog/optiscaler-presets.json` +
+  内容 `catalog/preset-files/*.ini`，取文件按「GitHub 直连  gh-proxy.org  ghfast.top」并复用
+  `CloudProxyManager` 的失败冷却。
+- **DataTemplate 里只能用绑定 + `Click`**：本仓库已知 `RadioButtons.SelectionChanged` / `Toggled`
+  会让 XamlCompiler 静默 exit 1（`OptiScalerPage.xaml` 里有注释）。下拉切换走 `CurrentPreset` 的
+  TwoWay setter 回调，不在模板里挂事件。
+- 首个远端预设 = 本机崩铁那份：**【40系6倍帧生成 NR50%2层】**（`40x6-nr50-2layers.ini`，13608 字节）。
+
+#### (3)(4) 下载线路：别滥用 + 关于页和卡片要一致
+
+- 实测证据（260924 大日志）：`Failed to fetch releases from server 0/1/2/3` 各 19 次 = 76 个必然失败的请求。
+  `FetchLatestStableReleaseAsync` 只被「一键安装」调用，所以 19 次是用户反复重试，但每次都把候选服务器全打一遍。
+- 为什么「关于页选了 GitHub，卡片还是 CDN」：**两个键**。关于页/更新窗口写 `LauncherUpdateDownloadServer`，
+  HoYoShade/ReShade/OptiScaler 卡片读 `HoYoShadeFrameworkDownloadServer`。现在并成一个 `DownloadServer`
+  （`AppConfig.HasValue()` 用来做老键迁移）。
+- 自动选择序列原来没有新加的 gh 代理、还把 GitHub 直连排第一。现在：
+  gh-proxy.org  ghfast.top  腾讯云  随机(Cloudflare/阿里云)  GitHub 直连兜底，且刚失败的服务器冷却 5 分钟。
+- 下载**不是直连**：`cdn.xxx.tx.storage.hub.hoyosha.de/https://github.com/...` 是前缀式代理。
+  卡片下方显示 CDN 是如实反映当前线路，不是没生效。

@@ -31,8 +31,8 @@ public sealed class OptiScalerDownloader
     }
 
     /// <summary>这个来源能下载的版本（新 → 旧）</summary>
-    public async Task<List<ExtensionVersion>> ListVersionsAsync(OptiScalerSource source, CancellationToken cancellationToken = default)
-        => await _resolver.ListVersionsAsync(source.ToExtensionSource(), max: 20, cancellationToken);
+    public async Task<List<ExtensionVersion>> ListVersionsAsync(OptiScalerSource source, CancellationToken cancellationToken = default, bool forceRefresh = false)
+        => await _resolver.ListVersionsAsync(source.ToExtensionSource(), 20, cancellationToken, forceRefresh);
 
     /// <summary>这个版本里能装的压缩包（.zip，去掉 sha256 清单那些）</summary>
     public async Task<List<string>> ListAssetsAsync(OptiScalerSource source, string tag, CancellationToken cancellationToken = default)
@@ -48,13 +48,21 @@ public sealed class OptiScalerDownloader
         return [.. filtered.Order(StringComparer.OrdinalIgnoreCase)];
     }
 
-    /// <summary>能装的包：zip 压缩包，或者来源自己的安装程序（.exe）</summary>
+    /// <summary>
+    /// 能装的包：zip 压缩包 / 来源自己的安装程序（.exe）/ 裸 dll。
+    /// <para>
+    /// 裸 dll 是必须支持的：有些模块仓库 release 里就只挂一个 <c>version.dll</c>
+    ///（matiasLombo/mfg-unlock 的 v1.4 就是这样）。以前只认 zip / exe，
+    /// 结果这些模块一律报「vX.Y 里没有可下载的包」。
+    /// </para>
+    /// </summary>
     public static bool IsUsableAsset(string name)
     {
         bool archive = name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
         bool installer = name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+        bool rawDll = name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
 
-        if (!archive && !installer)
+        if (!archive && !installer && !rawDll)
         {
             return false;
         }
@@ -62,6 +70,10 @@ public sealed class OptiScalerDownloader
         return !name.Contains("sha256", StringComparison.OrdinalIgnoreCase)
                && !name.Contains("checksum", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>裸 dll（release 里直接挂 dll，没有压缩包）</summary>
+    public static bool IsRawDll(string name)
+        => name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>是这个来源自己的安装程序（不是压缩包）—— 这种要下下来直接运行</summary>
     public static bool IsInstaller(string name)

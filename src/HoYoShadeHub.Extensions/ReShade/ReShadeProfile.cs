@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace HoYoShadeHub.Extensions.ReShade;
@@ -543,6 +543,18 @@ public sealed partial class AddonFileInfo
     /// </summary>
     public bool IsHookPointCapable =>
         Slug is not null && Slug.StartsWith("renodx-dlss", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 按**文件名**判断是不是 DLSS5 那一类插件。
+    ///
+    /// <para>
+    /// 扩展目录里的 tags 是首选判据，但那个表可能没配到 / 没更新 —— 光靠 tags 会把用户
+    /// 手里明明是 DLSS5 的插件判成「不是」，于是「从 DllMain 加载」被灰掉、写盘也被拒。
+    /// 文件名里认得出 <c>dlss5</c> 也算，两条判据取并集。
+    /// </para>
+    /// </summary>
+    public bool IsDlss5ByName =>
+        Slug is not null && Slug.Contains("dlss5", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>文件被重命名为 .addon64x 之类 —— 这是「全局禁用」</summary>
     public bool IsRenamedDisabled { get; init; }

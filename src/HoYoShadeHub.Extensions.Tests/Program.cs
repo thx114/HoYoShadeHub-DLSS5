@@ -919,7 +919,14 @@ Check(new GameEntryStore().Games.Count == 0, "空 store 不会炸");
 Console.WriteLine();
 Console.WriteLine("== 15. 每个游戏独立的插件开关 ==");
 var cachePath15 = Path.Combine(root, ".hysx", "addon-names.json");
-var serviceA = new GamePluginService(entryA, ShadeHostLocator.FromUserDataFolder(userDataFolder)!, cachePath15);
+// 真机上 tags 由扩展目录提供（这里补上，否则「从 DllMain 加载」按设计只放行 DLSS5 插件，
+// 不带 dlss5 字样的 renodx-dlss 会被判成非 DLSS5 —— 那正是要测的东西）。
+var serviceA = new GamePluginService(
+    entryA,
+    ShadeHostLocator.FromUserDataFolder(userDataFolder)!,
+    cachePath15,
+    null,
+    addonFileName => addonFileName.Contains("renodx-dlss", StringComparison.OrdinalIgnoreCase) ? ["dlss5"] : ["hdr"]);
 GameEntry entryB = found2.First(e => e.Id == "biz:hkrpg_cn");
 var serviceB = new GamePluginService(entryB, ShadeHostLocator.FromUserDataFolder(userDataFolder)!, cachePath15);
 

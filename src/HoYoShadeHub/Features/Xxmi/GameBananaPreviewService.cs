@@ -182,6 +182,14 @@ internal sealed class GameBananaPreviewService
             return cached;
         }
 
+        // 先看落盘缓存：命中且没过期就直接用（用户要求：别每次进页面都实时拉）
+        (GameBananaModInfo Info, bool Fresh)? disk = ReadInfoFromDisk(modId);
+        if (disk is { Fresh: true })
+        {
+            _infoCache[modId] = disk.Value.Info;
+            return disk.Value.Info;
+        }
+
         try
         {
             string api = $"https://gamebanana.com/apiv11/Mod/{modId}" +
@@ -206,17 +214,79 @@ internal sealed class GameBananaPreviewService
             var info = new GameBananaModInfo(name, version, author, profile, ExtractThumbnailUrl(root));
 
             _infoCache[modId] = info;
+            WriteInfoToDisk(modId, info);
             return info;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GameBanana mod info fetch failed for {ModId}", modId);
+
+            // 拉不到就用过期的那份（有总比没有强），实在没有才返回 null
+            if (disk is { } stale)
+            {
+                _infoCache[modId] = stale.Info;
+                return stale.Info;
+            }
+
             _infoCache[modId] = null;
             return null;
         }
     }
 
-    /// <summary>从 apiv11 的 JSON 里挑一张缩略图（优先 530，退到 220、100、原图）</summary>
+    /// <summary>元信息落盘缓存的有效期：模组名/作者/版本很少变，7 天才重拉一次</summary>
+    private static readonly TimeSpan InfoCacheTtl = TimeSpan.FromDays(7);
+
+    /// <summary>落盘时的包装：带抓取时间，用来判过期</summary>
+    private sealed record CachedModInfo(DateTimeOffset FetchedUtc, GameBananaModInfo Info);
+
+    private static string InfoCachePathFor(int modId) =>
+        Path.Combine(CacheDirectory, "info", modId + ".json");
+
+    private static string JsonOf(GameBananaModInfo info) =>
+        JsonSerializer.Serialize(new CachedModInfo(DateTimeOffset.UtcNow, info));
+
+    /// <summary>读元信息落盘缓存；返回 (信息, 是否新鲜)，没有就 null</summary>
+    private static (GameBananaModInfo Info, bool Fresh)? ReadInfoFromDisk(int modId)
+    {
+        try
+        {
+            string path = InfoCachePathFor(modId);
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            CachedModInfo? cached = JsonSerializer.Deserialize<CachedModInfo>(File.ReadAllText(path));
+            if (cached?.Info is null)
+            {
+                return null;
+            }
+
+            return (cached.Info, DateTimeOffset.UtcNow - cached.FetchedUtc < InfoCacheTtl);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>把元信息写进落盘缓存（先临时文件再 Move，别留半截 JSON）</summary>
+    private static void WriteInfoToDisk(int modId, GameBananaModInfo info)
+    {
+        try
+        {
+            string path = InfoCachePathFor(modId);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string temp = path + ".tmp";
+            File.WriteAllText(temp, JsonOf(info));
+            File.Move(temp, path, overwrite: true);
+        }
+        catch
+        {
+        }
+    }
+
+
     private static string? ExtractThumbnailUrl(JsonElement root)
     {
         if (!root.TryGetProperty("_aPreviewMedia", out JsonElement media)

@@ -75,6 +75,26 @@ public static class DllComponentCatalog
     public static DllFamily? FamilyOf(string id) =>
         Families.FirstOrDefault(f => string.Equals(f.Id, id, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// 拉一次清单。拉不到就返回 null（不抛），交给上层决定要不要换代理重试。
+    /// </summary>
+    /// <param name="proxyUrl">为空 = 用当前设置里的代理</param>
+    private static async Task<Dictionary<string, List<DllManifestEntry>>?> FetchAsync(
+        CancellationToken cancellationToken,
+        string? proxyUrl = null)
+    {
+        try
+        {
+            using var client = HysxHttp.CreateClient(timeout: TimeSpan.FromSeconds(20));
+            await using Stream stream = await client.GetStreamAsync(HysxHttp.Apply(ManifestUrl, proxyUrl), cancellationToken);
+            return await JsonSerializer.DeserializeAsync<Dictionary<string, List<DllManifestEntry>>>(stream, _options, cancellationToken);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>拉清单；失败也返回（Error 里有原因），界面照样能用硬编码的那几条 dlssnr</summary>
     public static async Task<DllCatalog> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -83,11 +103,21 @@ public static class DllComponentCatalog
 
         try
         {
-            using var client = HysxHttp.CreateClient(timeout: TimeSpan.FromSeconds(30));
-            await using Stream stream = await client.GetStreamAsync(HysxHttp.Apply(ManifestUrl), cancellationToken);
+            Dictionary<string, List<DllManifestEntry>>? manifest = await FetchAsync(cancellationToken);
 
-            Dictionary<string, List<DllManifestEntry>>? manifest =
-                await JsonSerializer.DeserializeAsync<Dictionary<string, List<DllManifestEntry>>>(stream, _options, cancellationToken);
+            if (manifest is null)
+            {
+                // 直连 raw.githubusercontent.com 在国内基本不通，会抛 SSL / 超时。
+                // 清单和远端目录都在 raw 上，所以这里必须走能转发 raw 的公共代理兜一次，
+                // 否则用户看到的就是「拉组件清单失败（还能用内置的那几条）」。
+                manifest = await FetchAsync(cancellationToken, "https://gh-proxy.org")
+                           ?? await FetchAsync(cancellationToken, "https://ghfast.top");
+            }
+
+            if (manifest is null)
+            {
+                throw new InvalidOperationException("清单拉不到：直连和两个公共代理都失败了。");
+            }
 
             foreach ((string family, List<DllManifestEntry> entries) in manifest ?? [])
             {

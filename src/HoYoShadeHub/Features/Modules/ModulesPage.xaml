@@ -9,7 +9,7 @@
              x:DefaultBindMode="OneWay"
              mc:Ignorable="d">
 
-    <Grid Padding="36,4,36,12" RowSpacing="8">
+    <Grid Padding="18,4,30,12" RowSpacing="8">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />

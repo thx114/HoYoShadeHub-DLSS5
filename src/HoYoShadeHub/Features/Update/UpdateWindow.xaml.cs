@@ -109,12 +109,20 @@ public sealed partial class UpdateWindow : WindowEx
         int savedIndex = AppConfig.LauncherUpdateDownloadServer;
         
         DownloadServers.Clear();
-        // Add Auto Select option
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AutoSelect, ServerIndex = -1 });
-        // Skip GitHub direct for launcher updates
-        DownloadServers.Add(new DownloadServerItem { Name = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare, ServerIndex = 1 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_TencentCloud, ServerIndex = 2 });
-        DownloadServers.Add(new DownloadServerItem { Name = Lang.HoYoShadeDownloadView_Server_AlibabaCloud, ServerIndex = 3 });
+
+        // 统一从 DownloadServerCatalog 取。
+        // 这里也列出 GitHub 直连 —— 用户要能自己选（以前跳过它，结果下拉里根本看不到）。
+        foreach (DownloadServerItem server in DownloadServerCatalog.Create(new Dictionary<int, string>
+        {
+            [-1] = Lang.HoYoShadeDownloadView_Server_AutoSelect,
+            [0] = Lang.HoYoShadeDownloadView_Server_GithubDirect,
+            [1] = AppConfig.EnableEch ? "Cloudflare ECH" : Lang.HoYoShadeDownloadView_Server_Cloudflare,
+            [2] = Lang.HoYoShadeDownloadView_Server_TencentCloud,
+            [3] = Lang.HoYoShadeDownloadView_Server_AlibabaCloud,
+        }))
+        {
+            DownloadServers.Add(server);
+        }
         
         var toSelect = DownloadServers.FirstOrDefault(x => x.ServerIndex == savedIndex);
         _selectedDownloadServer = toSelect ?? DownloadServers[0];

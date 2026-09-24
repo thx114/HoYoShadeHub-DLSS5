@@ -88,11 +88,19 @@ public sealed class GameEntryStore
         return new GameEntryStore();
     }
 
-    public void Save(string path)
+    /// <summary>
+    /// 落盘。写不进去（目录只读 / 权限不足 / 磁盘满）**不再静默吞掉**：
+    /// 返回 false 并给出原因，让调用方能在界面上说清楚 —— 否则用户会遇到
+    /// 「加了游戏、重启就没了」，而日志里什么都没有。
+    /// </summary>
+    public bool Save(string path, out string? error)
     {
+        error = null;
+
         if (string.IsNullOrWhiteSpace(path))
         {
-            return;
+            error = "没有数据目录（UserDataFolder 为空）。";
+            return false;
         }
 
         try
@@ -102,12 +110,18 @@ public sealed class GameEntryStore
             string temp = full + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(this, _jsonOptions), new UTF8Encoding(false));
             File.Move(temp, full, overwrite: true);
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // 存不下来不该让整个页面崩掉
+            // 存不下来不该让整个页面崩掉，但也不能静默：调用方要能告诉用户「这次没存上」。
+            error = $"{ex.GetType().Name}: {ex.Message}";
+            return false;
         }
     }
+
+    /// <summary>落盘；不关心失败原因时用这个（既有调用方不受影响）</summary>
+    public void Save(string path) => Save(path, out _);
 
     #region 记录
 

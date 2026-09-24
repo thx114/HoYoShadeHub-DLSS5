@@ -15,10 +15,12 @@ using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.GameSelector;
 using HoYoShadeHub.Features.Background;
 using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Features.Overlay;
+using HoYoShadeHub.Features.OptiScaler;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Features.Setting;
 using HoYoShadeHub.Features.ViewHost;
@@ -465,7 +467,27 @@ public sealed partial class GameLauncherPage : PageBase
     /// 注入模式但一个 HoYoShade 都没勾 → 不架 ReShade 注入器，只等游戏进程注「额外注入 DLL」/ OptiScaler。
     /// 用户报过：没勾「启动 HoYoShade」也被注入了 HoYoShade。
     /// </summary>
-    public bool IsWaitProcessMode => UseInjectMode && !UseHoYoShade && !UseOpenHoYoShade;
+    public bool IsWaitProcessOnlyMode => UseInjectMode && !UseHoYoShade && !UseOpenHoYoShade;
+
+    private bool _isWaitingForProcess;
+
+    /// <summary>
+    /// 运行状态：现在真的在等游戏进程出现。
+    /// 以前这个属性只看勾选项，于是「没勾 shade」时按钮一直显示「等游戏进程」，
+    /// 看起来像注入器在跑（用户报过）。
+    /// </summary>
+    public bool IsWaitProcessMode
+    {
+        get => _isWaitingForProcess;
+        private set
+        {
+            if (_isWaitingForProcess != value)
+            {
+                _isWaitingForProcess = value;
+                OnPropertyChanged(nameof(IsWaitProcessMode));
+            }
+        }
+    }
 
     private bool _useHoYoShade;
     public bool UseHoYoShade
@@ -1791,6 +1813,72 @@ public sealed partial class GameLauncherPage : PageBase
 
 
 
+    /// <summary>
+    /// 启用 OptiScaler 时启动前查「NVIDIA 驱动里的 DLSS-FG 多帧生成数量」（设置 ID 0x104D6667）。
+    /// 被驱动钉住数量时 MFG 解锁会看不出效果，问一下要不要顺手改成 N/A（0xFFFFFFFF，不再覆盖）。
+    /// 读不到 / 没覆盖 / 已经是 N/A / 写失败  一律放行，不拦着人玩游戏。
+    /// </summary>
+    /// <returns>false 表示中止本次启动（目前总会返回 true）</returns>
+    private async Task<bool> ConfirmNvMfgCountAsync()
+    {
+        try
+        {
+            if (!UseOptiScaler || CurrentGameId is not { } gameId)
+            {
+                return true;
+            }
+
+            GameEntry? entry = GameCatalog.GetOrCreate(GameCatalog.CreateService(), gameId);
+            if (entry?.ExePath is not { Length: > 0 } exePath)
+            {
+                return true;
+            }
+
+            string exeName = Path.GetFileName(exePath);
+            NvDrsMfgCount.State state = await Task.Run(() => NvDrsMfgCount.Read(exeName));
+            if (!state.Ok || !state.Overridden || state.Value == NvDrsMfgCount.NaValue)
+            {
+                return true;
+            }
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "驱动在钉多帧生成数量",
+                Content = $"NVIDIA 驱动里「{exeName}」的多帧生成数量被设成 {state.Display}。\\n\\n"
+                          + "这条覆盖会盖住 OptiScaler 的 MFG 解锁（游戏里倍数不对 / 看不出效果）。\\n"
+                          + "要不要顺手改成 N/A（不再覆盖）？",
+                PrimaryButtonText = "改为 N/A 并启动",
+                CloseButtonText = "仍然启动",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                _logger.LogInformation("NV MFG count {Value} kept by user, launch continues", state.Value);
+                return true;
+            }
+
+            NvDrsMfgCount.State after = await Task.Run(() => NvDrsMfgCount.SetToNa(exeName));
+            if (after.Ok)
+            {
+                InAppToast.MainWindow?.Success("驱动配置", $"已把 {exeName} 的 MFG 数量改成 N/A，重启游戏生效。", 8000);
+            }
+            else
+            {
+                InAppToast.MainWindow?.Error("驱动配置", after.Error ?? "写入失败", 10000);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Check NV MFG count before launch");
+            return true;
+        }
+    }
+
     private async Task<bool> CheckGameRunningAsync()
     {
         try
@@ -1914,6 +2002,42 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>这个游戏的进程名（条目里的 exe 名 → Hub 映射 → 内置表）</summary>
+    /// <summary>「没勾 shade、只等进程起来注 DLL」的常驻提示：和注入器那条一样带「停止」</summary>
+    private void ShowWaitProcessToast(string processName)
+    {
+        CloseInjectorToast();
+
+        try
+        {
+            _injectorToast = InAppToast.MainWindow?.ShowSticky(
+                $"等待 {processName} 启动  起来后注入「额外注入 DLL」/ OptiScaler",
+                "停止",
+                () => StopExtraInjection("手动停止"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Show wait-process toast");
+        }
+    }
+
+    /// <summary>停掉「等游戏进程起来再注入」这件事（取消等待 + 收提示条）</summary>
+    private void StopExtraInjection(string reason)
+    {
+        try
+        {
+            _logger.LogInformation("Stop extra DLL injection wait: {Reason}", reason);
+            _extraInjectCts?.Cancel();
+            _extraInjectCts = null;
+            IsWaitProcessMode = false;
+            CloseInjectorToast();
+            InAppToast.MainWindow?.Information("注入模式", "已停止等待游戏进程。", 5000);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Stop extra injection wait");
+        }
+    }
+
     private async Task<string?> ResolveTargetProcessNameAsync()
     {
         string? processName = _currentGameEntry?.ProcessName;
@@ -1966,13 +2090,58 @@ public sealed partial class GameLauncherPage : PageBase
     /// BuildDirectory：OptiScaler 构建目录，用于按游戏切换 ini；null 表示普通模块。
     /// GameKey：该构建对应的游戏标识（OptiDllPath ini profile 名）。
     /// </summary>
-    private sealed record InjectDllSpec(string Path, string Label, string? BuildDirectory = null, string? GameKey = null);
+    private sealed record InjectDllSpec(
+        string Path,
+        string Label,
+        string? BuildDirectory = null,
+        string? GameKey = null,
+        bool WaitForReady = false);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
     /// 用户要的是跟 HoYoShade 的注入器**同时**注入（比如 DLSS Enabler / OptiScaler）。
     /// 游戏是用户自己启动的，所以这里得等（最多 20 分钟；注入器一停就放弃）。
     /// </summary>
+    /// <summary>
+    /// 注入用的 DLL 名字可改（游戏会按名字认代理 dll）。名字与源文件不同就复制一份
+    /// &lt;名字&gt;.dll 到同目录并注入它；名字相同 / 出错就原样返回。
+    /// </summary>
+    private static string EnsureNamedOptiScalerDll(string? dllPath, string? dllName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(dllPath) || string.IsNullOrWhiteSpace(dllName))
+            {
+                return dllPath ?? string.Empty;
+            }
+
+            string name = dllName.Trim();
+            if (!name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                name += ".dll";
+            }
+
+            if (string.Equals(Path.GetFileName(dllPath), name, StringComparison.OrdinalIgnoreCase))
+            {
+                return dllPath;
+            }
+
+            string directory = Path.GetDirectoryName(dllPath) ?? string.Empty;
+            if (directory.Length == 0 || !File.Exists(dllPath))
+            {
+                return dllPath;
+            }
+
+            string target = Path.Combine(directory, name);
+            File.Copy(dllPath, target, overwrite: true);
+            return File.Exists(target) ? target : dllPath;
+        }
+        catch
+        {
+            return dllPath ?? string.Empty;
+        }
+    }
+
     private void StartExtraDllInjection(string processName)
     {
         List<InjectDllSpec> specs = [];
@@ -1984,7 +2153,11 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 if (specs.All(s => !string.Equals(s.Path, path, StringComparison.OrdinalIgnoreCase)))
                 {
-                    specs.Add(new InjectDllSpec(path, name));
+                    bool waitReady = string.Equals(
+                        Path.GetFileName(path),
+                        OptiScalerRuntime.FsrBridgeDllName,
+                        StringComparison.OrdinalIgnoreCase);
+                    specs.Add(new InjectDllSpec(path, name, WaitForReady: waitReady));
                 }
             }
         }
@@ -1994,6 +2167,9 @@ public sealed partial class GameLauncherPage : PageBase
         if (UseOptiScaler && CurrentGameId is { } optiGameId)
         {
             string? optiScaler = AppConfig.GetSelectedOptiScalerDll(optiGameId);
+
+            // 用户在「OptiScaler」页可以改注入用的 DLL 名字：不同就复制一份 <名字>.dll 去注入
+            optiScaler = EnsureNamedOptiScalerDll(optiScaler, AppConfig.GetOptiScalerDllName(optiGameId));
             if (!string.IsNullOrWhiteSpace(optiScaler)
                 && File.Exists(optiScaler)
                 && specs.All(s => !string.Equals(s.Path, optiScaler, StringComparison.OrdinalIgnoreCase)))
@@ -2073,7 +2249,97 @@ public sealed partial class GameLauncherPage : PageBase
             _logger.LogInformation("{Label} injection armed: {Dll} -> {Process}", spec.Label, spec.Path, processName);
         }
 
-        _ = Task.Run(() => InjectExtraDllsAsync(processName, specs, token));
+        IsWaitProcessMode = true;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await InjectExtraDllsAsync(processName, specs, token);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Extra DLL injection task");
+            }
+            finally
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    IsWaitProcessMode = false;
+
+                    // 没勾 shade 时这条常驻提示就是「等进程」用的，注入一结束就收掉
+                    if (IsWaitProcessOnlyMode)
+                    {
+                        CloseInjectorToast();
+                    }
+                });
+            }
+        });
+    }
+
+    private static long GetFileLengthOrZero(string filePath)
+    {
+        try
+        {
+            return File.Exists(filePath) ? new FileInfo(filePath).Length : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// 等 FSR Bridge 完成初始化：它在 IAT/loader hooks 安装前会写入
+    /// <c>Dx11FsrBridge active pid=&lt;pid&gt;</c>。看到本次进程这行后再留 500ms，
+    /// 让随后的 loader hooks 装完；后台日志线程按 200ms 批量落盘，轮询间隔 200ms。
+    /// 日志被截断（长度小于基线）时从文件头读起。
+    /// </summary>
+    private static async Task<bool> WaitForFsrBridgeReadyAsync(
+        string bridgeDirectory,
+        int processId,
+        long baselineLength,
+        TimeSpan timeout,
+        System.Threading.CancellationToken cancellationToken)
+    {
+        string logPath = Path.Combine(bridgeDirectory, "Dx11FsrBridge.log");
+        string marker = "Dx11FsrBridge active pid=" + processId.ToString();
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (File.Exists(logPath))
+                {
+                    long offset = new FileInfo(logPath).Length >= baselineLength ? baselineLength : 0;
+                    using (var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    using (var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+                    {
+                        if (offset > 0)
+                        {
+                            stream.Seek(offset, SeekOrigin.Begin);
+                        }
+
+                        string tail = reader.ReadToEnd();
+                        if (tail.Contains(marker, StringComparison.Ordinal))
+                        {
+                            await Task.Delay(500, cancellationToken);
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                // 文件正被 bridge 切走/重开，下一轮再读
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        return false;
     }
 
     private async Task InjectExtraDllsAsync(string processName, IReadOnlyList<InjectDllSpec> specs, System.Threading.CancellationToken cancellationToken)
@@ -2096,6 +2362,16 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 string name = Path.GetFileName(spec.Path);
                 string label = spec.Label;
+
+                // Bridge 的日志会在每次启动时截断；记下注入前的文件长度，就绪检测只看新增内容，
+                // 避免上一次运行留下的 "active" 行被误判成本次就绪。
+                long baselineLength = 0;
+                if (spec.WaitForReady)
+                {
+                    baselineLength = GetFileLengthOrZero(Path.Combine(
+                        Path.GetDirectoryName(spec.Path) ?? string.Empty, "Dx11FsrBridge.log"));
+                }
+
                 bool ok = DllInjector.Inject(pid, spec.Path, out string error);
                 anyOk |= ok;
 
@@ -2113,6 +2389,29 @@ public sealed partial class GameLauncherPage : PageBase
                         InAppToast.MainWindow?.Error($"{label} 注入失败", $"{name}：{error}", 12000);
                     }
                 });
+
+                // OptiScaler 依赖 Bridge 先把 ffxFsr2* 垫片和 D3D11 hook 装好；
+                // 等 Bridge 日志出现本次进程的 active 行后再注入排在后面的 DLL。
+                if (spec.WaitForReady && ok)
+                {
+                    bool ready = await WaitForFsrBridgeReadyAsync(
+                        Path.GetDirectoryName(spec.Path) ?? string.Empty,
+                        pid,
+                        baselineLength,
+                        TimeSpan.FromSeconds(30),
+                        cancellationToken);
+
+                    if (ready)
+                    {
+                        _logger.LogInformation("FsrBridge ready before next injection (pid {Pid})", pid);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "FsrBridge readiness marker not seen within timeout; continuing next injection (pid {Pid})",
+                            pid);
+                    }
+                }
             }
 
             // 游戏起来了：让背景停掉并释放显存（跟 Hub 自己启动游戏时的行为一致）；
@@ -2136,6 +2435,14 @@ public sealed partial class GameLauncherPage : PageBase
                             {
                                 _logger.LogInformation("OptiScaler ini profile stored: {Game} ({Build})",
                                     spec.GameKey, spec.BuildDirectory);
+
+                                // 用户要求：挂着某份「配置」进游戏改完，那份配置也要跟着动。
+                                // 这里把刚回写的 profiles\<游戏>.ini 同步回配置（没挂配置就是 null，啥也不做）
+                                string? followed = OptiScalerPresets.Follow(spec.BuildDirectory, spec.GameKey);
+                                if (followed is not null)
+                                {
+                                    _logger.LogInformation("OptiScaler config synced back: {Config}", followed);
+                                }
                             }
                         }
 
@@ -2389,6 +2696,8 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 return;
             }
+
+            // 启用 OptiScaler：驱动里把 MFG 数量钉死了会盖住 MFG 解锁，先问一下要不要改成 N/A             if (!await ConfirmNvMfgCountAsync())             {                 return;             }
 
             // 「启动游戏时强制 off」：启动/注入之前把 hook 点写 0（按游戏开关）
             ApplyForceHookOffOnLaunch();
@@ -2726,8 +3035,8 @@ public sealed partial class GameLauncherPage : PageBase
                     _ = StartFpsUnlockAsync(TimeSpan.FromMinutes(20), TimeSpan.FromSeconds(60));
                 }
 
-                InAppToast.MainWindow?.Information("注入模式",
-                    $"没勾 HoYoShade / OpenHoYoShade，这次只等 {onlyExtraProcess} 起来注「额外注入 DLL」/ OptiScaler。", 8000);
+                // 常驻提示 + 红色「停止」（用户要求：和「已启动 HoYoShade 注入器」那条一致）
+                ShowWaitProcessToast(onlyExtraProcess);
                 return;
             }
 
@@ -3700,4 +4009,10 @@ public sealed partial class GameLauncherPage : PageBase
 
 
     #endregion
+    /// <summary>帧率解锁右边的齿轮：直接跳到「游戏设置」页去改目标帧率。</summary>
+    private void Button_FpsUnlockSettings_Click(object sender, RoutedEventArgs e)
+    {
+        WeakReferenceMessenger.Default.Send(new MainViewNavigateMessage(typeof(GameSettingPage)));
+    }
+
 }

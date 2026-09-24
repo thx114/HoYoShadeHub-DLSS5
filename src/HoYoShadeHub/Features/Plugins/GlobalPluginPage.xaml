@@ -59,7 +59,7 @@
         </DataTemplate>
     </Page.Resources>
 
-    <Grid Padding="36,4,36,12"
+    <Grid Padding="18,4,30,12"
           RowSpacing="8"
           AllowDrop="True"
           DragOver="Grid_DragOver"
@@ -107,6 +107,7 @@
                             Click="Button_CleanStaleReferences_Click"
                             Content="清理失效条目"
                             ToolTipService.ToolTip="扫一遍所有游戏的 ReShade.ini，把 DisabledAddons / LoadFromDllMain 里指向「已经不存在的插件文件」的条目删掉" />
+    <Button x:Name="Button_CheckAllUpdates" Click="Button_CheckAllUpdates_Click" Content="检查全部更新" ToolTipService.ToolTip="立刻向 GitHub 强制检查一遍（平时一天只自动查一次）" />
                     <Button x:Name="Button_Dlss5CompatCheck" Click="Button_Dlss5CompatCheck_Click" Content="DLSS5 兼容性检测" Style="{ThemeResource AccentButtonStyle}" ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性" />
                     <Button x:Name="Button_InstallLocal"
                             Click="Button_InstallLocal_Click"
@@ -120,6 +121,7 @@
                      IsClosable="True"
                      IsOpen="False"
                      Severity="Informational" />
+
         </StackPanel>
 
         <!--  一行：左边标签页，右边计数  -->
@@ -181,6 +183,14 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="local:PluginItemViewModel">
                                     <Border Style="{StaticResource CatalogCurrentCardStyle}">
+                                        <Border.ContextFlyout>
+                                            <MenuFlyout>
+                                                <MenuFlyoutItem Click="MenuFlyout_RenamePlugin_Click" Text="重命名（显示名 / 版本号）" />
+                                                <MenuFlyoutItem Click="MenuFlyout_OpenPluginFolder_Click" Text="打开所在文件夹" />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutItem Click="MenuFlyout_DeletePlugin_Click" Text="删除这个插件" />
+                                            </MenuFlyout>
+                                        </Border.ContextFlyout>
                                         <StackPanel Spacing="6">
                                             <Grid ColumnSpacing="12">
                                                 <Grid.ColumnDefinitions>
@@ -206,8 +216,10 @@
                                                                       FontSize="12"
                                                                       Glyph="{x:Bind ExpandGlyph}" />
                                                             <TextBlock VerticalAlignment="Center"
+                                                                       DoubleTapped="TextBlock_PluginName_DoubleTapped"
                                                                        Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                                       Text="{x:Bind Name}" />
+                                                                       Text="{x:Bind Name, Mode=OneWay}"
+                                                                       ToolTipService.ToolTip="双击改显示名 / 版本号；右键有更多操作" />
                                                             <Border Padding="6,1"
                                                                     VerticalAlignment="Center"
                                                                     Background="{ThemeResource SubtleFillColorSecondaryBrush}"
@@ -279,6 +291,7 @@
                                                                   OnContent="全局开"
                                                                   ToolTipService.ToolTip="全局开关 = 改这个插件文件名后缀（.addon64  .addon64x）"
                                                                   Visibility="{x:Bind GlobalSwitchVisibility}" />
+                                                    <Button Click="Button_CheckPluginUpdate_Click" Content="检查更新" />
                                                     <Button Click="Button_Install_Click"
                                                             Content="{x:Bind ActionText}"
                                                             IsEnabled="{x:Bind CanInteract}" />
@@ -366,6 +379,14 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="local:AddonFileItemViewModel">
                                     <Border Style="{StaticResource CatalogCardStyle}">
+                                        <Border.ContextFlyout>
+                                            <MenuFlyout>
+                                                <MenuFlyoutItem Click="MenuFlyout_RenameAddon_Click" Text="重命名（显示名 / 版本号）" />
+                                                <MenuFlyoutItem Click="MenuFlyout_OpenAddonFolder_Click" Text="打开所在文件夹" />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutItem Click="MenuFlyout_DeleteAddon_Click" Text="删除这个插件" />
+                                            </MenuFlyout>
+                                        </Border.ContextFlyout>
                                         <Grid ColumnSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -375,8 +396,10 @@
                                             <StackPanel Grid.Column="0" Spacing="2">
                                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                                     <TextBlock VerticalAlignment="Center"
-                                                               Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                               Text="{x:Bind Name}" />
+                                                                DoubleTapped="TextBlock_AddonName_DoubleTapped"
+                                                                Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                                Text="{x:Bind Name, Mode=OneWay}"
+                                                                ToolTipService.ToolTip="双击改显示名 / 版本号；右键有更多操作" />
                                                     <Border Padding="6,1"
                                                             VerticalAlignment="Center"
                                                             Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
@@ -570,6 +593,14 @@
                                 <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
                                     <Border Style="{StaticResource CatalogCurrentCardStyle}">
                                         <StackPanel Spacing="6">
+                                            <StackPanel.ContextFlyout>
+                                                <MenuFlyout>
+                                                    <MenuFlyoutItem Icon="Rename" Click="MenuFlyout_RenameOptiScalerBuild_Click" Text="重命名（显示名 / 版本号）" />
+                                                    <MenuFlyoutItem Icon="OpenFile" Click="MenuFlyout_OpenOptiScalerBuildFolder_Click" Text="打开目录" />
+                                                    <MenuFlyoutSeparator />
+                                                    <MenuFlyoutItem Icon="Delete" Click="MenuFlyout_DeleteOptiScalerBuild_Click" Text="删除这个构建" />
+                                                </MenuFlyout>
+                                            </StackPanel.ContextFlyout>
                                             <!--  标题行：点一下展开 / 收起（默认只占紧凑一行）  -->
                                             <Button MinHeight="40"
                                                     Style="{StaticResource CatalogHeaderButtonStyle}"
@@ -588,8 +619,10 @@
                                                                   FontSize="12"
                                                                   Glyph="{x:Bind ExpandGlyph}" />
                                                         <TextBlock VerticalAlignment="Center"
-                                                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                                   Text="{x:Bind Title}" />
+                                                        DoubleTapped="TextBlock_OptiScalerName_DoubleTapped"
+                                                        Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                        Text="{x:Bind DisplayTitle, Mode=OneWay}"
+                                                        ToolTipService.ToolTip="双击改显示名 / 版本号；右键有更多操作" />
                                                         <Border Padding="6,1"
                                                                 VerticalAlignment="Center"
                                                                 Background="{ThemeResource SubtleFillColorSecondaryBrush}"
@@ -602,7 +635,7 @@
                                                         </Border>
                                                         <ItemsControl VerticalAlignment="Center"
                                                                       ItemTemplate="{StaticResource CatalogTagTemplate}"
-                                                                      ItemsSource="{x:Bind Tags}">
+                                                                      ItemsSource="{x:Bind CatalogTags, Mode=OneWay}">
                                                             <ItemsControl.ItemsPanel>
                                                                 <ItemsPanelTemplate>
                                                                     <StackPanel Orientation="Horizontal" Spacing="4" />
@@ -686,6 +719,7 @@
                                                             Content="放入 nvngx_dlssnr.dll"
                                                             ToolTipService.ToolTip="各分支手册都要求把 nvngx_dlssnr.dll 放在包旁边。这里从「DLL 配置」装好的插件目录复制一份到构建目录"
                                                             Visibility="{x:Bind MissingNrdllVisibility}" />
+                                                    <Button Click="Button_CheckOptiScalerUpdate_Click" Content="检查更新" />
                                                     <Button Click="Button_OpenOptiScalerBuild_Click"
                                                             Content="打开目录"
                                                             IsEnabled="{x:Bind CanOpenFolder}" />
@@ -694,7 +728,7 @@
 
                                                 <HyperlinkButton Padding="0"
                                                                  Click="Hyperlink_OptiScalerRepo_Click"
-                                                                 Content="{x:Bind Repository}"
+                                                                 Content="{x:Bind CatalogRepository, Mode=OneWay}"
                                                                  Visibility="{x:Bind RepoVisibility}" />
                                             </StackPanel>
                                         </StackPanel>
@@ -830,6 +864,14 @@
                                 <DataTemplate x:DataType="local:ModuleItemViewModel">
                                     <Border Style="{StaticResource CatalogCurrentCardStyle}">
                                         <StackPanel Spacing="6">
+                                    <StackPanel.ContextFlyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Icon="Rename" Click="MenuFlyout_RenameModule_Click" Text="重命名（显示名 / 版本号）" />
+                                            <MenuFlyoutItem Icon="OpenFile" Click="MenuFlyout_OpenModuleFolder_Click" Text="打开目录" />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Icon="Delete" Click="MenuFlyout_DeleteModule_Click" Text="删除这个模块" />
+                                        </MenuFlyout>
+                                    </StackPanel.ContextFlyout>
                                             <Grid ColumnSpacing="12">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
@@ -854,8 +896,10 @@
                                                                       FontSize="12"
                                                                       Glyph="{x:Bind ExpandGlyph}" />
                                                             <TextBlock VerticalAlignment="Center"
-                                                                       Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                                       Text="{x:Bind Name}" />
+                                                            DoubleTapped="TextBlock_ModuleName_DoubleTapped"
+                                                            Style="{ThemeResource BodyStrongTextBlockStyle}"
+                                                            Text="{x:Bind DisplayName, Mode=OneWay}"
+                                                                ToolTipService.ToolTip="双击改显示名 / 版本号；右键有更多操作" />
                                                             <Border Padding="6,1"
                                                                     VerticalAlignment="Center"
                                                                     Background="{ThemeResource SubtleFillColorSecondaryBrush}"
@@ -910,6 +954,7 @@
                                                                   OffContent="全局关"
                                                                   OnContent="全局开"
                                                                   ToolTipService.ToolTip="全局开关；关掉的话哪个游戏都用不了这个模块" />
+                                                    <Button Click="Button_CheckModuleUpdate_Click" Content="检查更新" />
                                                     <Button Click="Button_OpenModuleFolder_Click"
                                                             Content="打开目录"
                                                             Style="{StaticResource CatalogRowButtonStyle}" />

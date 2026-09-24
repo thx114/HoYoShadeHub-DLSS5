@@ -266,6 +266,8 @@ public sealed partial class QuickSetupView : UserControl
             }
             catch (Exception ex)
             {
+                // 记一笔：自动选择里这个服务器会冷却几分钟，避免用户反复重试时每次把候选全打一遍
+                CloudProxyManager.MarkServerFailed(currentServerIndex);
                 _logger.LogWarning(ex, "Failed to fetch releases from server {ServerIndex}", currentServerIndex);
             }
         }

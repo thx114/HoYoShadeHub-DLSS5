@@ -142,7 +142,31 @@ try {
         New-Item -ItemType Directory -Force -Path (Split-Path $zip -Parent) | Out-Null
         Remove-Item $zip -Force -ErrorAction SilentlyContinue
         Write-Host "==> [便携版] 打包 => $zip" -ForegroundColor Cyan
-        Compress-Archive -Path $outDir -DestinationPath $zip -CompressionLevel Optimal
+        # 不能用 Compress-Archive：Windows PowerShell 5.1 的实现把条目名写成反斜杠分隔，
+        # 不符合 ZIP 规范，资源管理器等严格工具会判定压缩包损坏、无法打开。
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zipFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($zip)
+        $zipFs = [System.IO.File]::Open($zipFull, [System.IO.FileMode]::Create)
+        $zipArchive = New-Object System.IO.Compression.ZipArchive -ArgumentList @($zipFs, [System.IO.Compression.ZipArchiveMode]::Create)
+        $zipPrefixLen = $outDir.TrimEnd('\').Length + 1
+        $zipEntryPrefix = (Split-Path $outDir -Leaf) + '/'
+        Get-ChildItem -Path $outDir -Recurse -File | ForEach-Object {
+            $entryName = $zipEntryPrefix + $_.FullName.Substring($zipPrefixLen).Replace('\', '/')
+            $entry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $entry.LastWriteTime = $_.LastWriteTime
+            $entryStream = $entry.Open()
+            $fileStream = [System.IO.File]::OpenRead($_.FullName)
+            try {
+                $fileStream.CopyTo($entryStream)
+            }
+            finally {
+                $fileStream.Dispose()
+                $entryStream.Dispose()
+            }
+        }
+        $zipArchive.Dispose()
+        $zipFs.Dispose()
 
         Write-Host ""
         Write-Host "便携版完成：" -ForegroundColor Green
