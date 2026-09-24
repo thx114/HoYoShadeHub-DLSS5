@@ -7,6 +7,13 @@
       "author": "thx114",
       "sources": ["mfg-ada"],
       "description": "崩铁（hkrpg）实测：RTX 40 系 6 倍帧生成 + NR 50% / 2 层。只适用于 OptiScaler MFG Ada（mfg-ada）分支。"
+    },
+    {
+      "name": "[ada] 绝区零 6x 0.5NR 2层",
+      "file": "ada-zzz-6x-nr05-2layers.ini",
+      "author": "thx114",
+      "sources": ["mfg-ada"],
+      "description": "绝区零（nap_cn）实测：RTX 40 系 6 倍帧生成 + NR 50% / 2 层。只适用于 OptiScaler MFG Ada（mfg-ada）分支。（上传时它与崩铁那份内容一致  OptiScaler 首次用某游戏时会从当前主 ini 继承。）"
     }
   ]
 }
