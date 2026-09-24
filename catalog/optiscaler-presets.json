@@ -1,19 +1,45 @@
 {
-  "schema": 1,
+  "schema": 2,
   "presets": [
     {
-      "name": "[ada] 星穹铁道 6x 0.5NR 2层",
-      "file": "ada-starrail-6x-nr05-2layers.ini",
+      "name": "[ada] 崩铁 x6",
+      "file": "ada-hkrpg-x6.ini",
       "author": "thx114",
+      "games": ["hkrpg"],
+      "gpu": "ada",
+      "api": "dx12",
       "sources": ["mfg-ada"],
-      "description": "崩铁（hkrpg）实测：RTX 40 系 6 倍帧生成 + NR 50% / 2 层。只适用于 OptiScaler MFG Ada（mfg-ada）分支。"
+      "description": "崩铁（hkrpg）：RTX 40 系 6 倍帧生成 + NR。fx 4 份同内容的一组。"
     },
     {
-      "name": "[ada] 绝区零 6x 0.5NR 2层",
-      "file": "ada-zzz-6x-nr05-2layers.ini",
+      "name": "[ada] 绝区零 dx11 x6",
+      "file": "ada-zzz-dx11-x6.ini",
       "author": "thx114",
+      "games": ["nap"],
+      "gpu": "ada",
+      "api": "dx11",
       "sources": ["mfg-ada"],
-      "description": "绝区零（nap_cn）实测：RTX 40 系 6 倍帧生成 + NR 50% / 2 层。只适用于 OptiScaler MFG Ada（mfg-ada）分支。（上传时它与崩铁那份内容一致  OptiScaler 首次用某游戏时会从当前主 ini 继承。）"
+      "description": "绝区零（nap）：DX11 + RTX 40 系 6 倍帧生成 + NR。"
+    },
+    {
+      "name": "[ada] 绝区零 dx12 x6 带缓冲",
+      "file": "ada-zzz-dx12-x6-buffer.ini",
+      "author": "thx114",
+      "games": ["nap"],
+      "gpu": "ada",
+      "api": "dx12",
+      "sources": ["mfg-ada"],
+      "description": "绝区零（nap）：DX12 + 40 系 6 倍帧生成，带缓冲。"
+    },
+    {
+      "name": "[ada] 绝区零 dx12 x6",
+      "file": "ada-zzz-dx12-x6.ini",
+      "author": "thx114",
+      "games": ["nap"],
+      "gpu": "ada",
+      "api": "dx12",
+      "sources": ["mfg-ada"],
+      "description": "绝区零（nap）：DX12 + 40 系 6 倍帧生成（插值 auto）。"
     }
   ]
 }
