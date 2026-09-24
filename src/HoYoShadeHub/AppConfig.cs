@@ -839,7 +839,7 @@ public static class AppConfig
     /// </summary>
     public static bool KeepRpcServerRunningInBackground
     {
-        get => GetValue(true);
+        get => GetValue(false);
         set => SetValue(value);
     }
 

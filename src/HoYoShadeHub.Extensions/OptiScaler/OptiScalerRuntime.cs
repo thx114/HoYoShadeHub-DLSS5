@@ -341,10 +341,20 @@ public static class OptiScalerRuntime
         string target = Path.Combine(buildDirectory, NeuralRuntimeFileName);
         string? source = FindSource(target, addonsDirectory, extraSearchDirectories);
 
+        // nvngx_dlssnr 2.14.1.0 那份本身缺文件，装上去 DLSS5 起不来
+        // （用户实测 0xBAD0000B FAIL_UnableToInitializeFeature）：
+        // 坏源不复制；目标目录里如果是它，也当成「没有」，好让好源覆盖掉。
+        if (source is not null && IsBlockedNrdll(source))
+        {
+            source = null;
+        }
+
+        bool targetBlocked = File.Exists(target) && IsBlockedNrdll(target);
+
         if (source is null)
         {
             // 目标目录自己带着一份（大小无从比较）也算有
-            return File.Exists(target)
+            return File.Exists(target) && !targetBlocked
                 ? new NrdllPlaceResult(NrdllPlaceStatus.AlreadyPresent, target, target)
                 : new NrdllPlaceResult(NrdllPlaceStatus.NotFound, null, target);
         }
@@ -353,7 +363,7 @@ public static class OptiScalerRuntime
         {
             bool sameFile = string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
             bool both = File.Exists(target) && File.Exists(source);
-            if (both && !sameFile && new FileInfo(target).Length == new FileInfo(source).Length)
+            if (both && !sameFile && !targetBlocked && new FileInfo(target).Length == new FileInfo(source).Length)
             {
                 return new NrdllPlaceResult(NrdllPlaceStatus.AlreadyPresent, source, target);
             }
@@ -369,6 +379,23 @@ public static class OptiScalerRuntime
         catch
         {
             return new NrdllPlaceResult(NrdllPlaceStatus.Failed, source, target);
+        }
+    }
+
+    /// <summary>
+    /// 2.14.1.0 那份 <c>nvngx_dlssnr.dll</c> 是坏的（包内缺文件，装上会 FAIL_UnableToInitializeFeature）。
+    /// 版本号取文件版本的前缀匹配，拿不到版本就当不是坏的。
+    /// </summary>
+    private static bool IsBlockedNrdll(string path)
+    {
+        try
+        {
+            string? text = TryReadFileVersion(path)?.ToString();
+            return text is not null && text.StartsWith("2.14.1", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 

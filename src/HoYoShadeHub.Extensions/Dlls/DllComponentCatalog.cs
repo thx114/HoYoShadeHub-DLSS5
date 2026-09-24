@@ -142,6 +142,20 @@ public static class DllComponentCatalog
             error = ex.Message;
         }
 
+        // **dlssnr 2.14.1.0 黑名单**：这个包本身缺 2 个文件，装上去 DLSS5 直接起不来
+        // （用户实测报 0xBAD0000B FAIL_UnableToInitializeFeature）。别让「补全 / 安装必要组件」选到它，
+        // 界面上也就不列了  版本列表里少一条比装上去崩一次强。
+        if (components.TryGetValue("dlssnr", out List<DllComponent>? blockedNrdll))
+        {
+            int removed = blockedNrdll.RemoveAll(c => string.Equals(c.Version, "2.14.1.0", StringComparison.OrdinalIgnoreCase));
+            if (removed > 0)
+            {
+                error = string.IsNullOrWhiteSpace(error)
+                    ? "已屏蔽 nvngx_dlssnr 2.14.1.0（该包缺文件，装上会 FAIL_UnableToInitializeFeature）"
+                    : error + "；已屏蔽 nvngx_dlssnr 2.14.1.0（缺文件）";
+            }
+        }
+
         // 清单里没有、但 rhi-repo 上确实有的 dlssnr 变体（30/40 系、ShortFuse 分支）
         AddIfMissing(components, "dlssnr", "310.8.0-RTX40", $"{RhiRepoDownload}/dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip", "30/40 系");
         AddIfMissing(components, "dlssnr", "310.8.SF-v2", $"{RhiRepoDownload}/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", "ShortFuse 分支");
