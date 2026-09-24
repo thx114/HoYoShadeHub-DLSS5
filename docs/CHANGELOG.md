@@ -3,6 +3,12 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 1.3.7-hotfix3 · 驱动 N/A 值修正（0xFFFFFFFF  0）
+
+- **修：`#DLSS-FG- Multi-Frame-Generation Count` 的「N/A」写错了值。** N/A 应该写 **`0x00000000`**
+  （= 不覆盖 / OFF）；之前写的 `0xFFFFFFFF` 会被驱动当成"钉住"，**实测把多帧生成固定成 6X**（用户实测）。
+- 检测项现在把 `0xFFFFFFFF` 明确报成**坏值**（黄字说明「会让驱动钉住、固定 6X，请改成 N/A」），
+  点「改为 N/A」写 0 即可修好  之前已经被写坏的那台机器，重跑一次兼容性检测就能修回来。
 ## 1.3.7-hotfix2 · nrdll 黑名单 + RPC 残留 + 配置名/排序
 
 - **`nvngx_dlssnr.dll` 2.14.1.0 拉黑**：该包本身缺 2 个文件，装上会 `0xBAD0000B FAIL_UnableToInitializeFeature`。

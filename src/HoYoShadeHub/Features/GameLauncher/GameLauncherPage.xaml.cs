@@ -1815,7 +1815,7 @@ public sealed partial class GameLauncherPage : PageBase
 
     /// <summary>
     /// 启用 OptiScaler 时启动前查「NVIDIA 驱动里的 DLSS-FG 多帧生成数量」（设置 ID 0x104D6667）。
-    /// 被驱动钉住数量时 MFG 解锁会看不出效果，问一下要不要顺手改成 N/A（0xFFFFFFFF，不再覆盖）。
+    /// 被驱动钉住数量时 MFG 解锁会看不出效果，问一下要不要顺手改成 N/A（写 0 = 不覆盖）。
     /// 读不到 / 没覆盖 / 已经是 N/A / 写失败  一律放行，不拦着人玩游戏。
     /// </summary>
     /// <returns>false 表示中止本次启动（目前总会返回 true）</returns>

@@ -17,7 +17,7 @@ namespace HoYoShadeHub.Features.Plugins;
 /// </para>
 ///
 /// <para>
-/// 「N/A」是 Profile Inspector 对 DWORD 值 <c>0xFFFFFFFF</c> 的显示名（= 不做覆盖 / 不适用）。
+/// 「N/A」是 Profile Inspector DWORD 值 <c>0x00000000</c>（= 不覆盖 / OFF）。
 /// MFG 解锁（OptiScaler 的 Ada unlock）要求**驱动不要钉数量**，否则游戏里看到的倍数会被驱动覆盖，
 /// 所以这里提供「改为 N/A」以及「还原成原值」。
 /// </para>
@@ -52,7 +52,7 @@ internal static class NvDrsMfgCount
     public const uint MultiFrameCountSettingId = 0x104D6667;
 
     /// <summary>Profile Inspector 里显示成 N/A 的那个值</summary>
-    public const uint NaValue = 0xFFFFFFFF;
+    public const uint NaValue = 0x00000000;
 
     // ---- 按官方头算出来的布局 ----
     private const int SettingSize = 12320;
@@ -196,7 +196,7 @@ internal static class NvDrsMfgCount
     /// <summary>读当前游戏的 MFG 数量覆盖状态（不修改）。</summary>
     public static State Read(string exeFileName) => Run(exeFileName, writeValue: null);
 
-    /// <summary>把当前游戏的 MFG 数量改为 N/A（0xFFFFFFFF）。</summary>
+    /// <summary>把当前游戏的 MFG 数量改为 N/A（写 0，= 不覆盖）。</summary>
     public static State SetToNa(string exeFileName) => Run(exeFileName, writeValue: NaValue);
 
     /// <summary>把当前游戏的 MFG 数量写回指定值（还原用）。</summary>
@@ -352,7 +352,13 @@ internal static class NvDrsMfgCount
     {
         if (value == NaValue)
         {
-            return overridden ? "N/A（本游戏已覆盖为不适用）" : "N/A（继承默认）";
+            return overridden ? "N/A（0，已改成不覆盖）" : "N/A（继承默认）";
+    }
+
+        // 0xFFFFFFFF 是**坏值**：驱动会把它当成「钉住」，实测固定成 6X（用户实测），必须报出来
+        if (value == 0xFFFFFFFF)
+        {
+            return "0xFFFFFFFF（ 会让驱动钉住多帧生成，实测固定 6X  请改成 N/A）";
         }
 
         string meaning = value switch
