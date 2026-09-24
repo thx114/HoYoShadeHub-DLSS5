@@ -1183,7 +1183,7 @@ ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UT
 
 
 
-### 13 上游同步（1.3.7-hotfix4）
+### 13 上游同步（1.3.7-z1）
 
 对照上游 `DuolaD/HoYoShade-Hub` 1.3.7 之后的 8 个提交，按本分支结构手工挑（没有 cherry-pick）。
 
