@@ -191,10 +191,29 @@ public static class AppConfig
 
             void AddCandidate(string? path)
             {
-                if (!string.IsNullOrWhiteSpace(path))
+                if (string.IsNullOrWhiteSpace(path))
                 {
-                    candidates.Add(path);
+                    return;
                 }
+
+                // 便携版只在**自己的目录树内**认领现成 profile。
+                // 否则一个干净的新用户测试包会去认领 %LOCALAPPDATA% / %APPDATA% / 同级目录里
+                // 别人家那份数据（用户实测：解压出来的新包直接找到了 C 盘的数据文件夹）。
+                if (IsPortable)
+                {
+                    // 这里不能引用后面的 parent 局部变量（前向引用），直接从程序目录推便携根
+                    string? portableRoot = new DirectoryInfo(AppContext.BaseDirectory).Parent?.FullName;
+                    if (portableRoot is { Length: > 0 })
+                    {
+                        string root = Path.GetFullPath(portableRoot) + Path.DirectorySeparatorChar;
+                        if (!Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return;
+                        }
+                    }
+                }
+
+                candidates.Add(path);
             }
 
             string appDirectory = AppContext.BaseDirectory;
