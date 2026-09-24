@@ -78,11 +78,42 @@ internal static class OptiScalerPresetCatalog
                                   || string.Equals(g, baseName, StringComparison.OrdinalIgnoreCase));
         }
 
-        /// <summary>下拉里显示：适配本机显卡的那条加个尾巴，一眼能挑出来</summary>
+        private static readonly Dictionary<string, string> GameNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["hkrpg"] = "崩铁",
+            ["nap"] = "绝区零",
+            ["hk4e"] = "原神",
+            ["bh3"] = "崩坏3",
+        };
+
+        /// <summary>这条配置是给哪个游戏的（显示用；空 = 通用）</summary>
+        public string GameTag => Games is not { Count: > 0 }
+            ? string.Empty
+            : string.Join("/", Games.Select(g => GameNames.TryGetValue(g, out string? n) ? n : g));
+
+        /// <summary>
+        /// 和当前游戏的匹配档位：2 = 明确就是这个游戏，1 = 通用，0 = 明确是别的游戏。
+        /// 用它**排序**而不是过滤  隐藏会让用户以为配置丢了。
+        /// </summary>
+        public int GameRank(string? gameBiz)
+            => Games is not { Count: > 0 } ? 1 : (AllowsGame(gameBiz) ? 2 : 0);
+
+        /// <summary>下拉显示：游戏标注 + 适配本机显卡的尾巴</summary>
         public override string ToString()
-            => Gpu is { Length: > 0 } && string.Equals(Gpu, GpuClass, StringComparison.OrdinalIgnoreCase)
-                ? Name + "（适配你的显卡）"
-                : Name;
+        {
+            string text = Name;
+            if (GameTag is { Length: > 0 } tag)
+            {
+                text += "（" + tag + "）";
+            }
+
+            if (Gpu is { Length: > 0 } && string.Equals(Gpu, GpuClass, StringComparison.OrdinalIgnoreCase))
+            {
+                text += "（适配你的显卡）";
+            }
+
+            return text;
+        }
     }
 
     private sealed class IndexDocument

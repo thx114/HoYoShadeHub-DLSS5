@@ -489,14 +489,15 @@ public sealed partial class OptiScalerPage : PageBase
             // 只留允许用在这个分支上的（比如 [ada] 那条只在 mfg-ada 上出现）
             remote = remote.Where(p => p.AllowsSource(item.SourceId)).ToList();
 
-            // 游戏检测：带 games 的条目只在这个游戏上出现（目前只有本仓库上传的那几条带 games）
+            // 游戏检测：**不隐藏**（隐藏会让用户以为配置丢了），当前游戏的排最前；
+            // 显卡检测：再按「适配本机显卡」排（RTX 40 的 ada 靠前）。
+            // 每条都会在名字后标注游戏与显卡匹配情况。
             string? gameBiz = _gameId?.GameBiz.Value;
-            remote = remote.Where(p => p.AllowsGame(gameBiz)).ToList();
-
-            // 显卡检测：适配本机显卡的排前面（RTX 40 的 ada 排最前）
             string? gpuClass = OptiScalerPresetCatalog.GpuClass;
-            remote = [.. remote.OrderByDescending(p => gpuClass is not null
-                && string.Equals(p.Gpu, gpuClass, StringComparison.OrdinalIgnoreCase))];
+            remote = [.. remote
+                .OrderByDescending(p => p.GameRank(gameBiz))
+                .ThenByDescending(p => gpuClass is not null
+                    && string.Equals(p.Gpu, gpuClass, StringComparison.OrdinalIgnoreCase))];
             remoteBox.ItemsSource = remote;
             remoteBox.PlaceholderText = remote.Count == 0 ? "拉不到远端目录（网络不通？）" : "选一条";
         };

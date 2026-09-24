@@ -1,34 +1,46 @@
 {
-  "schema": 2,
-  "presets": [
-    {
-      "name": "[ada] 崩铁 x6",
-      "file": "ada-hkrpg-x6.ini",
-      "author": "thx114",
-      "games": ["hkrpg"],
-      "gpu": "ada",
-      "sources": ["mfg-ada"],
-      "description": "崩铁（hkrpg）：RTX 40 系 6 倍帧生成 + NR。"
-    },
-    {
-      "name": "[ada] 绝区零 dx12 x6 带缓冲",
-      "file": "ada-zzz-dx12-x6-buffer.ini",
-      "author": "thx114",
-      "games": ["nap"],
-      "gpu": "ada",
-      "api": "dx12",
-      "sources": ["mfg-ada"],
-      "description": "绝区零（nap）：DX12 + RTX 40 系 6 倍帧生成，带缓冲。"
-    },
-    {
-      "name": "[ada] 绝区零 dx12 x6",
-      "file": "ada-zzz-dx12-x6.ini",
-      "author": "thx114",
-      "games": ["nap"],
-      "gpu": "ada",
-      "api": "dx12",
-      "sources": ["mfg-ada"],
-      "description": "绝区零（nap）：DX12 + RTX 40 系 6 倍帧生成（插值 auto）。"
-    }
-  ]
+    "schema":  3,
+    "presets":  [
+                    {
+                        "name":  "40-崩铁 x6",
+                        "file":  "ada-9c420a38.ini",
+                        "author":  "thx114",
+                        "gpu":  "ada",
+                        "sources":  [
+                                        "mfg-ada"
+                                    ],
+                        "games":  [
+                                      "hkrpg"
+                                  ],
+                        "description":  "40-崩铁 x6（RTX 40 系 / mfg-ada 分支）"
+                    },
+                    {
+                        "name":  "40-绝区零dx12 x6 带缓冲",
+                        "file":  "ada-9c420a38.ini",
+                        "author":  "thx114",
+                        "gpu":  "ada",
+                        "sources":  [
+                                        "mfg-ada"
+                                    ],
+                        "games":  [
+                                      "nap"
+                                  ],
+                        "api":  "dx12",
+                        "description":  "40-绝区零dx12 x6 带缓冲（RTX 40 系 / mfg-ada 分支）"
+                    },
+                    {
+                        "name":  "40-绝区零dx12 x6",
+                        "file":  "ada-dfd73e62.ini",
+                        "author":  "thx114",
+                        "gpu":  "ada",
+                        "sources":  [
+                                        "mfg-ada"
+                                    ],
+                        "games":  [
+                                      "nap"
+                                  ],
+                        "api":  "dx12",
+                        "description":  "40-绝区零dx12 x6（RTX 40 系 / mfg-ada 分支）"
+                    }
+                ]
 }
