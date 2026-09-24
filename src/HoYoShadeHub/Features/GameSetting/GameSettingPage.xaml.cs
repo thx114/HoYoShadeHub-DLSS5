@@ -228,7 +228,12 @@ public sealed partial class GameSettingPage : PageBase
         try
         {
             var localVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
-            if (localVersion is null)
+
+            // Beta / 内测服没有 config.ini 读不出版本，只要主程序在就算装了（否则会显示「游戏未安装」）
+            bool isInstalled = localVersion != null
+                               || (CurrentGameBiz.IsBetaServer()
+                                   && await _gameLauncherService.IsGameExeExistsAsync(CurrentGameId));
+            if (!isInstalled)
             {
                 StackPanel_Emoji.Visibility = Visibility.Visible;
                 return;

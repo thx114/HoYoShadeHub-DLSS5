@@ -1371,7 +1371,11 @@ public sealed partial class GameLauncherPage : PageBase
             }
             isGameExeExists = await _gameLauncherService.IsGameExeExistsAsync(CurrentGameId);
             localGameVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
-            if (isGameExeExists && localGameVersion != null)
+            // 正式服：必须 exe 在 + 能读出本地版本；
+            // Beta / 内测 / 创作者体验服经常没有 config.ini（读不出版本），只要 exe 在就允许启动
+            bool canStart = isGameExeExists && (localGameVersion != null || CurrentGameBiz.IsBetaServer());
+
+            if (canStart)
             {
                 GameState = GameState.StartGame;
             }

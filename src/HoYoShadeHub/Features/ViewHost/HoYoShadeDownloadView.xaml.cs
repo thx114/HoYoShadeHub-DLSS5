@@ -430,52 +430,84 @@ public sealed partial class HoYoShadeDownloadView : UserControl
             {
                 // Auto Select: GitHub -> Tencent -> (Cloudflare/Alibaba).
                 // If GitHub is rate-limited (403), fall back to subsequent servers.
+                // 同一服务器名下有多个 host：全部按随机顺序试一遍；只试一个的话，那一个不通整个服务器就白给。
                 var serverSequence = CloudProxyManager.GetAutoSelectFallbackSequence(false);
-                bool githubRateLimited = false;
                 Exception? lastFallbackException = null;
 
                 foreach (var currentServerIndex in serverSequence)
                 {
-                    string? proxyUrl = CloudProxyManager.GetProxyUrl(currentServerIndex);
-                    string currentApiUrl = string.IsNullOrWhiteSpace(proxyUrl)
-                        ? apiUrl
-                        : CloudProxyManager.ApplyProxy(apiUrl, proxyUrl);
-
-                    try
+                    foreach (string? proxyUrl in GetOrderedProxies(currentServerIndex))
                     {
-                        releases = await client.GetFromJsonAsync<GithubRelease[]>(currentApiUrl, _loadVersionsCts.Token);
-                        if (releases != null)
+                        string currentApiUrl = string.IsNullOrWhiteSpace(proxyUrl)
+                            ? apiUrl
+                            : CloudProxyManager.ApplyProxy(apiUrl, proxyUrl);
+
+                        try
                         {
+                            var fetched = await client.GetFromJsonAsync<GithubRelease[]>(currentApiUrl, _loadVersionsCts.Token);
+                            if (fetched is { Length: > 0 })
+                            {
+                                releases = fetched;
+                                break;
+                            }
+
+                            // 空列表也算这次失败，继续试下一个服务器
+                            lastFallbackException = new HttpRequestException("Empty release list returned by download server.");
+                        }
+                        catch (HttpRequestException ex) when (currentServerIndex == 0 && IsGitHubRateLimitExceeded(ex))
+                        {
+                            lastFallbackException = ex;
+                            _logger.LogWarning(ex, "GitHub API rate limit hit in auto-select mode, switching to next download server.");
                             break;
                         }
+                        catch (Exception ex)
+                        {
+                            lastFallbackException = ex;
+                            _logger.LogWarning(ex, "Failed to fetch releases from fallback server {ServerIndex}.", currentServerIndex);
+                        }
                     }
-                    catch (HttpRequestException ex) when (currentServerIndex == 0 && IsGitHubRateLimitExceeded(ex))
+
+                    if (releases is { Length: > 0 })
                     {
-                        githubRateLimited = true;
-                        lastFallbackException = ex;
-                        _logger.LogWarning(ex, "GitHub API rate limit hit in auto-select mode, switching to next download server.");
-                    }
-                    catch (Exception ex) when (githubRateLimited)
-                    {
-                        lastFallbackException = ex;
-                        _logger.LogWarning(ex, "Failed to fetch releases from fallback server {ServerIndex} after GitHub rate limit.", currentServerIndex);
+                        break;
                     }
                 }
 
-                if (releases == null)
+                if (releases is not { Length: > 0 })
                 {
                     throw lastFallbackException ?? new HttpRequestException("Failed to fetch release list from all fallback servers.");
                 }
             }
             else
             {
-                string? proxyUrl = CloudProxyManager.GetProxyUrl(serverIndex);
-                if (!string.IsNullOrWhiteSpace(proxyUrl))
+                Exception? lastServerException = null;
+
+                foreach (string? proxyUrl in GetOrderedProxies(serverIndex))
                 {
-                    apiUrl = CloudProxyManager.ApplyProxy(apiUrl, proxyUrl);
+                    string currentApiUrl = string.IsNullOrWhiteSpace(proxyUrl)
+                        ? apiUrl
+                        : CloudProxyManager.ApplyProxy(apiUrl, proxyUrl);
+
+                    try
+                    {
+                        var fetched = await client.GetFromJsonAsync<GithubRelease[]>(currentApiUrl, _loadVersionsCts.Token);
+                        if (fetched is { Length: > 0 })
+                        {
+                            releases = fetched;
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        lastServerException = ex;
+                        _logger.LogWarning(ex, "Failed to fetch releases from selected download server {ServerIndex}.", serverIndex);
+                    }
                 }
 
-                releases = await client.GetFromJsonAsync<GithubRelease[]>(apiUrl, _loadVersionsCts.Token);
+                if (releases is not { Length: > 0 })
+                {
+                    throw lastServerException ?? new HttpRequestException("Failed to fetch release list from the selected download server.");
+                }
             }
             
             if (releases != null)
@@ -528,6 +560,26 @@ public sealed partial class HoYoShadeDownloadView : UserControl
         {
             IsLoadingVersions = false;
         }
+    }
+
+    /// <summary>
+    /// 返回某个下载服务器下需要依次尝试的全部代理 host（随机顺序）。
+    /// GitHub（ServerIndex 0）不走代理，返回单个 null。
+    /// </summary>
+    private static string?[] GetOrderedProxies(int serverIndex)
+    {
+        if (serverIndex == 0)
+        {
+            return new string?[] { null };
+        }
+
+        string[] proxies = CloudProxyManager.GetAllProxiesForServer(serverIndex);
+        if (proxies.Length == 0)
+        {
+            return new string?[] { null };
+        }
+
+        return proxies.OrderBy(_ => Random.Shared.Next()).ToArray();
     }
 
     private static bool IsGitHubRateLimitExceeded(HttpRequestException ex)
