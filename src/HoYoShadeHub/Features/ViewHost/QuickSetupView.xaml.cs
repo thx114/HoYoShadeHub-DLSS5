@@ -351,6 +351,11 @@ public sealed partial class QuickSetupView : UserControl
                         TargetPath = targetPath,
                         PresetsHandling = 0, // Overwrite
                         VersionTag = release.TagName,
+                        // 这三项以前漏了：开了 ECH/DoH 的机器在向导页安装时不生效，
+                        // 进度条也因为没有总大小而算不出百分比。
+                        EnableEch = AppConfig.EnableEch,
+                        DohUrl = AppConfig.EnableEch ? DohService.GetCurrentDohUrl() : "",
+                        TotalBytes = asset.Size,
                     };
 
                     using var call = client.InstallHoYoShade(request, cancellationToken: cancellationToken);

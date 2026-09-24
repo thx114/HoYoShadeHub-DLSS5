@@ -190,7 +190,7 @@
                 Style="{ThemeResource AccentButtonStyle}"
                 CornerRadius="8,20,20,8">
             <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,0,8,0">
-                <TextBlock FontSize="14" Text="进入主界面" />
+                <TextBlock FontSize="14" Text="{x:Bind lang:Lang.WelcomeView_HoYoShadeHubStart}" />
                 <FontIcon FontSize="14" Glyph="&#xE76C;" />
             </StackPanel>
         </Button>

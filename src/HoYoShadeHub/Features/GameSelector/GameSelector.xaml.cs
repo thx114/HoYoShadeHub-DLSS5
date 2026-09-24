@@ -111,6 +111,9 @@ public sealed partial class GameSelector : UserControl
 
     private double lastScale = 1;
 
+    /// <summary>右键菜单是否开着。开着的时候不能把整排图标收起来，否则菜单会跟着消失。</summary>
+    private bool _isContextMenuOpen;
+
     /// <summary>
     /// 根据当前语言获取因缘精灵的Logo路径
     /// </summary>
@@ -493,6 +496,86 @@ public sealed partial class GameSelector : UserControl
         icon.IsPinned = false;
     }
 
+    /// <summary>
+    /// 右键菜单打开：记下「菜单开着」，并按当前位置禁用越界的「左移 / 右移」。
+    /// </summary>
+    private void GameIconMenuFlyout_Opening(object? sender, object e)
+    {
+        _isContextMenuOpen = true;
+
+        if (sender is not MenuFlyout flyout)
+        {
+            return;
+        }
+
+        if (flyout.Target is not FrameworkElement { DataContext: GameBizIcon icon })
+        {
+            return;
+        }
+
+        int index = GameBizIcons.IndexOf(icon);
+        foreach (var item in flyout.Items)
+        {
+            if (item is not MenuFlyoutItem menuItem)
+            {
+                continue;
+            }
+
+            if (menuItem.Tag as string == "MoveLeft")
+            {
+                menuItem.IsEnabled = index > 0;
+            }
+            else if (menuItem.Tag as string == "MoveRight")
+            {
+                menuItem.IsEnabled = index >= 0 && index < GameBizIcons.Count - 1;
+            }
+        }
+    }
+
+
+    /// <summary>右键菜单关闭：清掉「菜单开着」。</summary>
+    private void GameIconMenuFlyout_Closed(object? sender, object e)
+    {
+        _isContextMenuOpen = false;
+    }
+
+
+    /// <summary>
+    /// 左移一格。
+    /// 管理员模式下 WinUI 的拖动重排被系统禁掉（OLE 拖放跨完整性级别会被 UIPI 拦），
+    /// 所以给一个不依赖拖动、纯命令式的排序入口。
+    /// </summary>
+    private void MenuFlyoutItem_MoveLeft_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: GameBizIcon icon })
+        {
+            return;
+        }
+
+        int index = GameBizIcons.IndexOf(icon);
+        if (index > 0)
+        {
+            GameBizIcons.Move(index, index - 1);
+        }
+    }
+
+
+    /// <summary>右移一格</summary>
+    private void MenuFlyoutItem_MoveRight_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: GameBizIcon icon })
+        {
+            return;
+        }
+
+        int index = GameBizIcons.IndexOf(icon);
+        if (index >= 0 && index < GameBizIcons.Count - 1)
+        {
+            GameBizIcons.Move(index, index + 1);
+        }
+    }
+
+
     /// <summary>删掉这个客户端的 HoYoShade / ReShade 改动（= 游戏设置里那个「卸载/还原」）</summary>
     private async void GameIcon_UninstallShade_Click(object sender, RoutedEventArgs e)
     {
@@ -676,9 +759,9 @@ public sealed partial class GameSelector : UserControl
     /// <param name="e"></param>
     private void Border_CurrentGameIcon_PointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (FullBackgroundVisible || IsPinned)
+        if (FullBackgroundVisible || IsPinned || _isContextMenuOpen)
         {
-            // 当前游戏图标被固定或者全屏显示时，不隐藏所有游戏图标
+            // 当前游戏图标被固定、全屏显示或右键菜单开着时，不隐藏所有游戏图标
             return;
         }
         if (sender is UIElement ele)
@@ -703,7 +786,7 @@ public sealed partial class GameSelector : UserControl
     /// <param name="e"></param>
     private void Grid_GameIconsArea_PointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (FullBackgroundVisible || IsPinned)
+        if (FullBackgroundVisible || IsPinned || _isContextMenuOpen)
         {
             return;
         }

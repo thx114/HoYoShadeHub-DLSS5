@@ -521,9 +521,27 @@
                               Tapped="Grid_GameIcon_Tapped"
                               ToolTipService.ToolTip="{x:Bind GameName}"
                               Translation="0,0,16">
-                            <!--  右键：固定 / 取消固定 / 删掉这个客户端的 HoYoShade  -->
+                            <!--  右键：左移 / 右移 / 固定 / 取消固定 / 删掉这个客户端的 HoYoShade  -->
+                            <!--  管理员模式下 WinUI 的拖动重排（CanReorderItems）会被系统禁掉，
+                                  这里用菜单命令补一个排序入口，左右移动一格。  -->
                             <Grid.ContextFlyout>
-                                <MenuFlyout>
+                                <MenuFlyout Opening="GameIconMenuFlyout_Opening"
+                                            Closed="GameIconMenuFlyout_Closed">
+                                    <MenuFlyoutItem Click="MenuFlyoutItem_MoveLeft_Click"
+                                                    Tag="MoveLeft"
+                                                    Text="左移">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE72B;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Click="MenuFlyoutItem_MoveRight_Click"
+                                                    Tag="MoveRight"
+                                                    Text="右移">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE72A;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutSeparator />
                                     <MenuFlyoutItem Click="GameIcon_Unpin_Click"
                                                     Text="取消固定"
                                                     Visibility="{x:Bind IsPinned}" />
