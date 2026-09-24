@@ -7,19 +7,8 @@
       "author": "thx114",
       "games": ["hkrpg"],
       "gpu": "ada",
-      "api": "dx12",
       "sources": ["mfg-ada"],
-      "description": "崩铁（hkrpg）：RTX 40 系 6 倍帧生成 + NR。fx 4 份同内容的一组。"
-    },
-    {
-      "name": "[ada] 绝区零 dx11 x6",
-      "file": "ada-zzz-dx11-x6.ini",
-      "author": "thx114",
-      "games": ["nap"],
-      "gpu": "ada",
-      "api": "dx11",
-      "sources": ["mfg-ada"],
-      "description": "绝区零（nap）：DX11 + RTX 40 系 6 倍帧生成 + NR。"
+      "description": "崩铁（hkrpg）：RTX 40 系 6 倍帧生成 + NR。"
     },
     {
       "name": "[ada] 绝区零 dx12 x6 带缓冲",
@@ -29,7 +18,7 @@
       "gpu": "ada",
       "api": "dx12",
       "sources": ["mfg-ada"],
-      "description": "绝区零（nap）：DX12 + 40 系 6 倍帧生成，带缓冲。"
+      "description": "绝区零（nap）：DX12 + RTX 40 系 6 倍帧生成，带缓冲。"
     },
     {
       "name": "[ada] 绝区零 dx12 x6",
@@ -39,7 +28,7 @@
       "gpu": "ada",
       "api": "dx12",
       "sources": ["mfg-ada"],
-      "description": "绝区零（nap）：DX12 + 40 系 6 倍帧生成（插值 auto）。"
+      "description": "绝区零（nap）：DX12 + RTX 40 系 6 倍帧生成（插值 auto）。"
     }
   ]
 }
