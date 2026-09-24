@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "presets": [
+    {
+      "name": "[ada] 星穹铁道 6x 0.5NR 2层",
+      "file": "ada-starrail-6x-nr05-2layers.ini",
+      "author": "thx114",
+      "sources": ["mfg-ada"],
+      "description": "崩铁（hkrpg）实测：RTX 40 系 6 倍帧生成 + NR 50% / 2 层。只适用于 OptiScaler MFG Ada（mfg-ada）分支。"
+    }
+  ]
+}
