@@ -13,6 +13,11 @@
 - **修：下载服务器只试一个 host。** 自动选服务器时每个服务器只随机取一个 host，那一个不通整台就白给；
   现在一台服务器下所有 host 全部按随机顺序试，空列表也算失败，手动指定服务器同样重试（上游 4a070dd）。
 - **修：向导页安装框架时 ECH / DoH 不生效、进度条没有百分比。** 请求里补上 `EnableEch` / `DohUrl` / 总大小。
+- **修：RenoDX DLSS（`renodx-dlss.addon64`）看不到「从 DllMain 加载」，启用它也不会写进 `LoadFromDllMain`。**
+  它文件名里没有 `dlss5` 字样、目录给它的 tag 又是 `dlss` 而不是 `dlss5`，两条判据都漏了它；
+  但它二进制里同样引用 `nvngx_dlssnr.dll` / `sl.interposer`、同样在 `[RENODX-DLSS]` 段做
+  `DirectNeuralRendering` —— 就是 DLSS5 那一类（用户报的）。现在 `renodx-dlss*` 整族都按 DLSS5 处理
+  （与 hook 点那条判据一致），目录 tag 也补上了 `dlss5`；打开插件页会自动把它补进 `LoadFromDllMain`。
 - 向导页底部按钮、ReShade 下载页「下一步」文案改走语言资源（原来向导页是硬编码中文）。
 - 核对上游 8 个提交：`4cef52d`（忽略 DX12 检测）、`9b6e0fa`（安装状态）、`bdadc23` / `23469a6`（自动检查 + 新版本提示）
   本分支已有等价实现；`687318e`（快速开始页整体重做）与「只装必要」冲突，不移植。

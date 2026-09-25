@@ -1219,7 +1219,22 @@ ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UT
 - 顺手：向导页底部按钮与 ReShade 下载页「下一步」改用 `WelcomeView_HoYoShadeHubStart`（上游 `190254f`）。
 - 文件：`QuickSetupView.xaml.cs`、`QuickSetupView.xaml`、`ReShadeDownloadView.xaml`。
 
-#### (5) 核对过、本分支已有等价实现（不用再搬）
+#### (5) RenoDX DLSS 也算 DLSS5 一类（用户报「缺少 LoadFromDllMain」）
+- 现象：插件页上 `renodx-dlss.addon64`（显示名「RenoDX DLSS」）看不到「从 DllMain 加载」，
+  启用它也不会写进该游戏 `ReShade.ini` 的 `LoadFromDllMain`。
+- 根因：判「是不是 DLSS5 一类」的两条判据都漏了它 —— 扩展目录给 `renodx.dlss.sf` 的 tag 是
+  `dlss`（不是 `dlss5`），文件名判据又只认 slug 里的 `dlss5`，而它的 slug 是 `renodx-dlss`。
+  实测这个二进制里同样引用 `nvngx_dlssnr.dll` + `sl.interposer`、同样在 `[RENODX-DLSS]` 段做
+  `DirectNeuralRendering`，与 super-anus 那版是同一类。用户手装的（没有扩展目录记录）更是只靠文件名兜底。
+- 改法：`AddonFileInfo.IsDlss5ByName` 把 `renodx-dlss*` 整族都算进去（与 `IsHookPointCapable` 同一判据）；
+  目录数据（内置 + `catalog/plugins.json`）给 `renodx.dlss.sf` 的 tags 补上 `dlss5`，
+  这样「要 `nvngx_dlssnr.dll` / `sl.*`」的依赖检查对它也生效。
+- 回归测试：Extensions 自测段 15 改成**完全不提供 `dlss5` 标签**（复现真机手装场景），
+  新增 `IsDlss5ByName` 单元判据，段 21 断言 `renodx-dlss` 既被认成 DLSS5 一类、也会自动进 `LoadFromDllMain`。
+- 文件：`ReShadeProfile.cs`、`GamePluginService.cs`、`catalog/plugins.json`、
+  `catalog.builtin.json`、`Extensions.Tests/Program.cs`。
+
+#### (6) 核对过、本分支已有等价实现（不用再搬）
 - `4cef52d`「忽略 DX12 兼容性检测」= 已有（`AppConfig.GetIgnoreDX12Check` + 设置对话框 + `HoYoPlayService`）。
 - `9b6e0fa`「安装状态」= 框架下载页（`HoYoShadeDownloadView`）已有已装 / 版本面板。
 - `bdadc23` / `23469a6`：独立的框架与启动器自动检查开关、两者「有新版本」提示都已有
