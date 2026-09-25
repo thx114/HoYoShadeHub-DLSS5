@@ -919,14 +919,14 @@ Check(new GameEntryStore().Games.Count == 0, "空 store 不会炸");
 Console.WriteLine();
 Console.WriteLine("== 15. 每个游戏独立的插件开关 ==");
 var cachePath15 = Path.Combine(root, ".hysx", "addon-names.json");
-// 真机上 tags 由扩展目录提供（这里补上，否则「从 DllMain 加载」按设计只放行 DLSS5 插件，
-// 不带 dlss5 字样的 renodx-dlss 会被判成非 DLSS5 —— 那正是要测的东西）。
+// 这里故意**不提供任何 dlss5 标签**：真机上用户手装的 renodx-dlss.addon64 就没有扩展目录记录，
+// 得靠文件名的兜底判据把它认成 DLSS5 一类（否则「从 DllMain 加载」对它整条消失）。
 var serviceA = new GamePluginService(
     entryA,
     ShadeHostLocator.FromUserDataFolder(userDataFolder)!,
     cachePath15,
     null,
-    addonFileName => addonFileName.Contains("renodx-dlss", StringComparison.OrdinalIgnoreCase) ? ["dlss5"] : ["hdr"]);
+    addonFileName => new[] { "hdr" });
 GameEntry entryB = found2.First(e => e.Id == "biz:hkrpg_cn");
 var serviceB = new GamePluginService(entryB, ShadeHostLocator.FromUserDataFolder(userDataFolder)!, cachePath15);
 
@@ -987,6 +987,12 @@ Check(AddonFileInfo.Parse("renodx-dlss(ShortFuse_9.11.6).addon64")!.IsHookPointC
 Check(AddonFileInfo.Parse("renodx-dlss-SF(9.17.14).addon64")!.IsHookPointCapable, "renodx-dlss-SF 也算");
 Check(AddonFileInfo.Parse("renodx-dlss5-super-anus(1.0.8.18).addon64")!.IsHookPointCapable, "super-anus 算");
 Check(AddonFileInfo.Parse("dlss5-bridge.addon64")!.IsHookPointCapable == false, "dlss5-bridge 不算");
+
+// 文件名兜底判据（tags 没有 dlss5 时靠它）：renodx-dlss 整族都算 DLSS5 一类
+Check(AddonFileInfo.Parse("renodx-dlss(9.17.12).addon64")!.IsDlss5ByName, "renodx-dlss(9.17.12) 按文件名算 DLSS5 一类");
+Check(AddonFileInfo.Parse("renodx-dlss.addon64")!.IsDlss5ByName, "没有版本号/分支的 renodx-dlss.addon64 也算");
+Check(AddonFileInfo.Parse("renodx-dlss-SF(9.17.14).addon64")!.IsDlss5ByName, "renodx-dlss-SF 也算");
+Check(!AddonFileInfo.Parse("renodx-universal_ue-dof-fix.addon64")!.IsDlss5ByName, "无关插件不算 DLSS5 一类");
 
 // 只装了无关插件的游戏：hook 点还是不许改
 string onlyPlain = Path.Combine(root, "only-plain", "StarRail.exe");
@@ -1186,15 +1192,23 @@ var dlssService = new GamePluginService(
     addonFileName => addonFileName.Contains("super-anus", StringComparison.OrdinalIgnoreCase) ? ["dlss5"] : ["hdr"]);
 
 string superAnusFile = "renodx-dlss5-super-anus(1.0.8.18).addon64";
-string normalFile = "renodx-dlss(9.17.12).addon64";
-dlssService.SetAddonEnabled(normalFile, true);
+string renoDlssFile = "renodx-dlss(9.17.12).addon64";
 dlssService.SetAddonEnabled(superAnusFile, false);   // 先关掉，把 DllMain 那串清一下
 dlssService.SetAddonEnabled(superAnusFile, true);    // 再打开 → 应该自动进 LoadFromDllMain
 Check(dlssService.GetAddons().First(a => a.FileName == superAnusFile).LoadFromDllMain,
     "打开 dlss5 插件时自动勾上 LoadFromDllMain");
-Check(!dlssService.GetAddons().First(a => a.FileName == normalFile).LoadFromDllMain,
-    "非 dlss5 插件不会被动到 LoadFromDllMain");
 Check(dlssService.GetAddons().First(a => a.FileName == superAnusFile).IsDlss5, "这条被认成 dlss5 插件");
+
+// 真机最常见的那种：文件名没有 dlss5、扩展目录也没给 dlss5 标签的 renodx-dlss。
+// 它同样引用 nvngx_dlssnr.dll，所以也必须能自动进 LoadFromDllMain（用户报的正是这个）
+dlssService.SetAddonEnabled(renoDlssFile, false);
+dlssService.SetAddonEnabled(renoDlssFile, true);
+Check(dlssService.GetAddons().First(a => a.FileName == renoDlssFile).IsDlss5,
+    "renodx-dlss 按文件名兜底认成 dlss5 一类");
+Check(dlssService.GetAddons().First(a => a.FileName == renoDlssFile).LoadFromDllMain,
+    "打开 renodx-dlss 时也自动勾上 LoadFromDllMain");
+Check(!dlssService.SetLoadFromDllMain("hdr-tonemap.addon64", true),
+    "真正无关的插件仍然不许勾进 LoadFromDllMain");
 
 // 真机目录实测（有就读，没有就 SKIP）
 string realAddonsDir2 = @"D:\APPS\HoYoShadeHub\HoYoShade\reshade-shaders\Addons";

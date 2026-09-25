@@ -552,9 +552,20 @@ public sealed partial class AddonFileInfo
     /// 手里明明是 DLSS5 的插件判成「不是」，于是「从 DllMain 加载」被灰掉、写盘也被拒。
     /// 文件名里认得出 <c>dlss5</c> 也算，两条判据取并集。
     /// </para>
+    ///
+    /// <para>
+    /// <c>renodx-dlss*</c> 整族都算。最典型的 <c>renodx-dlss.addon64</c>（RenoDX DLSS，显示名
+    /// 「RenoDX DLSS」）名字里没有 <c>dlss5</c> 字样，扩展目录给它的 tag 又是 <c>dlss</c> 而不是
+    /// <c>dlss5</c>；但它二进制里同样引用 <c>nvngx_dlssnr.dll</c> + <c>sl.interposer</c>、同样在
+    /// <c>[RENODX-DLSS]</c> 段做 <c>DirectNeuralRendering</c> —— 就是 DLSS5 那一类。
+    /// 漏判的后果：「从 DllMain 加载」对它整条消失（勾选框不显示、写盘被拒、启用也不自动加），
+    /// 用户报过。
+    /// </para>
     /// </summary>
     public bool IsDlss5ByName =>
-        Slug is not null && Slug.Contains("dlss5", StringComparison.OrdinalIgnoreCase);
+        Slug is not null
+        && (Slug.Contains("dlss5", StringComparison.OrdinalIgnoreCase)
+            || Slug.StartsWith("renodx-dlss", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>文件被重命名为 .addon64x 之类 —— 这是「全局禁用」</summary>
     public bool IsRenamedDisabled { get; init; }

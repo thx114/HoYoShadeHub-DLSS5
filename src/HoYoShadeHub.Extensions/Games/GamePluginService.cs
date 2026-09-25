@@ -350,7 +350,8 @@ public sealed class GamePluginService
     /// 是不是 DLSS5 那一类插件。两条判据取并集：
     /// <list type="bullet">
     /// <item>扩展目录里给的 tags 里有 <c>dlss5</c>（首选）</item>
-    /// <item>文件名 slug 里带 <c>dlss5</c>（标签表没配到 / 没更新时的兜底）</item>
+    /// <item>文件名 slug 里带 <c>dlss5</c>，或者属于 <c>renodx-dlss*</c> 那一族
+    /// （标签表没配到 / 没更新时的兜底）</item>
     /// </list>
     /// 只看 tags 会漏判 —— 用户手里明明是 DLSS5 的插件，标签表里没有，
     /// 结果「从 DllMain 加载」被灰掉、写盘也被拒。

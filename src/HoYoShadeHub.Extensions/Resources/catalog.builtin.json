@@ -63,9 +63,9 @@
       "name": "RenoDX DLSS (ShortFuse)",
       "version": "latest",
       "author": "clshortfuse / RankFTW",
-      "description": "RenoDX 的 DLSS 版插件（ShortFuse 分支），与上面的 DLSS5 是不同一代实现，同一个 RHI 资产仓库。",
+      "description": "RenoDX 的 DLSS 版插件（ShortFuse 分支），与上面的 DLSS5 是不同一代实现，同一个 RHI 资产仓库。同样引用 nvngx_dlssnr.dll / sl.interposer，所以也按 DLSS5 一类处理（要勾 LoadFromDllMain）。",
       "homepage": "https://github.com/RankFTW/rhi-repo/releases",
-      "tags": ["dlss", "neural", "rtx"],
+      "tags": ["dlss", "dlss5", "neural", "rtx"],
       "hosts": ["HoYoShade"],
       "source": {
         "type": "github-release",
