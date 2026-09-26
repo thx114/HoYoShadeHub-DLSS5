@@ -72,7 +72,7 @@
                         Click="Button_AlignIni_Click"
                         Content="指回当前 HoYoShade"
                         Visibility="Collapsed"
-                        ToolTipService.ToolTip="把这份 ReShade.ini 里的绝对路径（AddonPath / EffectSearchPaths / PresetPath / 字体 / 截图目录）改成当前这个 HoYoShade 的；用哪个启动器，ini 就对应到哪" />
+                        ToolTipService.ToolTip="把这份 ReShade.ini 里的绝对路径（AddonPath / EffectSearchPaths / PresetPath / 字体 / 截图目录）改成当前这个 HoYoShade 的；用哪个启动器，ini 就对应到哪。游戏用专属插件目录（每游戏插件包）时不会动 AddonPath —— 那是正常状态" />
                 <Button x:Name="Button_PickExe"
                         Click="Button_PickExe_Click"
                         Content="指定主程序…"
@@ -81,7 +81,7 @@
                         Click="Button_Dlss5CompatCheck_Click"
                         Content="DLSS5 兼容性检测"
                         Style="{ThemeResource AccentButtonStyle}"
-                        ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性，并提供一键修复" />
+                        ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 20 项兼容性，并提供一键修复" />
             </StackPanel>
         </Grid>
 
@@ -154,33 +154,43 @@
                                                    Style="{ThemeResource CaptionTextBlockStyle}"
                                                    Text="{x:Bind FileName, Mode=OneWay}"
                                                    TextTrimming="CharacterEllipsis" />
+
+                                        <!--  需求1：这个插件装了多个版本时，就在这张卡片里选这个游戏用哪一版。
+                                             数据模板里不能挂 SelectionChanged，所以用 TwoWay 绑定 + setter 回调
+                                             （和 OptiScaler 配置选择同款）。只有一个版本时不显示。  -->
+                                        <StackPanel Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    Visibility="{x:Bind VersionChoiceVisibility, Mode=OneWay}">
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                                       Text="版本" />
+                                            <ComboBox MinWidth="180"
+                                                      ItemsSource="{x:Bind VersionOptions, Mode=OneWay}"
+                                                      SelectedItem="{x:Bind SelectedVersionOption, Mode=TwoWay}"
+                                                      ToolTipService.ToolTip="{x:Bind VersionChoiceHint, Mode=OneWay}" />
+                                        </StackPanel>
                                     </StackPanel>
 
-                                    <!--  右侧：启用开关顶对齐，DllMain 开关沉到右下角并右对齐  -->
-                                    <Grid Grid.Column="1">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="*" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-
-                                        <ToggleSwitch Grid.Row="0"
-                                                      MinWidth="0"
+                                    <!--  右侧：启用开关和 LoadFromDllMain 都在靠上面的同一块区域（用户要求第 6 条）  -->
+                                    <StackPanel Grid.Column="1"
+                                                VerticalAlignment="Top"
+                                                HorizontalAlignment="Right"
+                                                Spacing="4">
+                                        <ToggleSwitch MinWidth="0"
                                                       HorizontalAlignment="Right"
                                                       IsEnabled="{x:Bind CanToggle, Mode=OneWay}"
                                                       IsOn="{x:Bind Enabled, Mode=TwoWay}"
                                                       OffContent="禁用"
                                                       OnContent="启用" />
 
-                                        <!--  只有 DLSS5 类插件才显示这条（非 DLSS5 直接不出现，不是变灰）  -->
-                                        <CheckBox Grid.Row="1"
-                                                  Margin="0,4,0,0"
-                                                  HorizontalAlignment="Right"
+                                        <!--  只有「DLSS5 类 + 插件自己不会登记加载方式」时才显示这条（用户要求第 7 条）  -->
+                                        <CheckBox HorizontalAlignment="Right"
                                                   Content="LoadFromDllMain"
                                                   IsChecked="{x:Bind LoadFromDllMain, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind CanEditLoadFromDllMain, Mode=OneWay}"
                                                   ToolTipService.ToolTip="DLSS5 的帧生成需要在 DllMain 阶段就加载；空槽位会原样保留"
                                                   Visibility="{x:Bind LoadFromDllMainVisibility, Mode=OneWay}" />
-                                    </Grid>
+                                    </StackPanel>
                                 </Grid>
                             </Border>
                         </DataTemplate>
@@ -246,6 +256,24 @@
                                    Style="{ThemeResource CaptionTextBlockStyle}"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
+
+                        <MenuFlyoutSeparator Margin="0,4,0,0" />
+
+                        <!--  注入时机：HoYoShade / ReShade 注入那一步的等待时间（按游戏）  -->
+                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="注入时机" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                   Text="越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样），调大才会等。"
+                                   TextWrapping="Wrap" />
+                        <NumberBox x:Name="NumberBox_ShadeInjectDelay"
+                                   MinWidth="160"
+                                   Minimum="0"
+                                   Maximum="30"
+                                   SmallChange="1"
+                                   SpinButtonPlacementMode="Compact"
+                                   PlaceholderText="跟随全局"
+                                   ValueChanged="NumberBox_ShadeInjectDelay_ValueChanged"
+                                   ToolTipService.ToolTip="HoYoShade / ReShade 注入前等几秒。0 = 立即；留空 = 跟随全局默认（设置对话框里的「默认注入时机」）。只影响这一个游戏。" />
 
                         <MenuFlyoutSeparator Margin="0,4,0,0" />
 

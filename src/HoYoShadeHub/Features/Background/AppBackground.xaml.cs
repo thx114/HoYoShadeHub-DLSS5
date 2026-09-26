@@ -426,7 +426,7 @@ public sealed partial class AppBackground : UserControl
             return;
         }
         _videoSemaphore.Wait();
-        DispatcherQueue?.TryEnqueue(() =>
+        bool queued = DispatcherQueue?.TryEnqueue(() =>
         {
             try
             {
@@ -467,7 +467,13 @@ public sealed partial class AppBackground : UserControl
             {
                 _videoSemaphore.Release();
             }
-        });
+        }) ?? false;
+        if (!queued)
+        {
+            // 入队失败（窗口正在拆、队列关了）：lambda 永远不会跑，Release 只能在这里补。
+            // 不补的话信号量计数永久少一，视频背景从此每帧都在开头直接 return —— 不再刷新。
+            _videoSemaphore.Release();
+        }
     }
 
 

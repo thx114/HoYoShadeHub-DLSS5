@@ -234,6 +234,27 @@
         </Button>
 
 
+        <!--  关闭游戏（游戏运行中才出现；和设置齿轮一样叠在主按钮边上）  -->
+        <Button x:Name="Button_CloseGame"
+                Width="44"
+                Height="44"
+                Padding="12"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Stretch"
+                Background="Transparent"
+                BorderThickness="0"
+                Command="{x:Bind CloseGameCommand}"
+                CornerRadius="22"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                IsEnabled="{x:Bind CloseGameEnabled}"
+                Style="{ThemeResource GameButtonStyle}"
+                ToolTipService.ToolTip="关闭正在运行的游戏"
+                Visibility="{x:Bind IsCloseGameVisible}">
+            <FontIcon FontSize="14"
+                      Glyph="&#xE71A;" />
+        </Button>
+
+
         <!--  游戏设置  -->
         <Button x:Name="Button_Setting"
                 Width="44"

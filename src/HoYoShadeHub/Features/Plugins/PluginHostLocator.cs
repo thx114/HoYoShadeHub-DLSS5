@@ -122,7 +122,9 @@ internal static class PluginHostLocator
             return null;
         }
 
-        var manager = new ExtensionManagerService(host);
+        // 版本归档库：<CacheRoot>\plugins\<extId>\<tag>\ —— 装过的版本各留一份，
+        // 反复切版本不用重新下载（用户要求 1）。
+        var manager = new ExtensionManagerService(host, new AddonVersionStore(AppConfig.CacheRoot));
 
         // 远端目录（每天拉一次，缓存见 RemoteCatalogService）里的插件条目按 id 覆盖内置的 ——
         // 以后改插件来源 / 加新插件不用重新发版。

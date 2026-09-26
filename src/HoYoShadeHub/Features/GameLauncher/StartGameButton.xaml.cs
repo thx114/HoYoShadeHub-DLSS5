@@ -33,6 +33,14 @@ public sealed partial class StartGameButton : UserControl
     public ICommand SettingCommand { get; set => SetProperty(ref field, value); }
 
 
+    /// <summary>「关闭游戏」：游戏运行中出现在按钮左侧的小按钮（用户要求：游戏运行中可以点这里关掉游戏）</summary>
+    public ICommand CloseGameCommand { get; set => SetProperty(ref field, value); }
+
+
+    /// <summary>关闭过程进行中：按钮禁用防连点</summary>
+    public bool IsClosingGame { get; set { if (SetProperty(ref field, value)) OnPropertyChanged(nameof(CloseGameEnabled)); } }
+
+
     public string? RunningGameInfo { get; set => SetProperty(ref field, value); }
 
 
@@ -63,6 +71,14 @@ public sealed partial class StartGameButton : UserControl
 
 
     public bool GameStateIsInstalling => GameState is GameState.Installing;
+
+
+    /// <summary>游戏运行中才显示「关闭游戏」</summary>
+    public bool IsCloseGameVisible => GameState is GameState.GameIsRunning;
+
+
+    /// <summary>关闭进行中（或不在运行态）禁用关闭按钮</summary>
+    public bool CloseGameEnabled => GameState is GameState.GameIsRunning && !IsClosingGame;
 
 
     public bool IsAccentColorBackgroundVisible => Button_GameAction.IsEnabled && GameState is not GameState.Installing;
@@ -125,6 +141,8 @@ public sealed partial class StartGameButton : UserControl
         OnPropertyChanged(nameof(IsAccentColorBackgroundVisible));
         OnPropertyChanged(nameof(IsGameActionCommandRunning));
         OnPropertyChanged(nameof(StartGameButtonText));
+        OnPropertyChanged(nameof(IsCloseGameVisible));
+        OnPropertyChanged(nameof(CloseGameEnabled));
         UpdateButtonForeground();
     }
 

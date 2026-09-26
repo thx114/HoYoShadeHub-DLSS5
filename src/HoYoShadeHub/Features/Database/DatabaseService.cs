@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using Serilog;
 
 namespace HoYoShadeHub.Features.Database;
 
@@ -35,7 +36,35 @@ internal static class DatabaseService
 
 
 
+    /// <summary>DB 文件路径；没初始化过是 null（日志用）</summary>
+    public static string? DatabasePath => _databasePath;
+
+
+    /// <summary>初始化 / 迁移过程里的异常消息；成功是 null（日志用，别吞掉它）</summary>
+    public static string? InitializationError { get; private set; }
+
+
+    /// <summary>连接串有没有配好。没配好的话 Microsoft.Data.Sqlite 会**静默**开一个空临时库，
+    /// 所有查询都变成「no such table」——比报错更难查。</summary>
+    public static bool IsInitialized => !string.IsNullOrEmpty(_connectionString);
+
+
+
     public static SqliteConnection CreateConnection()
+    {
+        if (!IsInitialized)
+        {
+            throw new InvalidOperationException(
+                "HoYoShadeHub 数据库还没有初始化（DatabaseService.SetDatabase 没被调用过）。");
+        }
+
+        return OpenConnection();
+    }
+
+
+
+    /// <summary>不管有没有初始化，直接按当前连接串开一个连接（InitializeDatabase 自己用，避免递归）</summary>
+    private static SqliteConnection OpenConnection()
     {
         var con = new SqliteConnection(_connectionString);
         con.Open();
@@ -46,11 +75,24 @@ internal static class DatabaseService
 
     public static void SetDatabase(string folder)
     {
-        if (Directory.Exists(folder))
+        if (string.IsNullOrWhiteSpace(folder))
         {
+            return;
+        }
+
+        try
+        {
+            // 目录不存在也认 —— 便携包第一次跑 / 用户在引导里选的目录还没建，
+            // 以前 Directory.Exists 为 false 就**静默什么都不做**，DB 一直没初始化。
+            Directory.CreateDirectory(folder);
             _databasePath = Path.GetFullPath(Path.Combine(folder, "HoYoShadeHubDatabase.db"));
             _connectionString = $"DataSource={_databasePath};";
             InitializeDatabase();
+        }
+        catch (Exception ex)
+        {
+            InitializationError = ex.Message;
+            Debug.WriteLine(ex);
         }
     }
 
@@ -60,16 +102,73 @@ internal static class DatabaseService
     {
         lock (_lock)
         {
-            using var con = CreateConnection();
-            int version = con.QueryFirstOrDefault<int>("PRAGMA USER_VERSION;");
-            if (version == 0)
+            try
             {
-                con.Execute("PRAGMA JOURNAL_MODE = WAL;");
+                using var con = OpenConnection();
+                int version = con.QueryFirstOrDefault<int>("PRAGMA USER_VERSION;");
+                if (version == 0)
+                {
+                    con.Execute("PRAGMA JOURNAL_MODE = WAL;");
+                }
+                foreach (var sql in DatabaseSqls.Skip(version))
+                {
+                    con.Execute(sql);
+                }
+
+                EnsureCoreTables(con);
+                InitializationError = null;
             }
-            foreach (var sql in DatabaseSqls.Skip(version))
+            catch (Exception ex)
             {
-                con.Execute(sql);
+                InitializationError = ex.Message;
+                Debug.WriteLine(ex);
             }
+        }
+    }
+
+
+
+    /// <summary>
+    /// 兜底补救：<c>USER_VERSION</c> 说「已经迁移过了」，但表其实不在。
+    ///
+    /// <para>
+    /// 以前 <c>InitializeDatabase</c> 的异常会被一路上抛到 <c>AppConfig</c> 静态构造的
+    /// <c>catch { }</c> 里彻底吞掉：DB 停在「版本号 N、表只有 N-1 个」这种半吊子状态，
+    /// 之后每次查询都报 <c>no such table</c>，而且日志里一个字都没有。
+    /// 这里只补最核心的两张表（KVT / PlayTimeItem，也就是各子进程都要用的那两张），
+    /// 纯 <c>CREATE TABLE IF NOT EXISTS</c>，不动 <c>USER_VERSION</c>。
+    /// </para>
+    /// </summary>
+    private static void EnsureCoreTables(SqliteConnection con)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS KVT
+            (
+                Key   TEXT NOT NULL PRIMARY KEY,
+                Value TEXT NOT NULL,
+                Time  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS PlayTimeItem
+            (
+                TimeStamp INTEGER PRIMARY KEY,
+                GameBiz   INTEGER NOT NULL,
+                Pid       INTEGER NOT NULL,
+                State     INTEGER NOT NULL,
+                CursorPos INTEGER NOT NULL,
+                Message   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS IX_PlayTimeItem_GameBiz ON PlayTimeItem(GameBiz);
+            CREATE INDEX IF NOT EXISTS IX_PlayTimeItem_Pid ON PlayTimeItem(Pid);
+            CREATE INDEX IF NOT EXISTS IX_PlayTimeItem_State ON PlayTimeItem(State);
+            """;
+
+        int missing = con.QueryFirstOrDefault<int>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('KVT', 'PlayTimeItem');");
+
+        if (missing < 2)
+        {
+            con.Execute(sql);
         }
     }
 
@@ -224,7 +323,11 @@ internal static class DatabaseService
             con.Execute("INSERT OR REPLACE INTO KVT (Key, Value, Time) VALUES (@Key, @Value, @Time);", new KVT(key, value?.ToString() ?? "", time ?? DateTime.Now));
 
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // 写失败不能无声无息：KVT 里存着安装路径 / 插件版本选择 / 各种开关，丢了用户只会觉得「设置坏了」
+            Log.Error(ex, "KVT SetValue failed: {Key}", key);
+        }
     }
 
 

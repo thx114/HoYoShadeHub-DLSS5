@@ -1,3 +1,4 @@
+using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Models;
 using System.IO.Compression;
 
@@ -77,20 +78,29 @@ public sealed class ExtensionPackageFetcher
         string workRoot = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Extensions", $"{Sanitize(manifest.Id)}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workRoot);
 
-        switch (source.Type)
+        try
         {
-            case ExtensionSourceType.Local:
-                return FetchLocal(manifest, workRoot);
+            switch (source.Type)
+            {
+                case ExtensionSourceType.Local:
+                    return FetchLocal(manifest, workRoot);
 
-            case ExtensionSourceType.Direct:
-                return await FetchDirectAsync(manifest, workRoot, source, progress, cancellationToken, pauseToken);
+                case ExtensionSourceType.Direct:
+                    return await FetchDirectAsync(manifest, workRoot, source, progress, cancellationToken, pauseToken);
 
-            case ExtensionSourceType.GithubRelease:
-                return await FetchGithubAsync(manifest, workRoot, source, progress, cancellationToken, tagOverride, pauseToken);
+                case ExtensionSourceType.GithubRelease:
+                    return await FetchGithubAsync(manifest, workRoot, source, progress, cancellationToken, tagOverride, pauseToken);
 
-            default:
-                HysxUtil.TryDeleteDirectory(workRoot);
-                throw new NotSupportedException($"未知的 source.type: {source.Type}");
+                default:
+                    throw new NotSupportedException($"未知的 source.type: {source.Type}");
+            }
+        }
+        catch
+        {
+            // 失败时 payload 还没建出来，调用方没法替我们清理 ——
+            // workRoot（可能含几百 MB 的 .part）必须在这里删掉，不然每次失败下载都泄漏一个临时目录
+            HysxUtil.TryDeleteDirectory(workRoot);
+            throw;
         }
     }
 
@@ -124,13 +134,14 @@ public sealed class ExtensionPackageFetcher
 
         if (IsArchive(path))
         {
-            ZipFile.ExtractToDirectory(path, workRoot, overwriteFiles: true);
+            ZipExtractor.ExtractToDirectory(path, workRoot);
             payload.TrackTempRoot(workRoot);
         }
         else
         {
             string dest = Path.Combine(workRoot, Path.GetFileName(path));
             File.Copy(path, dest, overwrite: true);
+            payload.TrackTempRoot(workRoot);
         }
 
         return payload;
@@ -195,7 +206,7 @@ public sealed class ExtensionPackageFetcher
         {
             string extractRoot = Path.Combine(workRoot, "payload");
             Directory.CreateDirectory(extractRoot);
-            ZipFile.ExtractToDirectory(downloadPath, extractRoot, overwriteFiles: true);
+            ZipExtractor.ExtractToDirectory(downloadPath, extractRoot);
             File.Delete(downloadPath);
 
             var payload = new ResolvedExtensionPayload

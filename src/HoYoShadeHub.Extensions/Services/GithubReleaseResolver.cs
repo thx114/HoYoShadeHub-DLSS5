@@ -193,7 +193,9 @@ public sealed class GithubReleaseResolver
             throw new ArgumentException($"不是合法的 GitHub 仓库: {source.Repository}", nameof(source));
         }
 
-        string key = $"art|{repo}|{tagOverride}|{source.AssetName}|{source.AssetPattern}";
+        // TagPattern / IncludePrerelease 都参与选 tag：不进 key 的话，同仓库、同资产、不同 tagPattern
+        // 的两个来源会命中同一份磁盘缓存（活 24h），装错文件还没报错
+        string key = $"art|{repo}|{tagOverride}|{source.TagPattern}|{source.IncludePrerelease}|{source.AssetName}|{source.AssetPattern}";
         if (ReadCache<GithubArtifact>(key, forceRefresh) is { } cached)
         {
             return cached;
@@ -306,8 +308,11 @@ public sealed class GithubReleaseResolver
         string repository,
         CancellationToken cancellationToken)
     {
-        string? fromAtom = await TryResolveTagFromAtomAsync(source, repository, cancellationToken);
-        return fromAtom ?? await TryResolveTagFromReleasesHtmlAsync(source, repository, maxPages: 6, cancellationToken);
+        // 优先 releases 列表页：卡片里的 datetime 就是 published_at，能挑出**真正最新发布**的那条。
+        // atom 只当兜底 —— 它的 <updated> 是「最后编辑时间」，拿它比大小会挑错（Veritas 就是：
+        // 0.2.52 应该最新，但它被编辑得晚的 0.2.51/0.2.50/0.2.49 反而更「新」）。
+        string? fromHtml = await TryResolveTagFromReleasesHtmlAsync(source, repository, maxPages: 6, cancellationToken);
+        return fromHtml ?? await TryResolveTagFromAtomAsync(source, repository, cancellationToken);
     }
 
     /// <summary>
@@ -324,7 +329,7 @@ public sealed class GithubReleaseResolver
 
         for (int page = 1; page <= maxPages; page++)
         {
-            List<string> tags = [];
+            List<(string Tag, DateTimeOffset? Published)> cards;
 
             try
             {
@@ -342,31 +347,26 @@ public sealed class GithubReleaseResolver
                 }
 
                 string html = await response.Content.ReadAsStringAsync(cancellationToken);
-                foreach (Match match in _releaseTagHrefRegex.Matches(html))
-                {
-                    string tag = Uri.UnescapeDataString(match.Groups["tag"].Value);
-                    if (!tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
-                    {
-                        tags.Add(tag);
-                    }
-                }
+                cards = ExtractReleaseCards(html);
             }
             catch
             {
                 break;
             }
 
-            if (tags.Count == 0)
+            if (cards.Count == 0)
             {
                 break;   // 没有更多页了
             }
 
-            foreach (string tag in tags)
+            // 页面顺序是「release 创建时间」新→旧 —— 同一页里「后发布的那条」可能排在下面，
+            // 所以命中里取**发布时间最晚**的那条，而不是第一条。
+            List<(string Tag, DateTimeOffset? Published)> matched =
+                [.. cards.Where(c => tagRegex is null || tagRegex.IsMatch(c.Tag))];
+
+            if (matched.Count > 0)
             {
-                if (tagRegex is null || tagRegex.IsMatch(tag))
-                {
-                    return tag;
-                }
+                return matched.OrderByDescending(m => m.Published ?? DateTimeOffset.MinValue).First().Tag;
             }
         }
 
@@ -390,7 +390,8 @@ public sealed class GithubReleaseResolver
         }
 
         // 用户要求：自动检查一天只拉一次；点「检查更新」这类手动动作传 forceRefresh: true
-        string key = $"ver|{repo}|{max}|{source.TagPattern}";
+        // ver3：老缓存里存的是把 atom updated_at 当发布时间的错列表 / 只有前 10 条的半截列表，换前缀作废
+        string key = $"ver3|{repo}|{max}|{source.TagPattern}";
         if (ReadCache<List<ExtensionVersion>>(key, forceRefresh) is { } cached)
         {
             return cached;
@@ -423,7 +424,7 @@ public sealed class GithubReleaseResolver
 
         var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-        void Add(string tag, DateTimeOffset? published)
+        void Add(string tag, DateTimeOffset? published, bool publishedIsAuthoritative)
         {
             if (string.IsNullOrWhiteSpace(tag) || (tagRegex is not null && !tagRegex.IsMatch(tag)))
             {
@@ -432,10 +433,18 @@ public sealed class GithubReleaseResolver
 
             if (!seen.Add(tag))
             {
-                // 同一个 tag 又见一次：这次带了发布时间就补上（atom 那批有、翻 HTML 那批本来没有）
+                // 同一个 tag 又见一次：换一个**更可靠**的发布时间。
+                //
+                // atom 那条 <updated> 是 Release 的**最后编辑时间**（authoritative=false）；
+                // releases 列表页卡片里的 datetime 才是 published_at（authoritative=true，
+                // 实测和 GitHub API 的 published_at 一模一样）。
+                //
+                // 以前是「先到先得」——atom 先抓，于是错误的编辑时间把正确发布时间挡住了：
+                // 实测 hessiser/veritas 的 0.2.52 明明 06-23 发布，却显示成 07-15，
+                // 排到 0.2.49/50/51（07-17 被批量编辑过）后面，「装最新」反而装成 0.2.49。
                 if (published is not null
                     && positions.TryGetValue(tag, out int position)
-                    && versions[position].Published is null)
+                    && (publishedIsAuthoritative || versions[position].Published is null))
                 {
                     versions[position] = versions[position] with { Published = published };
                 }
@@ -457,7 +466,8 @@ public sealed class GithubReleaseResolver
                 string xml = await response.Content.ReadAsStringAsync(cancellationToken);
                 foreach (ExtensionVersion version in ParseAtom(xml))
                 {
-                    Add(version.Tag, version.Published);
+                    // atom 只有 updated_at，先当低置信度的兜底值；下面的 HTML 卡片会用真发布时间覆盖
+                    Add(version.Tag, version.Published, publishedIsAuthoritative: false);
                 }
             }
         }
@@ -483,15 +493,19 @@ public sealed class GithubReleaseResolver
                 }
 
                 string html = await response.Content.ReadAsStringAsync(cancellationToken);
-                int before = versions.Count;
-                foreach ((string tag, DateTimeOffset? published) in ExtractReleaseCards(html))
-                {
-                    Add(tag, published);
-                }
+                List<(string Tag, DateTimeOffset? Published)> cards = ExtractReleaseCards(html);
 
-                if (versions.Count == before)
+                // 「这一页没有任何卡片」才是没有更多页了。
+                // 不能拿「这一页没加进新 tag」当结束条件 —— 第一页的 10 条往往和 atom 完全重复，
+                // 那样第 2 页以后的版本（veritas 有 25 个 release）永远读不到（用户下拉里只有 10 条）。
+                if (cards.Count == 0)
                 {
                     break;
+                }
+
+                foreach ((string tag, DateTimeOffset? published) in cards)
+                {
+                    Add(tag, published, publishedIsAuthoritative: true);
                 }
             }
             catch
@@ -567,7 +581,7 @@ public sealed class GithubReleaseResolver
         @"/Repository/\d+/(?<tag>[^<]+)</id>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    /// <summary>atom entry 里的时间（= Release 的 published_at）</summary>
+    /// <summary>atom entry 里的时间（= Release 的 **updated_at**：最后编辑时间，**不是** published_at）</summary>
     private static readonly Regex _atomUpdatedRegex = new(
         @"<updated>(?<updated>[^<]+)</updated>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -644,8 +658,9 @@ public sealed class GithubReleaseResolver
             Regex? tagRegex = BuildTagRegex(source.TagPattern);
             string xml = await response.Content.ReadAsStringAsync(cancellationToken);
 
-            // atom 的顺序**不是**发布时间倒序（实测 rhi-repo 里最新发布的 DLSS-Enabler-4.10.0.7
-            // 排在第 4 位），所以取「命中的里面发布时间最晚的」，而不是第一个。
+            // 兜底路径：atom 里只有 updated_at（最后编辑时间），拿它当「发布时间」并不可靠 ——
+            // 实测 veritas 会挑成 0.2.51 而不是 0.2.52。主路径已经改成 releases 列表页按
+            // published_at 挑；这里只在列表页拿不到时用，仍然是「命中里 edited 最晚的」。
             string? latest = null;
             DateTimeOffset newest = DateTimeOffset.MinValue;
 

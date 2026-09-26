@@ -11,6 +11,7 @@ using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -106,7 +107,8 @@ public sealed partial class ScreenshotPage : PageBase
 
     private List<ScreenshotFolder> _folders = new();
 
-    private Dictionary<string, ScreenshotItem> _screenshotDict = new();
+    // FileSystemWatcher 的回调在线程池线程上跑（每个截图目录一个 watcher），会并发碰这个字典 —— 必须线程安全
+    private ConcurrentDictionary<string, ScreenshotItem> _screenshotDict = new();
 
     private ObservableCollection<ScreenshotItem>? _screenshotItems;
 
@@ -369,7 +371,7 @@ public sealed partial class ScreenshotPage : PageBase
                     {
                         if (group.Contains(item))
                         {
-                            _screenshotDict.Remove(item.Name);
+                            _screenshotDict.TryRemove(item.Name, out _);
                             DispatcherQueue.TryEnqueue(() =>
                             {
                                 _screenshotItems?.Remove(item);
@@ -696,7 +698,7 @@ public sealed partial class ScreenshotPage : PageBase
                     {
                         if (group.Remove(item))
                         {
-                            _screenshotDict.Remove(item.FileName);
+                            _screenshotDict.TryRemove(item.FileName, out _);
                             if (group.Count == 0)
                             {
                                 ScreenshotGroups.Remove(group);
@@ -717,7 +719,7 @@ public sealed partial class ScreenshotPage : PageBase
                 {
                     if (group.Remove(item))
                     {
-                        _screenshotDict.Remove(item.FileName);
+                        _screenshotDict.TryRemove(item.FileName, out _);
                         if (group.Count == 0)
                         {
                             ScreenshotGroups.Remove(group);

@@ -1,3 +1,4 @@
+using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Models;
 using System.Diagnostics;
 using System.IO.Compression;
@@ -157,6 +158,7 @@ public sealed class OptiScalerDownloader
             if (Directory.Exists(setupTarget))
             {
                 HysxUtil.TryDeleteDirectory(setupTarget);
+                EnsureTargetWritable(setupTarget);
             }
 
             Directory.CreateDirectory(setupTarget);
@@ -176,6 +178,26 @@ public sealed class OptiScalerDownloader
             return FindInLibrary(library, source.Id, tag);
         }
 
+        // 裸 dll（release 里只挂一个 dll，没有压缩包）：直接下进库里，不走解压。
+        if (IsRawDll(asset))
+        {
+            string target = library.DirectoryFor(source.Id, tag);
+            if (Directory.Exists(target))
+            {
+                HysxUtil.TryDeleteDirectory(target);
+                EnsureTargetWritable(target);
+            }
+
+            Directory.CreateDirectory(target);
+
+            string dllPath = Path.Combine(target, OptiScalerLibrary.Sanitize(artifact.AssetName));
+            await _downloads.DownloadToFileAsync(artifact.DownloadUrl, dllPath, null, progress, cancellationToken, pauseToken);
+
+            WriteBuildManifest(target, source, tag, artifact.AssetName);
+
+            return FindInLibrary(library, source.Id, tag);
+        }
+
         string workRoot = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.OptiScaler", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workRoot);
 
@@ -186,12 +208,13 @@ public sealed class OptiScalerDownloader
 
             string extractRoot = Path.Combine(workRoot, "payload");
             Directory.CreateDirectory(extractRoot);
-            ZipFile.ExtractToDirectory(zipPath, extractRoot, overwriteFiles: true);
+            ZipExtractor.ExtractToDirectory(zipPath, extractRoot);
 
             string target = library.DirectoryFor(source.Id, tag);
             if (Directory.Exists(target))
             {
                 HysxUtil.TryDeleteDirectory(target);
+                EnsureTargetWritable(target);
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -207,6 +230,20 @@ public sealed class OptiScalerDownloader
         finally
         {
             HysxUtil.TryDeleteDirectory(workRoot);
+        }
+    }
+
+    /// <summary>
+    /// TryDeleteDirectory 内部吞异常：游戏正跑、OptiScaler.dll 已被注入时目录删不动。
+    /// 继续写只会得到一个新旧混杂、build.json 还是旧版本的目录（库里显示旧版本 id、内容却是混合的）。
+    /// 这里复查一眼，删不动就给个说得出口的错误，而不是静默制造坏目录。
+    /// </summary>
+    private static void EnsureTargetWritable(string target)
+    {
+        if (Directory.Exists(target))
+        {
+            throw new IOException(
+                "构建目录删不掉 —— 大概率游戏正在运行、OptiScaler.dll 已被注入。先关掉游戏再试：" + target);
         }
     }
 

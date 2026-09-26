@@ -180,6 +180,288 @@ public sealed partial class GameLauncherPage : PageBase
 
 
 
+    #region AI 插帧（NVIDIA Smooth Motion，驱动级帧生成，所有游戏）
+
+    private bool _useSmoothMotion;
+    private bool _canUseSmoothMotion;
+    private string? _smoothMotionUnavailableReason;
+    private bool _isApplyingSmoothMotionState;
+    private int _smoothMotionLoadGeneration;
+
+    /// <summary>
+    /// 「AI 插帧」开关：驱动配置里的「Smooth Motion - Enable」，和 NVIDIA App 那个开关是同一项。
+    /// 勾上写 1、取消写 0；状态以驱动为准（切游戏时读一次回填），不存 Hub 配置。
+    /// </summary>
+    public bool UseSmoothMotion
+    {
+        get => _useSmoothMotion;
+        set
+        {
+            if (!SetProperty(ref _useSmoothMotion, value))
+            {
+                return;
+            }
+
+            // 程序回填 / 写失败回弹时不触发写驱动
+            if (_isApplyingSavedLaunchOptions || _isApplyingSmoothMotionState)
+            {
+                return;
+            }
+
+            if (_currentGameEntry?.ExePath is not { Length: > 0 } exePath)
+            {
+                return;
+            }
+
+            _ = ApplySmoothMotionAsync(exePath, value);
+        }
+    }
+
+    /// <summary>没拿到 exe / 读不了驱动配置时置 false，开关禁用（整块隐藏）。</summary>
+    public bool CanUseSmoothMotion => _canUseSmoothMotion;
+
+    /// <summary>AI 插帧按钮整块的可见性：定位到游戏 exe 且能读驱动配置才显示。</summary>
+    public Microsoft.UI.Xaml.Visibility IsSmoothMotionVisible =>
+        _canUseSmoothMotion ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+
+    /// <summary>控件 tooltip：固定说明 + 动态状态尾巴。</summary>
+    public string SmoothMotionToolTip
+    {
+        get
+        {
+            string tail = string.IsNullOrWhiteSpace(_smoothMotionUnavailableReason)
+                ? "勾上 = 开，取消 = 关。开的时候会把低延迟模式设成 Ultra（关闭时还原）。重启游戏生效。"
+                : "　当前不可用：" + _smoothMotionUnavailableReason;
+            return "NVIDIA Smooth Motion（AI 插帧，RTX 40/50 系，不需要游戏支持）：和 NVIDIA App 里的 Smooth Motion 开关是同一项，两边会互相同步；没装 NVIDIA App 也能用。" + tail;
+        }
+    }
+
+    /// <summary>切游戏 / 进页面时回填开关：先压回「不可用」，后台读完驱动再恢复（读驱动不能卡 UI）。</summary>
+    private void LoadSmoothMotionForCurrentClient()
+    {
+        int generation = ++_smoothMotionLoadGeneration;
+
+        _isApplyingSmoothMotionState = true;
+        _useSmoothMotion = false;
+        _canUseSmoothMotion = false;
+        _smoothMotionUnavailableReason = null;
+        OnPropertyChanged(nameof(UseSmoothMotion));
+        OnPropertyChanged(nameof(CanUseSmoothMotion));
+        OnPropertyChanged(nameof(IsSmoothMotionVisible));
+        OnPropertyChanged(nameof(SmoothMotionToolTip));
+        _isApplyingSmoothMotionState = false;
+
+        string? exePath = _currentGameEntry?.ExePath;
+        if (string.IsNullOrWhiteSpace(exePath))
+        {
+            _smoothMotionUnavailableReason = "还没找到这个游戏的 exe。";
+            OnPropertyChanged(nameof(SmoothMotionToolTip));
+            return;
+        }
+
+        string exeName = Path.GetFileName(exePath);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                NvDrsInterop.State state = NvDrsInterop.ReadSmoothMotionEnable(exeName);
+                _ = DispatcherQueue?.TryEnqueue(() =>
+                {
+                    if (generation != _smoothMotionLoadGeneration)
+                    {
+                        return;
+                    }
+
+                    // NotStored = 还没存过这条，不代表不能用（打开一次就会写进去）
+                    _canUseSmoothMotion = state.Ok || state.NotStored;
+                    _isApplyingSmoothMotionState = true;
+                    _useSmoothMotion = state.Ok && state.Value != 0;
+                    _isApplyingSmoothMotionState = false;
+                    _smoothMotionUnavailableReason = _canUseSmoothMotion ? null : state.Error;
+                    OnPropertyChanged(nameof(CanUseSmoothMotion));
+                    OnPropertyChanged(nameof(IsSmoothMotionVisible));
+                    OnPropertyChanged(nameof(UseSmoothMotion));
+                    OnPropertyChanged(nameof(SmoothMotionToolTip));
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Load smooth motion state for {Exe}", exeName);
+            }
+        });
+    }
+
+    /// <summary>写驱动配置放后台；开的时候顺手把低延迟设成 Ultra（关时还原）。失败会把勾退回去。</summary>
+    private async Task ApplySmoothMotionAsync(string exePath, bool enable)
+    {
+        try
+        {
+            string exeName = Path.GetFileName(exePath);
+            string gameTitle = _currentGameEntry?.DisplayName ?? exeName;
+            string latencyKey = $"smooth_motion_latency_{exeName}";
+            string latencyCplKey = $"smooth_motion_latency_cpl_{exeName}";
+            string profileTitle = $"HoYoShadeHub - {gameTitle}";
+
+            (NvDrsInterop.State State, string? LatencyNote) result = await Task.Run(() =>
+            {
+                // 先把 Smooth Motion 总开关写进去：顺带保证驱动里有这个游戏的条目，
+                // 低延迟那两项就不用再依赖「这台机器以前配过这个游戏」。
+                NvDrsInterop.State write = NvDrsInterop.WriteSmoothMotionEnable(exeName, enable, profileTitle, gameTitle);
+                if (!write.Ok)
+                {
+                    return (write, (string?)null);
+                }
+
+                // 跟 NVIDIA App 一样：开插帧时把低延迟设成 Ultra（先记住原值，关时还原）
+                string? note = enable
+                    ? ApplyUltraLowLatency(exeName, profileTitle, gameTitle, latencyKey, latencyCplKey)
+                    : RestoreUltraLowLatency(exeName, profileTitle, gameTitle, latencyKey, latencyCplKey);
+
+                // 开插帧时：「Enabled APIs」若被设成 0，任何 API 都不允许插帧，这里补成全允许
+                if (enable)
+                {
+                    NvDrsInterop.State apis = NvDrsInterop.ReadSmoothMotionApis(exeName);
+                    if (apis.Ok && apis.Value == 0)
+                    {
+                        NvDrsInterop.State fixedApis = NvDrsInterop.WriteDword(
+                            exeName,
+                            NvDrsInterop.SmoothMotionApisSettingId,
+                            NvDrsInterop.SmoothMotionAllApis,
+                            "Smooth Motion - Enabled APIs",
+                            NvDrsInterop.DescribeSmoothMotionApis,
+                            profileTitle,
+                            gameTitle);
+                        string apiNote = fixedApis.Ok ? "已允许全部 API。" : $"允许的 API 没设成：{fixedApis.Error}";
+                        note = string.IsNullOrWhiteSpace(note) ? apiNote : note + " " + apiNote;
+                    }
+                }
+
+                return (write, note);
+            });
+
+            if (result.State.Ok)
+            {
+                string suffix = string.IsNullOrWhiteSpace(result.LatencyNote) ? string.Empty : " " + result.LatencyNote;
+                InAppToast.MainWindow?.Success("AI 插帧", $"已把 {exeName} 的 Smooth Motion 改成 {(enable ? "ON" : "OFF")}（{result.State.Display}），重启游戏生效。{suffix}", 9000);
+                _logger.LogInformation("Smooth motion for {Game}: {Value}", gameTitle, enable);
+            }
+            else
+            {
+                InAppToast.MainWindow?.Error("AI 插帧", result.State.Error ?? "写入失败", 12000);
+                _isApplyingSmoothMotionState = true;
+                _useSmoothMotion = !enable;
+                _isApplyingSmoothMotionState = false;
+                OnPropertyChanged(nameof(UseSmoothMotion));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Apply smooth motion");
+        }
+    }
+
+    /// <summary>
+    /// 开 AI 插帧时把低延迟模式设成 Ultra。
+    /// 真正让驱动低延迟调度生效的是「Ultra Low Latency - Enabled」（0x10835000）；
+    /// 「Ultra Low Latency - CPL State」（0x0005F543）只是控制面板下拉的镜像值。
+    /// 两个都写；写之前先把原值记进 AppConfig，关插帧时还原。
+    /// 注意：**不能**因为「读不到原值」就跳过 驱动里没存过这一项（-160）是常态，
+    /// 之前就是在这一步直接 return，导致 AI 插帧开了低延迟却一直没动。
+    /// </summary>
+    private static string? ApplyUltraLowLatency(string exeName, string profileTitle, string gameTitle, string latencyKey, string latencyCplKey)
+    {
+        NvDrsInterop.State enabledBefore = NvDrsInterop.ReadDword(
+            exeName,
+            NvDrsInterop.UltraLowLatencyEnabledSettingId,
+            NvDrsInterop.UltraLowLatencyEnabledSettingName,
+            NvDrsInterop.DescribeBinary);
+        AppConfig.SetValue(enabledBefore.Ok ? (int)enabledBefore.Value : -1, latencyKey);
+
+        NvDrsInterop.State cplBefore = NvDrsInterop.ReadDword(
+            exeName,
+            NvDrsInterop.UltraLowLatencyCplStateSettingId,
+            NvDrsInterop.UltraLowLatencyCplStateSettingName,
+            NvDrsInterop.DescribeUltraLowLatencyCplState);
+        AppConfig.SetValue(cplBefore.Ok ? (int)cplBefore.Value : -1, latencyCplKey);
+
+        string? note = null;
+        if (!enabledBefore.Ok || enabledBefore.Value != NvDrsInterop.UltraLowLatencyEnabledOn)
+        {
+            NvDrsInterop.State forced = NvDrsInterop.WriteDword(
+                exeName,
+                NvDrsInterop.UltraLowLatencyEnabledSettingId,
+                NvDrsInterop.UltraLowLatencyEnabledOn,
+                NvDrsInterop.UltraLowLatencyEnabledSettingName,
+                NvDrsInterop.DescribeBinary,
+                profileTitle,
+                gameTitle);
+            note = forced.Ok ? "低延迟模式已设为 Ultra。" : $"低延迟模式没设成：{forced.Error}";
+        }
+
+        if (!cplBefore.Ok || cplBefore.Value != NvDrsInterop.UltraLowLatencyCplUltra)
+        {
+            NvDrsInterop.WriteDword(
+                exeName,
+                NvDrsInterop.UltraLowLatencyCplStateSettingId,
+                NvDrsInterop.UltraLowLatencyCplUltra,
+                NvDrsInterop.UltraLowLatencyCplStateSettingName,
+                NvDrsInterop.DescribeUltraLowLatencyCplState,
+                profileTitle,
+                gameTitle);
+        }
+
+        return note;
+    }
+
+    /// <summary>关 AI 插帧时把低延迟模式还原成开之前的值（之前没存过就还原成默认的「关」）。</summary>
+    private static string? RestoreUltraLowLatency(string exeName, string profileTitle, string gameTitle, string latencyKey, string latencyCplKey)
+    {
+        int previous = AppConfig.GetValue(-1, latencyKey);
+        uint target = previous >= 0 ? (uint)previous : 0u;
+
+        NvDrsInterop.State back = NvDrsInterop.WriteDword(
+            exeName,
+            NvDrsInterop.UltraLowLatencyEnabledSettingId,
+            target,
+            NvDrsInterop.UltraLowLatencyEnabledSettingName,
+            NvDrsInterop.DescribeBinary,
+            profileTitle,
+            gameTitle);
+
+        string? note = back.Ok
+            ? (previous >= 0 ? $"低延迟模式已还原成 {previous}。" : "低延迟模式已还原成默认的「关」。")
+            : $"低延迟模式没还原成：{back.Error}";
+        AppConfig.SetValue(-1, latencyKey);
+
+        // CPL State 只是面板镜像值：之前驱动里没存过就不动它，免得凭空写一条。
+        int previousCpl = AppConfig.GetValue(-1, latencyCplKey);
+        if (previousCpl >= 0)
+        {
+            NvDrsInterop.WriteDword(
+                exeName,
+                NvDrsInterop.UltraLowLatencyCplStateSettingId,
+                (uint)previousCpl,
+                NvDrsInterop.UltraLowLatencyCplStateSettingName,
+                NvDrsInterop.DescribeUltraLowLatencyCplState,
+                profileTitle,
+                gameTitle);
+        }
+
+        AppConfig.SetValue(-1, latencyCplKey);
+        return note;
+    }
+
+    /// <summary>AI 插帧开关（逻辑都在 UseSmoothMotion 的 setter 里，和注入模式一样不弹介绍提示）</summary>
+    private void CheckBox_SmoothMotion_Changed(object sender, RoutedEventArgs e)
+    {
+    }
+
+
+
+    #endregion
+
+
+
     protected override void OnLoaded()
     {
         InitializeGameFeature();
@@ -1009,6 +1291,9 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 注入模式：跟着当前客户端走，也存进游戏条目
             LoadInjectModeForCurrentClient();
+
+            // AI 插帧（NVIDIA Smooth Motion）：读驱动里这个游戏条目的开关状态
+            LoadSmoothMotionForCurrentClient();
         }
         finally
         {
@@ -1166,6 +1451,79 @@ public sealed partial class GameLauncherPage : PageBase
                 break;
             default:
                 break;
+        }
+    }
+
+    /// <summary>
+    /// 「关闭游戏」：游戏运行中，点启动按钮左边的小停止按钮直接结束游戏进程（用户要求）。
+    /// 收尾走游戏自然退出的同一套清理：停帧率解锁、发 GameExitedMessage（背景/视频回来）、刷新状态。
+    /// </summary>
+    [RelayCommand]
+    private async Task CloseGameAsync()
+    {
+        if (GameState != GameState.GameIsRunning || IsClosingGame)
+        {
+            return;
+        }
+
+        IsClosingGame = true;
+        try
+        {
+            Process? game = GameProcess is { HasExited: false } tracked
+                ? tracked
+                : await _gameLauncherService.GetGameProcessAsync(CurrentGameId);
+
+            if (game is null || game.HasExited)
+            {
+                InAppToast.MainWindow?.Information("关闭游戏", "游戏已经不在运行了。", 5000);
+            }
+            else
+            {
+                string name = game.ProcessName;
+                bool killed = false;
+                try
+                {
+                    game.Kill(entireProcessTree: true);
+                    killed = true;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Kill game process failed");
+                }
+
+                if (!killed)
+                {
+                    InAppToast.MainWindow?.Error("关闭游戏", $"结束 {name} 被拒绝（可能被反作弊/权限拦住），请手动退出游戏。", 10000);
+                }
+                else
+                {
+                    try
+                    {
+                        await game.WaitForExitAsync(new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+                        InAppToast.MainWindow?.Success("关闭游戏", $"已关闭 {name}。", 5000);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        InAppToast.MainWindow?.Error("关闭游戏", $"{name} 10 秒内没有退出（可能被反作弊保护），请手动关闭。", 10000);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Close game failed");
+            InAppToast.MainWindow?.Error("关闭游戏", "关闭失败：" + ex.Message, 10000);
+        }
+        finally
+        {
+            GameProcess = null;
+            StopFpsUnlocker();
+            // 背景回来 —— 和游戏自然退出同一信号
+            WeakReferenceMessenger.Default.Send(new GameExitedMessage());
+            GameState = GameState.StartGame;
+            IsClosingGame = false;
+            // 让 CheckGameVersion 把状态再算一遍（安装/更新提示照常给出）
+            DispatcherQueue.TryEnqueue(CheckGameVersion);
         }
     }
 
@@ -1348,6 +1706,7 @@ public sealed partial class GameLauncherPage : PageBase
                 GameInstallPath = customGame.GameDirectory;
                 IsInstallPathRemovableTipEnabled = false;
                 GameState = GameState.StartGame;
+                _ = CheckDX12ConfigAsync();
                 await CheckGameRunningAsync();
                 return;
             }
@@ -1404,6 +1763,25 @@ public sealed partial class GameLauncherPage : PageBase
         {
             IsDX12OptionVisible = false;
             EnableDX12 = AppConfig.GetEnableDX12(CurrentGameBiz);
+
+            // 自定义游戏：HoYoPlay 那边没有它的 DX 配置。鸣潮认得出来就本地给一份 —— 和绝区零一样显示 DX12 开关，
+            // 启动项是 -dx12（DX11 是默认；WWMI 给 DX11 固定传 -dx11，Steam 侧官方答复 DX12 就是 -dx12）。
+            if (_currentGameEntry is { IsCustom: true } customEntry)
+            {
+                IsDX12OptionVisible = GameCatalog.IsWutheringWaves(customEntry);
+                if (IsDX12OptionVisible)
+                {
+                    _dxConfig = new GameDXConfig
+                    {
+                        EnableDXSwitch = true,
+                        CmdArgs = "-dx12",
+                        DX11PreviewImage = "",
+                        DX12PreviewImage = "",
+                        I18nIntro = "以 DX12 启动鸣潮，可体验光线追踪、DLSS 4 等画质增强；若游戏出现异常或闪退，请关闭此选项。",
+                    };
+                }
+                return;
+            }
 
             List<GameDXConfig> dxConfigs = await _hoYoPlayService.GetGameDXConfigsAsync([CurrentGameId]);
             _dxConfig = dxConfigs?.FirstOrDefault(x => x.GameId == CurrentGameId);
@@ -1638,6 +2016,10 @@ public sealed partial class GameLauncherPage : PageBase
 
     [ObservableProperty]
     private partial Process? GameProcess { get; set; }
+
+    /// <summary>「关闭游戏」进行中（防连点，控件侧禁用关闭按钮）</summary>
+    [ObservableProperty]
+    public partial bool IsClosingGame { get; set; }
     partial void OnGameProcessChanged(Process? oldValue, Process? newValue)
     {
         processTimer?.Stop();
@@ -2099,7 +2481,8 @@ public sealed partial class GameLauncherPage : PageBase
         string Label,
         string? BuildDirectory = null,
         string? GameKey = null,
-        bool WaitForReady = false);
+        bool WaitForReady = false,
+        int DelaySeconds = 0);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
@@ -2153,7 +2536,7 @@ public sealed partial class GameLauncherPage : PageBase
         // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
         if (UseModules && CurrentGameId is { } moduleGameId)
         {
-            foreach ((string name, string path) in Features.Modules.ModuleRegistry.ResolveInjectionDlls(moduleGameId))
+            foreach ((string key, string name, string path) in Features.Modules.ModuleRegistry.ResolveInjectionDlls(moduleGameId))
             {
                 if (specs.All(s => !string.Equals(s.Path, path, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -2161,7 +2544,10 @@ public sealed partial class GameLauncherPage : PageBase
                         Path.GetFileName(path),
                         OptiScalerRuntime.FsrBridgeDllName,
                         StringComparison.OrdinalIgnoreCase);
-                    specs.Add(new InjectDllSpec(path, name, WaitForReady: waitReady));
+
+                    // 每个模块自己的「注入时机」；没单独设就用全局预热默认
+                    int delay = AppConfig.GetModuleInjectDelayEffective(key, moduleGameId.GameBiz);
+                    specs.Add(new InjectDllSpec(path, name, WaitForReady: waitReady, DelaySeconds: delay));
                 }
             }
         }
@@ -2212,7 +2598,9 @@ public sealed partial class GameLauncherPage : PageBase
                     }
                 }
 
-                specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey));
+                // OptiScaler 自己的「注入时机」（按游戏）；没单独设就用全局预热默认
+                specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                    DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
             }
         }
 
@@ -2346,126 +2734,345 @@ public sealed partial class GameLauncherPage : PageBase
         return false;
     }
 
+    /// <summary>
+    /// 等游戏进程 → 注入 → <b>确认目标 pid 还活着</b>；中途丢了就等一个新同名进程重注。
+    ///
+    /// <para>
+    /// 为什么需要这一步：有些游戏（星铁、反作弊壳、自身更新）会先起一个壳进程再重启本体 ——
+    /// 注入 API 明明成功，但那个 pid 随即退出，DLL 跟着一起没了，用户看到的就是「注入失败」。
+    /// 所以每次注入后隔几秒确认目标还在；没了就等一个**新的、没注过**的同名进程重注，
+    /// 最多 3 次，共用 20 分钟预算。已经注过的 pid 不会再注第二次。
+    /// </para>
+    /// </summary>
     private async Task InjectExtraDllsAsync(string processName, IReadOnlyList<InjectDllSpec> specs, System.Threading.CancellationToken cancellationToken)
     {
+        const int maxAttempts = 3;
+        TimeSpan budget = TimeSpan.FromMinutes(20);
+        TimeSpan survivalCheck = TimeSpan.FromSeconds(8);
+        DateTime deadline = DateTime.UtcNow + budget;
+
+        string firstLabel = specs.Count > 0 ? specs[0].Label : "额外注入";
+        var injectedPids = new HashSet<int>();
+        var failureNotes = new List<string>();
+
         try
         {
-            Process? target = await DllInjector.WaitForProcessAsync(processName, TimeSpan.FromMinutes(20), cancellationToken);
-            if (target is null)
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                string label = specs.Count > 0 ? specs[0].Label : "额外注入";
-                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(label,
-                    $"等了 20 分钟也没看到 {processName} 起来，这次不注了。", 8000));
-                return;
-            }
-
-            int pid = target.Id;
-            bool anyOk = false;
-
-            foreach (InjectDllSpec spec in specs)
-            {
-                string name = Path.GetFileName(spec.Path);
-                string label = spec.Label;
-
-                // Bridge 的日志会在每次启动时截断；记下注入前的文件长度，就绪检测只看新增内容，
-                // 避免上一次运行留下的 "active" 行被误判成本次就绪。
-                long baselineLength = 0;
-                if (spec.WaitForReady)
+                TimeSpan remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
                 {
-                    baselineLength = GetFileLengthOrZero(Path.Combine(
-                        Path.GetDirectoryName(spec.Path) ?? string.Empty, "Dx11FsrBridge.log"));
+                    NotifyInjectionFailed(firstLabel, failureNotes,
+                        $"没等到进程：{budget.TotalMinutes:F0} 分钟预算内没有出现可注入的 {processName}。");
+                    return;
                 }
 
-                bool ok = DllInjector.Inject(pid, spec.Path, out string error);
-                anyOk |= ok;
-
-                _logger.LogInformation("{Label} injection {Result} ({Dll} -> pid {Pid}) {Error}",
-                    label, ok ? "ok" : "failed", spec.Path, pid, error);
-
-                DispatcherQueue?.TryEnqueue(() =>
+                // ① 等一个还没注过的同名进程
+                Process? target = await DllInjector.WaitForProcessAsync(processName, remaining, cancellationToken, injectedPids);
+                if (target is null)
                 {
-                    if (ok)
-                    {
-                        InAppToast.MainWindow?.Success(label, $"已把 {name} 注入 {processName}（pid {pid}）。", 8000);
-                    }
-                    else
-                    {
-                        InAppToast.MainWindow?.Error($"{label} 注入失败", $"{name}：{error}", 12000);
-                    }
-                });
-
-                // OptiScaler 依赖 Bridge 先把 ffxFsr2* 垫片和 D3D11 hook 装好；
-                // 等 Bridge 日志出现本次进程的 active 行后再注入排在后面的 DLL。
-                if (spec.WaitForReady && ok)
-                {
-                    bool ready = await WaitForFsrBridgeReadyAsync(
-                        Path.GetDirectoryName(spec.Path) ?? string.Empty,
-                        pid,
-                        baselineLength,
-                        TimeSpan.FromSeconds(30),
-                        cancellationToken);
-
-                    if (ready)
-                    {
-                        _logger.LogInformation("FsrBridge ready before next injection (pid {Pid})", pid);
-                    }
-                    else
-                    {
-                        _logger.LogWarning(
-                            "FsrBridge readiness marker not seen within timeout; continuing next injection (pid {Pid})",
-                            pid);
-                    }
+                    _logger.LogWarning("{Label} injection failed: no {Process} process within budget (attempt {Attempt})",
+                        firstLabel, processName, attempt);
+                    NotifyInjectionFailed(firstLabel, failureNotes,
+                        $"没等到进程：{budget.TotalMinutes:F0} 分钟内没有出现（没注过的）{processName}。");
+                    return;
                 }
-            }
 
-            // 游戏起来了：让背景停掉并释放显存（跟 Hub 自己启动游戏时的行为一致）；
-            // 游戏退出再发一条，让背景回来 —— 用户报过「壁纸在游戏关闭后没有恢复」
-            if (anyOk)
-            {
-                DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameStartedMessage()));
+                int pid = target.Id;
+                injectedPids.Add(pid);
+                _logger.LogInformation("{Label} injection attempt {Attempt}/{Max}: {Process} (pid {Pid})",
+                    firstLabel, attempt, maxAttempts, processName, pid);
 
-                try
+                // ② 每一项按自己的「注入时机」注（spec.DelaySeconds）
+                bool attemptOk = false;
+                bool warmupLost = false;
+                foreach (InjectDllSpec spec in specs)
                 {
-                    target.EnableRaisingEvents = true;
-                    target.Exited += (_, _) =>
-                    {
-                        _logger.LogInformation("Injected game exited: {Process} (pid {Pid})", processName, pid);
+                    string name = Path.GetFileName(spec.Path);
+                    string label = spec.Label;
 
-                        // OptiScaler ini 按游戏分离：把叠加层 Save 的主 ini 回写到该游戏 profile
-                        foreach (InjectDllSpec spec in specs)
+                    // 「注入时机」：这一项单独设过就用自己的秒数，没设过用全局预热默认。
+                    // 进程在等待期间退了 → 跳出，外层换新 pid 重试（新进程也要重新等）。
+                    if (!await WaitForInjectionSteadyAsync(target, pid, processName, label, spec.DelaySeconds, cancellationToken))
+                    {
+                        warmupLost = true;
+                        break;
+                    }
+
+                    // Bridge 的日志会在每次启动时截断；记下注入前的文件长度，就绪检测只看新增内容，
+                    // 避免上一次运行留下的 "active" 行被误判成本次就绪。
+                    long baselineLength = 0;
+                    if (spec.WaitForReady)
+                    {
+                        baselineLength = GetFileLengthOrZero(Path.Combine(
+                            Path.GetDirectoryName(spec.Path) ?? string.Empty, "Dx11FsrBridge.log"));
+                    }
+
+                    bool ok = DllInjector.Inject(pid, spec.Path, out string error);
+                    attemptOk |= ok;
+
+                    _logger.LogInformation("{Label} injection {Result} ({Dll} -> pid {Pid}) {Error}",
+                        label, ok ? "ok" : "failed", spec.Path, pid, error);
+
+                    if (!ok)
+                    {
+                        failureNotes.Add($"{name}（pid {pid}）：{error}");
+                    }
+
+                    DispatcherQueue?.TryEnqueue(() =>
+                    {
+                        if (ok)
                         {
-                            if (spec.BuildDirectory is not null && spec.GameKey is not null
-                                && OptiScalerProfiles.Store(spec.BuildDirectory, spec.GameKey))
-                            {
-                                _logger.LogInformation("OptiScaler ini profile stored: {Game} ({Build})",
-                                    spec.GameKey, spec.BuildDirectory);
-
-                                // 用户要求：挂着某份「配置」进游戏改完，那份配置也要跟着动。
-                                // 这里把刚回写的 profiles\<游戏>.ini 同步回配置（没挂配置就是 null，啥也不做）
-                                string? followed = OptiScalerPresets.Follow(spec.BuildDirectory, spec.GameKey);
-                                if (followed is not null)
-                                {
-                                    _logger.LogInformation("OptiScaler config synced back: {Config}", followed);
-                                }
-                            }
+                            InAppToast.MainWindow?.Success(label, $"已把 {name} 注入 {processName}（pid {pid}）。", 8000);
                         }
+                        else
+                        {
+                            InAppToast.MainWindow?.Error($"{label} 注入失败", $"{name}：{error}", 12000);
+                        }
+                    });
 
-                        DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameExitedMessage()));
-                    };
+                    // OptiScaler 依赖 Bridge 先把 ffxFsr2* 垫片和 D3D11 hook 装好；
+                    // 等 Bridge 日志出现本次进程的 active 行后再注入排在后面的 DLL。
+                    if (spec.WaitForReady && ok)
+                    {
+                        bool ready = await WaitForFsrBridgeReadyAsync(
+                            Path.GetDirectoryName(spec.Path) ?? string.Empty,
+                            pid,
+                            baselineLength,
+                            TimeSpan.FromSeconds(30),
+                            cancellationToken);
+
+                        if (ready)
+                        {
+                            _logger.LogInformation("FsrBridge ready before next injection (pid {Pid})", pid);
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "FsrBridge readiness marker not seen within timeout; continuing next injection (pid {Pid})",
+                                pid);
+                        }
+                    }
                 }
-                catch (Exception ex)
+
+                if (warmupLost)
                 {
-                    _logger.LogDebug(ex, "Hook injected game exit");
+                    _logger.LogWarning(
+                        "{Label} target-exited-retry: {Process} (pid {Pid}) 在预热等待中就退了，换一个新进程重试（{Attempt}/{Max}）",
+                        firstLabel, processName, pid, attempt, maxAttempts);
+
+                    if (attempt < maxAttempts)
+                    {
+                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Information(firstLabel,
+                            $"{processName}（pid {pid}）还没稳就退了 —— 正在等新进程重试（{attempt + 1}/{maxAttempts}）。", 8000));
+                        continue;
+                    }
+
+                    NotifyInjectionFailed(firstLabel, failureNotes,
+                        $"目标进程中途退出：连续 {maxAttempts} 次都在预热阶段就退了。");
+                    return;
                 }
+
+                // ④ 目标存活确认：壳进程 / 更新重启会让 pid 在几秒内消失
+                await Task.Delay(survivalCheck, cancellationToken);
+
+                if (DllInjector.IsProcessAlive(pid))
+                {
+                    _logger.LogInformation("{Label} injection finished on stable target (pid {Pid}, ok {Ok})",
+                        firstLabel, pid, attemptOk);
+
+                    if (attemptOk)
+                    {
+                        HookInjectedTarget(target, processName, pid, specs);
+                    }
+                    else
+                    {
+                        NotifyInjectionFailed(firstLabel, failureNotes,
+                            $"注入失败：目标进程还在（pid {pid}），但 DLL 没注进去 —— 多半是权限（游戏提权 / 反作弊）或 LoadLibraryW 返回 0。");
+                    }
+
+                    return;
+                }
+
+                // 目标中途退出：记清楚是「进程换了」而不是「注入 API 失败」
+                _logger.LogWarning(
+                    "{Label} target-exited-retry: {Process} (pid {Pid}) 在注入后 {Seconds}s 内退出，换一个新进程重试（{Attempt}/{Max}）",
+                    firstLabel, processName, pid, (int)survivalCheck.TotalSeconds, attempt, maxAttempts);
+
+                if (attempt < maxAttempts)
+                {
+                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Information(firstLabel,
+                        $"{processName}（pid {pid}）注入后立刻退出 —— 像是壳进程 / 更新重启，正在等新进程重试（{attempt + 1}/{maxAttempts}）。",
+                        8000));
+                    continue;
+                }
+
+                NotifyInjectionFailed(firstLabel, failureNotes,
+                    $"目标进程中途退出：连续 {maxAttempts} 次注入后 {processName} 都换了 / 退了（进程换了，不是注入 API 失败）。");
+                return;
             }
         }
         catch (OperationCanceledException)
         {
             // 注入器被停掉了，正常退出
+            _logger.LogInformation("{Label} injection wait stopped by user", firstLabel);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Extra DLL injection");
+            NotifyInjectionFailed(firstLabel, failureNotes, "注入时出错：" + ex.Message);
+        }
+    }
+
+    /// <summary>注入成功且目标稳定：让背景释放显存，并挂上「游戏退出」的钩子</summary>
+    private void HookInjectedTarget(Process target, string processName, int pid, IReadOnlyList<InjectDllSpec> specs)
+    {
+        // 游戏起来了：让背景停掉并释放显存（跟 Hub 自己启动游戏时的行为一致）；
+        // 游戏退出再发一条，让背景回来 —— 用户报过「壁纸在游戏关闭后没有恢复」
+        DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameStartedMessage()));
+
+        try
+        {
+            target.EnableRaisingEvents = true;
+            target.Exited += (_, _) =>
+            {
+                _logger.LogInformation("Injected game exited: {Process} (pid {Pid})", processName, pid);
+
+                // OptiScaler ini 按游戏分离：把叠加层 Save 的主 ini 回写到该游戏 profile
+                foreach (InjectDllSpec spec in specs)
+                {
+                    if (spec.BuildDirectory is not null && spec.GameKey is not null
+                        && OptiScalerProfiles.Store(spec.BuildDirectory, spec.GameKey))
+                    {
+                        _logger.LogInformation("OptiScaler ini profile stored: {Game} ({Build})",
+                            spec.GameKey, spec.BuildDirectory);
+
+                        // 用户要求：挂着某份「配置」进游戏改完，那份配置也要跟着动。
+                        // 这里把刚回写的 profiles\<游戏>.ini 同步回配置（没挂配置就是 null，啥也不做）
+                        string? followed = OptiScalerPresets.Follow(spec.BuildDirectory, spec.GameKey);
+                        if (followed is not null)
+                        {
+                            _logger.LogInformation("OptiScaler config synced back: {Config}", followed);
+                        }
+                    }
+                }
+
+                DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameExitedMessage()));
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Hook injected game exit");
+        }
+    }
+
+    /// <summary>最终失败：一条提示写清楚失败在哪一步（没等到进程 / 权限 / LoadLibrary 0 / 目标退出）</summary>
+    private void NotifyInjectionFailed(string label, IReadOnlyList<string> notes, string reason)
+    {
+        string detail = notes.Count == 0 ? string.Empty : "\n" + string.Join("\n", notes);
+        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error($"{label} 注入失败", reason + detail, 12000));
+    }
+
+    /// <summary>预热时窗口最多比「存活阈值」晚出现多少秒；一直取不到窗口就按时间放行</summary>
+    private const int InjectionWindowGraceSeconds = 6;
+
+    /// <summary>
+    /// 注入前「等进程稳一稳」：等它存活到配置的秒数，**并且主窗口已经出现**；
+    /// 窗口一直取不到就只按时间放行。返回 false = 进程在等待期间退了（外层换新 pid 重试）。
+    ///
+    /// <para>
+    /// 为什么需要：星铁 / 反作弊壳在刚起的那几百毫秒还在初始化自己的模块，这时候用
+    /// <c>LoadLibraryW</c> 去 hook 游戏自己的 DLL 会偶发把它带崩（用户实测：注入记 ok，
+    /// 但 <c>veritas.log</c> 里连本次条目都没有，进程随即消失）。
+    /// </para>
+    /// </summary>
+    /// <param name="delaySeconds">这一项自己的「注入时机」秒数（0 = 立即注入；没单独设过就是全局预热默认）</param>
+    private async Task<bool> WaitForInjectionSteadyAsync(
+        Process target,
+        int processId,
+        string processName,
+        string label,
+        int delaySeconds,
+        System.Threading.CancellationToken cancellationToken)
+    {
+        int thresholdSeconds = Math.Clamp(delaySeconds, 0, AppConfig.MaxInjectionWarmupSeconds);
+
+        if (thresholdSeconds <= 0)
+        {
+            return DllInjector.IsProcessAlive(processId);
+        }
+
+        DateTime aliveSinceUtc = DateTime.UtcNow;
+        try
+        {
+            aliveSinceUtc = target.StartTime.ToUniversalTime();
+        }
+        catch
+        {
+            // 读不到启动时间就从「现在」算
+        }
+
+        // 「只按时间」的放行点：进程已存活 >= 阈值 + 宽限（窗口一直不出现时用它）
+        DateTime timeOnlyDeadlineUtc = aliveSinceUtc + TimeSpan.FromSeconds(thresholdSeconds + InjectionWindowGraceSeconds);
+        DateTime nextLogUtc = DateTime.MinValue;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!DllInjector.IsProcessAlive(processId))
+            {
+                return false;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            double aliveSeconds = Math.Max(0, (now - aliveSinceUtc).TotalSeconds);
+            bool hasWindow = HasMainWindow(target);
+
+            if (now >= nextLogUtc)
+            {
+                _logger.LogInformation(
+                    "{Label} injection waiting for steady state (alive {Seconds}s / window={Window})",
+                    label, Math.Round(aliveSeconds, 1), hasWindow);
+                nextLogUtc = now.AddSeconds(2);
+            }
+
+            if (aliveSeconds >= thresholdSeconds && (hasWindow || now >= timeOnlyDeadlineUtc))
+            {
+                _logger.LogInformation("{Label} injection steady after {Seconds}s (window={Window}); injecting now",
+                    label, Math.Round(aliveSeconds, 1), hasWindow);
+                return true;
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+    }
+
+    /// <summary>按进程名找现在在跑的那个（找不到返回 null）</summary>
+    private static Process? FindRunningProcess(string processName)
+    {
+        try
+        {
+            string name = Path.GetFileNameWithoutExtension(processName);
+            return string.IsNullOrWhiteSpace(name) ? null : Process.GetProcessesByName(name).FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>目标进程主窗口出现了没有（取不到就当没有，调用方按时间兜底）</summary>
+    private static bool HasMainWindow(Process process)
+    {
+        try
+        {
+            process.Refresh();
+            return process.MainWindowHandle != IntPtr.Zero;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -2502,10 +3109,34 @@ public sealed partial class GameLauncherPage : PageBase
 
         StopFpsUnlocker();
 
-        await EnsureFpsUnlockDataAsync(gameId);
+        byte[]? shellcode;
+        (byte[] bytes, bool[] mask)? pattern;
 
-        byte[]? shellcode = FpsUnlockDataService.LoadShellcode();
-        (byte[] bytes, bool[] mask)? pattern = FpsUnlockDataService.LoadPattern();
+        try
+        {
+            await EnsureFpsUnlockDataAsync(gameId);
+        }
+        catch (Exception ex)
+        {
+            // fire-and-forget 没人接异常：数据同步失败要留痕 + 提示，不能静默不生效
+            _logger.LogError(ex, "FPS unlock: sync upstream data failed");
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("帧率解锁",
+                "同步帧率解锁数据失败：" + ex.Message, 8000));
+            return;
+        }
+
+        try
+        {
+            shellcode = FpsUnlockDataService.LoadShellcode();
+            pattern = FpsUnlockDataService.LoadPattern();
+        }
+        catch (Exception ex)
+        {
+            // meta.json 损坏会在这里抛 —— 丢给下面的内置兜底，别让解锁静默失败
+            _logger.LogError(ex, "FPS unlock: load shellcode/pattern failed, use fallback");
+            shellcode = null;
+            pattern = null;
+        }
 
         if (shellcode is null || pattern is null)
         {
@@ -2516,7 +3147,17 @@ public sealed partial class GameLauncherPage : PageBase
             _logger.LogWarning("FPS unlock: local data missing, using built-in fallback");
         }
 
-        Process? game = await _gameLauncherService.GetGameProcessAsync(gameId, processTimeout);
+        Process? game;
+        try
+        {
+            game = await _gameLauncherService.GetGameProcessAsync(gameId, processTimeout);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "FPS unlock: waiting for game process failed");
+            return;
+        }
+
         if (game is null)
         {
             _logger.LogWarning("FPS unlock: game process not found within {Timeout}", processTimeout);
@@ -3112,6 +3753,24 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
+            // 2.5 插件（HoYoShade / ReShade）注入时机：游戏**已经在跑**时，先等它稳一稳再起 inject.exe
+            //     （用户要「注入时机」能调）。没在跑就照旧立刻架好 —— inject.exe 自己等进程，
+            //     晚架会错过 ReShade 的早期 hook，所以这一档只在游戏已经起来时才生效。
+            int shadeDelay = AppConfig.GetShadeInjectDelayEffective(CurrentGameBiz);
+            if (shadeDelay > 0)
+            {
+                Process? alreadyRunning = FindRunningProcess(processName);
+                if (alreadyRunning is not null)
+                {
+                    using (alreadyRunning)
+                    {
+                        await WaitForInjectionSteadyAsync(
+                            alreadyRunning, alreadyRunning.Id, processName, shadeName, shadeDelay,
+                            System.Threading.CancellationToken.None);
+                    }
+                }
+            }
+
             // 3. 再点一次开始游戏 / 换游戏：先把上一个注入器停掉（用户要求）
             StopInjector("要重新注入");
 
@@ -3183,6 +3842,11 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
+            // 需求3：启动/注入前先把「每游戏插件包」拼好（这个游戏给插件选过版本才会有）。
+            // 顺序很重要：拼包会把 AddonPath 指到包目录，紧接着的 Align 会认出 pack.json 并跳过它，
+            // 不会把每游戏选版本悄悄改回共享目录。
+            GameAddonPackService.Sync(CurrentGameId, _currentGameEntry, host);
+
             ShadePathAlignResult align = ShadePathAligner.Align(gameIni, host);
             if (!align.Changed)
             {
@@ -3213,10 +3877,13 @@ public sealed partial class GameLauncherPage : PageBase
             }
 
             string? directory = Path.GetDirectoryName(exe);
-            _logger.LogInformation("Launching custom game: {Exe}", exe);
+            // 勾了「使用 DX12 启动」就带 -dx12（鸣潮的 DX12 就是这个启动项）
+            string arguments = AppConfig.GetEnableDX12(CurrentGameBiz) ? "-dx12" : "";
+            _logger.LogInformation("Launching custom game: {Exe} (args: {Args})", exe, arguments);
 
             Process? process = Process.Start(new ProcessStartInfo(exe)
             {
+                Arguments = arguments,
                 WorkingDirectory = string.IsNullOrWhiteSpace(directory) ? AppContext.BaseDirectory : directory,
                 UseShellExecute = true,
             });
@@ -3737,7 +4404,11 @@ public sealed partial class GameLauncherPage : PageBase
             InAppToast.MainWindow?.Error(Lang.GameLauncherSettingDialog_AnUnknownErrorOccurredPleaseCheckTheLogs);
             _logger.LogError(ex, "Change custom background failed");
         }
-        defer.Complete();
+        finally
+        {
+            // deferral 不 Complete，拖放源（资源管理器）会一直挂着等这次拖放结束 —— 任何路径（含提前 return）都要走到
+            defer.Complete();
+        }
     }
 
 

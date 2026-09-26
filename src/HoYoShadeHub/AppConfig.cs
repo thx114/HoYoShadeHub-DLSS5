@@ -32,6 +32,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Encodings.Web;
+using System.Threading;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -148,7 +149,25 @@ public static class AppConfig
             // 看起来就像「游戏丢了」（真事，2026-09-20，用户报「新版跳过初始化，找不到之前的游戏」）。
             if (string.IsNullOrWhiteSpace(UserDataFolder))
             {
-                UseUserDataFolder(TryFindExistingProfileFolder());
+                string? found = TryFindExistingProfileFolder();
+                if (!string.IsNullOrWhiteSpace(found))
+                {
+                    UserDataFolderSource = "profile-scan";
+                    UseUserDataFolder(found);
+                }
+                else
+                {
+                    // 找不到也要**兜底到默认目录**，绝不能把 DB 留在「没初始化」状态：
+                    // playtime / rpc 这些无界面子进程不会走 MainWindow 那条兜底，
+                    // 连接串空着的话 Microsoft.Data.Sqlite 会静默开一个空临时库，
+                    // 于是报 no such table: PlayTimeItem（游戏时长一条都记不下来）。
+                    UserDataFolderSource = "default";
+                    UseUserDataFolder(ResolveDefaultUserDataFolder());
+                }
+            }
+            else
+            {
+                UserDataFolderSource = "config.ini";
             }
         }
         catch { }
@@ -201,15 +220,16 @@ public static class AppConfig
                 // 别人家那份数据（用户实测：解压出来的新包直接找到了 C 盘的数据文件夹）。
                 if (IsPortable)
                 {
-                    // 这里不能引用后面的 parent 局部变量（前向引用），直接从程序目录推便携根
+                    // 这里不能引用后面的 parent 局部变量（前向引用），直接从程序目录推便携根。
+                    //
+                    // 便携根目录**自己**也是合法候选（便携版的用户数据目录就是它）。
+                    // 老实现写的是 path.StartsWith(root + '\\')，根目录自己不满足这个前缀，
+                    // 于是便携版下这里永远挑不出任何目录 → DB 不初始化 → playtime 子进程
+                    // 报 no such table: PlayTimeItem（见 PortableDataFolderScope 注释）。
                     string? portableRoot = new DirectoryInfo(AppContext.BaseDirectory).Parent?.FullName;
-                    if (portableRoot is { Length: > 0 })
+                    if (!HoYoShadeHub.Extensions.Services.PortableDataFolderScope.IsInside(portableRoot, path))
                     {
-                        string root = Path.GetFullPath(portableRoot) + Path.DirectorySeparatorChar;
-                        if (!Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                        {
-                            return;
-                        }
+                        return;
                     }
                 }
 
@@ -327,6 +347,13 @@ public static class AppConfig
 
 
     /// <summary>
+    /// <see cref="UserDataFolder"/> 是怎么定下来的：<c>config.ini</c> / <c>profile-scan</c> / <c>default</c>。
+    /// 只用于启动日志 —— 「数据目录跑偏」和「DB 没初始化」这两类问题全靠它定位。
+    /// </summary>
+    public static string? UserDataFolderSource { get; private set; }
+
+
+    /// <summary>
     /// 默认用户数据目录（跟 <c>WelcomeView.InitializeDefaultUserDataFolder</c> 同一套规则）。
     /// 首次引导那一步要用它来判断「老客户端的数据还在不在」。
     /// </summary>
@@ -359,6 +386,73 @@ public static class AppConfig
         }
     }
 
+
+    /// <summary>
+    /// 版本缓存根目录：
+    /// <list type="bullet">
+    /// <item>便携版 / 可移动盘：&lt;便携数据根&gt;\cache（和便携数据目录同一套推导，见 <see cref="ResolveDefaultUserDataFolder"/>）；</item>
+    /// <item>其它情况：&lt;用户数据目录&gt;\.hysx\cache。</item>
+    /// </list>
+    /// 里面放三样东西：<c>plugins\&lt;扩展 id&gt;\&lt;版本&gt;\</c>（版本归档）、
+    /// <c>games\&lt;游戏&gt;\Addons\</c>（每游戏插件包）、以及迁移过去的老
+    /// <c>optiscaler\</c> / <c>modules\</c>。
+    /// </summary>
+    public static string CacheRoot
+    {
+        get
+        {
+            try
+            {
+                if (IsPortable || IsAppInRemovableStorage)
+                {
+                    string portableRoot = ResolveDefaultUserDataFolder();
+                    if (!string.IsNullOrWhiteSpace(portableRoot))
+                    {
+                        return Path.Combine(portableRoot, "cache");
+                    }
+                }
+            }
+            catch
+            {
+                // 推导失败就退到用户数据目录下面的 .hysx\cache
+            }
+
+            string? userData = UserDataFolder;
+            return string.IsNullOrWhiteSpace(userData)
+                ? string.Empty
+                : Path.Combine(userData, ".hysx", "cache");
+        }
+    }
+
+    /// <summary>&lt;CacheRoot&gt;\optiscaler（迁移后的 OptiScaler 库）</summary>
+    public static string OptiScalerCachePath
+    {
+        get
+        {
+            string root = CacheRoot;
+            return root.Length == 0 ? string.Empty : Path.Combine(root, "optiscaler");
+        }
+    }
+
+    /// <summary>&lt;CacheRoot&gt;\modules（迁移后的模块库）</summary>
+    public static string ModulesCachePath
+    {
+        get
+        {
+            string root = CacheRoot;
+            return root.Length == 0 ? string.Empty : Path.Combine(root, "modules");
+        }
+    }
+
+    /// <summary>「版本更新引导」（老存储搬进 cache）跑过了没有</summary>
+    public static bool CacheMigrated
+    {
+        get => GetValue(false, "cache_migrated");
+        set => SetValue(value, "cache_migrated");
+    }
+
+    /// <summary>手动重跑引导用：把标记清掉（下次会再检测一次）</summary>
+    public static void ResetCacheMigrated() => SetValue(false, "cache_migrated");
 
     public static bool IsAdmin { get; private set; }
 
@@ -410,7 +504,11 @@ public static class AppConfig
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
             File.WriteAllText(ConfigPath, sb.ToString());
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // config.ini 写失败不能吞：这里存着 UserDataFolder / 登录票据，静默丢失就是「游戏全丢」那类事故的源头
+            Log.Error(ex, "SaveConfiguration failed: {Path}", ConfigPath);
+        }
     }
 
 
@@ -438,6 +536,10 @@ public static class AppConfig
                                                   .Enrich.FromLogContext()
                                                   .CreateLogger();
             Log.Information($"Welcome to HoYoShadeHub v{AppVersion}\r\nSystem: {Environment.OSVersion}\r\nCommand Line: {Environment.CommandLine}");
+            Log.Information("UserDataFolder: {folder} (source: {source}, portable: {portable})",
+                UserDataFolder ?? "(null)", UserDataFolderSource ?? "(unknown)", IsPortable);
+            Log.Information("Database: {database} (error: {error})",
+                DatabaseService.DatabasePath ?? "(not initialized)", DatabaseService.InitializationError ?? "(none)");
 
             var sc = new ServiceCollection();
             sc.AddMemoryCache();
@@ -1211,11 +1313,20 @@ public static class AppConfig
 
     // ===================== 模块（要注入游戏进程的东西：DLSS-NR on AMD 那类） =====================
 
-    /// <summary>「模块」根目录：&lt;用户数据目录&gt;\Modules\&lt;模块 id&gt;\</summary>
+    /// <summary>
+    /// 「模块」根目录：迁移后是 &lt;CacheRoot&gt;\modules\&lt;模块 id&gt;\，没迁移时回退到
+    /// 老位置 &lt;用户数据目录&gt;\Modules\&lt;模块 id&gt;\（迁移前 App 必须照常能用）。
+    /// </summary>
     public static string ModulesRootPath
     {
         get
         {
+            string cache = ModulesCachePath;
+            if (cache.Length > 0 && (CacheMigrated || Directory.Exists(cache)))
+            {
+                return cache;
+            }
+
             string? userData = UserDataFolder;
             return string.IsNullOrWhiteSpace(userData)
                 ? string.Empty
@@ -1249,6 +1360,174 @@ public static class AppConfig
     public static void SetModuleDllPath(string moduleId, string? value)
     {
         SetValue(value, $"module_dll_{moduleId}");
+    }
+
+    /// <summary>
+    /// 这个游戏给某个模块选的版本 tag（空 = 用模块目录里最新装的那份）。
+    /// 模块目录里可以同时躺多个版本，这一项决定启动游戏时注入哪一份。
+    /// </summary>
+    public static string? GetModuleVersion(GameId gameId, string moduleId)
+    {
+        return GetValue<string>(default, BuildLaunchOptionKey(gameId, $"module_version_{moduleId}"));
+    }
+
+    public static void SetModuleVersion(GameId gameId, string moduleId, string? value)
+    {
+        SetValue(value, BuildLaunchOptionKey(gameId, $"module_version_{moduleId}"));
+    }
+
+    // ===================== 插件（addon 扩展）的每游戏版本 =====================
+
+    /// <summary>
+    /// 这个游戏给某个扩展选的版本 tag（空 = 用共享目录里当前生效的那份）。
+    /// 归档库里的版本才能选；选过之后就为这个游戏拼一个专属插件包。
+    /// </summary>
+    public static string? GetPluginVersion(GameId gameId, string extensionId)
+    {
+        return string.IsNullOrWhiteSpace(extensionId)
+            ? null
+            : GetValue<string>(default, BuildLaunchOptionKey(gameId, $"plugin_version_{extensionId}"));
+    }
+
+    public static void SetPluginVersion(GameId gameId, string extensionId, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(extensionId))
+        {
+            return;
+        }
+
+        SetValue(string.IsNullOrWhiteSpace(value) ? null : value.Trim(),
+            BuildLaunchOptionKey(gameId, $"plugin_version_{extensionId}"));
+
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            RememberAddonPackGame(gameId);
+        }
+    }
+
+    /// <summary>这个游戏选过版本的扩展（扩展 id → tag）；查询给的是候选扩展 id 列表。</summary>
+    public static Dictionary<string, string> GetPluginVersionSelections(GameId gameId, IEnumerable<string> extensionIds)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string id in extensionIds)
+        {
+            string? tag = GetPluginVersion(gameId, id);
+            if (!string.IsNullOrWhiteSpace(tag))
+            {
+                result[id] = tag!;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 这个游戏**存过**插件版本选择的扩展 id（不管那个扩展在不在账本里）。
+    ///
+    /// <para>
+    /// 为什么要单独有这么一个：<c>GameAddonPackService.Sync</c> 原来只拿
+    /// 「账本里装过的扩展 id」去查选择，于是**用户自己放进 Addons 目录的插件**
+    /// （账本里没有记录、靠 addonPatterns 认领的那种）即使选了版本也查不到选择 →
+    /// 判定成「这个游戏没选任何版本」→ 直接把 AddonPath 撤回共享目录。
+    /// 用户看到的现象就是「切了版本没反应」，而且目录在共享 / 专属包之间来回翻。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> GetPluginVersionSelectionIds(GameId gameId)
+    {
+        const string prefix = "launch_option_plugin_version_";
+
+        var ids = new List<string>();
+
+        try
+        {
+            string suffix = $"_{gameId.GameBiz}_{gameId.Id}";
+
+            InitializeSettingProvider();
+
+            lock (_settingLock)
+            {
+                if (_settingCache is null)
+                {
+                    return ids;
+                }
+
+                foreach ((string key, string? value) in _settingCache)
+                {
+                    if (string.IsNullOrWhiteSpace(value)
+                        || !key.StartsWith(prefix, StringComparison.Ordinal)
+                        || !key.EndsWith(suffix, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    string id = key[prefix.Length..^suffix.Length];
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        ids.Add(id);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 读不出来就当没有选择，调用方会退回「用共享目录那份」
+        }
+
+        return ids;
+    }
+
+
+    // ===================== 每游戏插件包（<CacheRoot>\games）的记账 =====================
+
+    /// <summary>为游戏拼过插件包的都有谁（迁移后 SyncAll 靠它遍历）。</summary>
+    public static IReadOnlyList<GameId> GetAddonPackGames()
+    {
+        string? raw = GetValue<string>(default, "addon_pack_games");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+
+        var result = new List<GameId>();
+        foreach (string line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int split = line.IndexOf('|');
+            if (split <= 0)
+            {
+                continue;
+            }
+
+            string biz = line[..split];
+            string id = line[(split + 1)..];
+            if (string.IsNullOrWhiteSpace(biz))
+            {
+                continue;
+            }
+
+            result.Add(new GameId { Id = id, GameBiz = new GameBiz(biz) });
+        }
+
+        return result;
+    }
+
+    /// <summary>记下「这个游戏有每游戏插件包」，SyncAll 才找得到它。</summary>
+    public static void RememberAddonPackGame(GameId gameId)
+    {
+        if (gameId is null || string.IsNullOrWhiteSpace(gameId.GameBiz.Value))
+        {
+            return;
+        }
+
+        string key = $"{gameId.GameBiz.Value}|{gameId.Id}";
+        List<string> lines = [.. GetAddonPackGames().Select(g => $"{g.GameBiz.Value}|{g.Id}")];
+        if (lines.Contains(key, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        lines.Add(key);
+        SetValue(string.Join("\n", lines), "addon_pack_games");
     }
 
     /// <summary>
@@ -1405,6 +1684,16 @@ public static class AppConfig
         SetValue(buildId, BuildLaunchOptionKey(gameId, "optiscaler_build"));
     }
 
+    /// <summary>
+    /// 这个游戏选的 OptiScaler 版本（= 上面的构建 id：&lt;来源&gt;/&lt;版本&gt;）。
+    /// 是 <see cref="GetSelectedOptiScalerId"/> 的别名，语义完全一样 —— 老键继续用，
+    /// 不重复存一份状态。
+    /// </summary>
+    public static string? GetOptiScalerVersion(GameId gameId) => GetSelectedOptiScalerId(gameId);
+
+    /// <summary>写这个游戏的 OptiScaler 版本；null = 不选（这个游戏不注入 OptiScaler）</summary>
+    public static void SetOptiScalerVersion(GameId gameId, string? buildId) => SetSelectedOptiScalerId(gameId, buildId);
+
     /// <summary>这个游戏实际要注入的 OptiScaler DLL（没开总开关 / 没选 / 那个构建没了 → null）</summary>
     public static string? GetSelectedOptiScalerDll(GameId? gameId)
     {
@@ -1419,10 +1708,15 @@ public static class AppConfig
             var library = new Extensions.Services.OptiScalerLibrary(root);
             string? id = gameId is null ? null : GetSelectedOptiScalerId(gameId);
 
-            // 没选过就退回旧行为（state.json 里那个「选中的构建」），老配置不至于突然失效
-            Extensions.Services.OptiScalerBuild? build = string.IsNullOrWhiteSpace(id)
-                ? library.GetSelected()
-                : library.List().FirstOrDefault(b => b.Id == id);
+            // 这个游戏选过就用那个构建；没选过 / 选的那个已经被删了，退回全局选择
+            // （state.json 里那个「选中的构建」），老配置不至于突然失效
+            Extensions.Services.OptiScalerBuild? build = null;
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                build = library.List().FirstOrDefault(b => b.Id == id);
+            }
+
+            build ??= library.GetSelected();
             if (build is null || !IsOptiScalerBuildEnabled(build.Id))
             {
                 return null;
@@ -1467,6 +1761,10 @@ public static class AppConfig
     {
         get
         {
+            // OptiScaler **不迁移**（用户要求）：它自己的库 <基准>\OptiScaler\<来源>\<版本>\
+            // 本来就多版本共存，原地用。以前那段「迁移后统一到 <CacheRoot>\optiscaler」做多了，
+            // 还因为目录被占用（dll 注进了游戏）改名失败 —— 已去掉。
+            //
             // 基准跟着「插件所在的那个 HoYoShade 根」走，和插件同一个根。
             // 不能只看 UserDataFolder：HoYoShade 可能被手动指定到别处
             // （PluginHostLocator.ManualShadeRoot），那样插件在 A 盘、OptiScaler 却跑到 B 盘。
@@ -1546,6 +1844,116 @@ public static class AppConfig
     public static void SetForceHookOffOnLaunch(GameBiz biz, bool value)
     {
         SetValue(value, $"force_hook_off_{biz}");
+    }
+
+    // ===================== 注入前「等进程稳一稳」（按游戏） =====================
+
+    /// <summary>
+    /// 预热秒数的默认值 / 允许范围。
+    ///
+    /// <para>
+    /// **默认 0 = 立即注入**，和加这个开关之前的行为完全一致：以前注入就是
+    /// 「进程一出现就注」，没有任何等待。预热只是给「游戏刚起来就注会被带崩」的用户
+    /// 一个可选项，不能偷偷把默认改成等 4 秒。
+    /// </para>
+    /// </summary>
+    public const int DefaultInjectionWarmupSeconds = 0;
+
+    public const int MaxInjectionWarmupSeconds = 30;
+
+    /// <summary>
+    /// 注入（额外 DLL / 模块 / OptiScaler）之前，是否先等目标进程「稳一稳」。
+    ///
+    /// <para>
+    /// **默认关** —— 加上这个开关之前注入就是「进程一出现就注」，默认值必须保持不变。
+    /// 打开它有用：星铁刚起的那几百毫秒还在初始化自己的模块，这时 LoadLibraryW 去 hook
+    /// 会偶发把游戏带崩（veritas.log 里连本次条目都没有）。所以要预热请显式打开。
+    /// </para>
+    /// </summary>
+    public static bool GetInjectionWarmupEnabled(GameBiz biz)
+    {
+        string key = $"inject_warmup_enabled_{biz}";
+
+        // 没设过 = 默认关（GetValue<bool> 的 default 是 false，区分不了「没设过」，所以要看 HasValue）
+        return HasValue(key) && GetValue(false, key);
+    }
+
+    public static void SetInjectionWarmupEnabled(GameBiz biz, bool value)
+    {
+        SetValue(value, $"inject_warmup_enabled_{biz}");
+    }
+
+    /// <summary>预热秒数（0 = 立即注入）；默认 4，夹在 0~30。</summary>
+    public static int GetInjectionWarmupSeconds(GameBiz biz)
+    {
+        string key = $"inject_warmup_seconds_{biz}";
+        int value = HasValue(key) ? GetValue(DefaultInjectionWarmupSeconds, key) : DefaultInjectionWarmupSeconds;
+        return Math.Clamp(value, 0, MaxInjectionWarmupSeconds);
+    }
+
+    public static void SetInjectionWarmupSeconds(GameBiz biz, int seconds)
+    {
+        SetValue(Math.Clamp(seconds, 0, MaxInjectionWarmupSeconds), $"inject_warmup_seconds_{biz}");
+    }
+
+    /// <summary>没单独设「注入时机」时用的默认秒数（全局预热；关掉或 0 就是立即注入）</summary>
+    public static int GetDefaultInjectionDelaySeconds(GameBiz biz)
+        => GetInjectionWarmupEnabled(biz) ? GetInjectionWarmupSeconds(biz) : 0;
+
+    // ---- 「注入时机（秒）」：模块 / 插件（ReShade）/ OptiScaler 三处各自的覆盖值 ----
+    // 键：module_inject_delay_{模块 id}、shade_inject_delay_{biz}、opti_inject_delay_{biz}
+    // 没设过（null）= 跟随全局默认；0 = 立即注入。
+
+    /// <summary>模块的注入时机（按模块存，和游戏无关）；null = 没单独设，跟随全局默认</summary>
+    public static int? GetModuleInjectDelaySeconds(string moduleId)
+        => GetInjectDelayOverride(string.IsNullOrWhiteSpace(moduleId) ? null : $"module_inject_delay_{moduleId}");
+
+    public static void SetModuleInjectDelaySeconds(string moduleId, int? seconds)
+    {
+        if (!string.IsNullOrWhiteSpace(moduleId))
+        {
+            SetInjectDelayOverride($"module_inject_delay_{moduleId}", seconds);
+        }
+    }
+
+    /// <summary>HoYoShade / ReShade 注入的时机（按游戏）；null = 跟随全局默认</summary>
+    public static int? GetShadeInjectDelaySeconds(GameBiz biz)
+        => GetInjectDelayOverride($"shade_inject_delay_{biz}");
+
+    public static void SetShadeInjectDelaySeconds(GameBiz biz, int? seconds)
+        => SetInjectDelayOverride($"shade_inject_delay_{biz}", seconds);
+
+    /// <summary>OptiScaler 注入的时机（按游戏）；null = 跟随全局默认</summary>
+    public static int? GetOptiScalerInjectDelaySeconds(GameBiz biz)
+        => GetInjectDelayOverride($"opti_inject_delay_{biz}");
+
+    public static void SetOptiScalerInjectDelaySeconds(GameBiz biz, int? seconds)
+        => SetInjectDelayOverride($"opti_inject_delay_{biz}", seconds);
+
+    // 这个游戏真正要等几秒才注入某个东西：单独设过就用它的，否则用全局默认
+    public static int GetModuleInjectDelayEffective(string moduleId, GameBiz biz)
+        => GetModuleInjectDelaySeconds(moduleId) ?? GetDefaultInjectionDelaySeconds(biz);
+
+    public static int GetShadeInjectDelayEffective(GameBiz biz)
+        => GetShadeInjectDelaySeconds(biz) ?? GetDefaultInjectionDelaySeconds(biz);
+
+    public static int GetOptiScalerInjectDelayEffective(GameBiz biz)
+        => GetOptiScalerInjectDelaySeconds(biz) ?? GetDefaultInjectionDelaySeconds(biz);
+
+    private static int? GetInjectDelayOverride(string? key)
+        => string.IsNullOrWhiteSpace(key) || !HasValue(key)
+            ? null
+            : Math.Clamp(GetValue(DefaultInjectionWarmupSeconds, key), 0, MaxInjectionWarmupSeconds);
+
+    private static void SetInjectDelayOverride(string key, int? seconds)
+    {
+        if (seconds is null)
+        {
+            SetValue<string>(null, key);
+            return;
+        }
+
+        SetValue(Math.Clamp(seconds.Value, 0, MaxInjectionWarmupSeconds), key);
     }
 
 
@@ -1920,14 +2328,35 @@ public static class AppConfig
     private static Dictionary<string, string?> _settingCache;
 
 
+    /// <summary>
+    /// 护住 <see cref="_settingCache"/> 的锁。
+    ///
+    /// <para>
+    /// 这个缓存**不是**只有 UI 线程在用：更新的后台任务、压缩包/插件包重拼
+    /// （<c>GameAddonPackService.SyncAll</c> 跑在 Task.Run 上）都会调 GetValue / SetValue。
+    /// 普通 Dictionary 被多线程同时读写会丢掉桶结构 —— 轻则偶发读到旧值，
+    /// 重则查询死循环 / 进程崩（用户报的「切插件版本时 HoYoShadeHubTrayMenu 系统错误 0xc0000005」）。
+    /// </para>
+    /// </summary>
+    private static readonly Lock _settingLock = new();
+
+
     private static void InitializeSettingProvider()
     {
         try
         {
-            if (_settingCache is null)
+            if (Volatile.Read(ref _settingCache) is not null)
             {
-                using var dapper = DatabaseService.CreateConnection();
-                _settingCache = dapper.Query<(string Key, string? Value)>("SELECT Key, Value FROM Setting;").ToDictionary(x => x.Key, x => x.Value);
+                return;
+            }
+
+            lock (_settingLock)
+            {
+                if (_settingCache is null)
+                {
+                    using var dapper = DatabaseService.CreateConnection();
+                    _settingCache = dapper.Query<(string Key, string? Value)>("SELECT Key, Value FROM Setting;").ToDictionary(x => x.Key, x => x.Value);
+                }
             }
         }
         catch { }
@@ -1946,20 +2375,38 @@ public static class AppConfig
             return defaultValue;
         }
         InitializeSettingProvider();
-        if (_settingCache is null)
-        {
-            return defaultValue;
-        }
+
         try
         {
-            if (_settingCache.TryGetValue(key, out string? value))
+            lock (_settingLock)
             {
-                return ConvertFromString(value, defaultValue);
+                if (_settingCache is null)
+                {
+                    return defaultValue;
+                }
+
+                if (_settingCache.TryGetValue(key, out string? value))
+                {
+                    return ConvertFromString(value, defaultValue);
+                }
             }
-            using var dapper = DatabaseService.CreateConnection();
-            value = dapper.QueryFirstOrDefault<string>("SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
-            _settingCache[key] = value;
-            return ConvertFromString(value, defaultValue);
+
+            // 库里查一次（不持锁，避免慢查询串住别的线程）
+            string? fromDb;
+            using (var dapper = DatabaseService.CreateConnection())
+            {
+                fromDb = dapper.QueryFirstOrDefault<string>("SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
+            }
+
+            lock (_settingLock)
+            {
+                if (_settingCache is not null)
+                {
+                    _settingCache[key] = fromDb;
+                }
+            }
+
+            return ConvertFromString(fromDb, defaultValue);
         }
         catch
         {
@@ -1977,22 +2424,37 @@ public static class AppConfig
         }
 
         InitializeSettingProvider();
-        if (_settingCache is null)
-        {
-            return false;
-        }
 
         try
         {
-            if (_settingCache.TryGetValue(key, out string? cached))
+            lock (_settingLock)
             {
-                return cached is not null;
+                if (_settingCache is null)
+                {
+                    return false;
+                }
+
+                if (_settingCache.TryGetValue(key, out string? cached))
+                {
+                    return cached is not null;
+                }
             }
 
-            using var dapper = DatabaseService.CreateConnection();
-            string? value = dapper.QueryFirstOrDefault<string>(
-                "SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
-            _settingCache[key] = value;
+            string? value;
+            using (var dapper = DatabaseService.CreateConnection())
+            {
+                value = dapper.QueryFirstOrDefault<string>(
+                    "SELECT Value FROM Setting WHERE Key=@key LIMIT 1;", new { key });
+            }
+
+            lock (_settingLock)
+            {
+                if (_settingCache is not null)
+                {
+                    _settingCache[key] = value;
+                }
+            }
+
             return value is not null;
         }
         catch
@@ -2027,18 +2489,26 @@ public static class AppConfig
             return;
         }
         InitializeSettingProvider();
-        if (_settingCache is null)
-        {
-            return;
-        }
+
         try
         {
             string? val = value?.ToString();
-            if (_settingCache.TryGetValue(key, out string? cacheValue) && cacheValue == val)
+
+            lock (_settingLock)
             {
-                return;
+                if (_settingCache is null)
+                {
+                    return;
+                }
+
+                if (_settingCache.TryGetValue(key, out string? cacheValue) && cacheValue == val)
+                {
+                    return;
+                }
+
+                _settingCache[key] = val;
             }
-            _settingCache[key] = val;
+
             using var dapper = DatabaseService.CreateConnection();
             dapper.Execute("INSERT OR REPLACE INTO Setting (Key, Value) VALUES (@key, @val);", new { key, val });
         }
@@ -2061,7 +2531,10 @@ public static class AppConfig
 
     public static void ClearCache()
     {
-        _settingCache.Clear();
+        lock (_settingLock)
+        {
+            _settingCache?.Clear();
+        }
     }
 
 

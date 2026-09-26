@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
@@ -75,12 +75,12 @@ internal class NvidiaAppSettings
     }
 
     /// <summary>
-    /// 系统级 HDR 开关。读得到 <c>true</c>/<c>false</c>，读不到 <c>null</c>。
+    /// 「播放流式 HDR 视频」这个开关（注册表 VideoSettings 下带 HDR 字样的值），读得到 true/false，读不到 null。
     ///
     /// <para>
-    /// <c>HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\VideoSettings</c> 的
-    /// <c>EnableHDRForPlayback</c> = 「播放流式 HDR 视频」，
-    /// <c>VideoSettings\HDR</c> 那边是每个显示器的 HDR 状态。两个都看一眼，任一为开就算开着。
+    /// ⚠ <b>它不是桌面 HDR / 高级颜色</b>。显示器的 Windows HDR 开没开请看
+    /// <c>DisplayHdrState</c>（走 DisplayConfig），RTX HDR 有没有效果就是按那个判的 ——
+    /// 以前这里被当成「系统 HDR」用，是错的：用户显示器 HDR 没开的时候这个键也可能是 1。
     /// </para>
     /// </summary>
     public static bool? TryReadSystemHdr()

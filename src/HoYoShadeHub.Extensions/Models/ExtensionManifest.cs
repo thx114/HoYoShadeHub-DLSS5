@@ -55,6 +55,13 @@ public class ExtensionManifest
     public string[]? ConflictsWith { get; set; }
 
     /// <summary>
+    /// 装这个扩展时**必须一起装**的依赖（目录里的 id；已经装过就跳过）。
+    /// 例：DLSS5 Feed 要 LumeniteFX 当动作矢量来源 —— 用户要求「启用这个插件要一并装上并启用」。
+    /// </summary>
+    [JsonPropertyName("requires")]
+    public string[]? Requires { get; set; }
+
+    /// <summary>
     /// 这个插件装到 addons 目录里之后**文件名长什么样**（glob 数组，可以给几条）。
     ///
     /// 用处：插件如果不是 Hub 装的（自己从 Discord / GitHub 拿的），账本里没有记录，

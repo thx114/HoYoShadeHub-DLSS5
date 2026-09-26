@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8" ?>
+<?xml version="1.0" encoding="utf-8" ?>
 <ContentDialog x:Class="HoYoShadeHub.Features.Plugins.Dlss5CompatDialog"
                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -72,7 +72,7 @@
                  IsOpen="False"
                  Severity="Informational" />
 
-        <!--  15 条结果  -->
+        <!--  20 条结果  -->
         <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
             <ItemsControl ItemsSource="{x:Bind Items}">
                 <ItemsControl.ItemTemplate>

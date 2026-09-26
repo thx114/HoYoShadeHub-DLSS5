@@ -523,7 +523,9 @@
                                    GameCommand="{x:Bind ClickStartGameButtonCommand}"
                                    GameState="{x:Bind GameState}"
                                    RunningGameInfo="{x:Bind RunningGameInfo}"
-                                   SettingCommand="{x:Bind OpenGameLauncherSettingDialogCommand}" />
+                                   SettingCommand="{x:Bind OpenGameLauncherSettingDialogCommand}"
+                                   CloseGameCommand="{x:Bind CloseGameCommand}"
+                                   IsClosingGame="{x:Bind IsClosingGame}" />
 
 
             <!--  文字阴影  -->
@@ -594,11 +596,37 @@
                     </CheckBox>
                 </Border>
 
+                <!--  AI 插帧（NVIDIA Smooth Motion）  -->
+                <Border Padding="10,0,10,0"
+                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
+                        CornerRadius="12"
+                        Visibility="{x:Bind IsSmoothMotionVisible, Mode=OneWay}">
+                    <CheckBox x:Name="CheckBox_SmoothMotion"
+                              MinWidth="0"
+                              Margin="0,-2,0,-2"
+                              VerticalAlignment="Center"
+                              VerticalContentAlignment="Center"
+                              Checked="CheckBox_SmoothMotion_Changed"
+                              Unchecked="CheckBox_SmoothMotion_Changed"
+                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                              IsChecked="{x:Bind UseSmoothMotion, Mode=TwoWay}"
+                              IsEnabled="{x:Bind CanUseSmoothMotion, Mode=OneWay}"
+                              Style="{ThemeResource CompactCheckBoxStyle}"
+                              ToolTipService.ToolTip="{x:Bind SmoothMotionToolTip, Mode=OneWay}">
+                        <TextBlock Margin="0,0,0,4"
+                                   FontSize="12"
+                                   FontWeight="Bold"
+                                   Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                   IsTextScaleFactorEnabled="False"
+                                   Text="AI 插帧" />
+                    </CheckBox>
+                </Border>
+
                 <!--  DX12 选项  -->
                 <Border Padding="10,0,10,0"
                         Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
                         CornerRadius="12"
-                        Visibility="{x:Bind IsDX12OptionVisible}">
+                        Visibility="{x:Bind IsDX12OptionVisible, Mode=OneWay}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <CheckBox MinWidth="0"
                                   Margin="0,-2,0,-2"

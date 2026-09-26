@@ -81,8 +81,31 @@ public static class ShadePathAligner
         foreach ((string section, string key) in PathKeys)
         {
             string? value = ini.GetValue(section, key);
+
+            // 每游戏插件包（<CacheRoot>\games\<gameKey>\Addons，带 pack.json 标记）是**故意**
+            // 指到共享目录之外的：这个游戏选了非默认的插件版本。把它改回当前 HoYoShade
+            // 就等于把「每游戏选版本」悄悄作废 —— 直接跳过 AddonPath 这一项。
+            if (string.Equals(section, "ADDON", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(key, "AddonPath", StringComparison.OrdinalIgnoreCase)
+                && GameAddonPack.IsPackDirectory(value))
+            {
+                continue;
+            }
+
+            // 缺 [ADDON] AddonPath 就补上 —— 兼容性检测第 12 项报「没写 AddonPath」之后
+            // 点的就是这条路，以前这里直接 continue，于是「修复」点了等于没点（用户反馈）。
+            // 少了这个键 ReShade 只会扫 HoYoShade 根目录，reshade-shaders\Addons 里的插件
+            // 全都加载不到。写**绝对**路径：检测和插件页会拿这个值去 Directory.Exists，
+            // 相对路径（.\reshade-shaders\Addons）在游戏目录那份 ini 里会被算成「目录不存在」。
             if (string.IsNullOrWhiteSpace(value))
             {
+                if (string.Equals(section, "ADDON", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(key, "AddonPath", StringComparison.OrdinalIgnoreCase))
+                {
+                    ini.SetValue(section, key, Path.Combine(root, "reshade-shaders", "Addons"));
+                    changed.Add($"[{section}] {key}");
+                }
+
                 continue;
             }
 
@@ -172,6 +195,14 @@ public static class ShadePathAligner
 
             previousRoot ??= oldRoot;
             parts[i] = root + part.Trim()[oldRoot.Length..];
+            any = true;
+        }
+
+        // 同一条路径写了两遍（历史修复 / 其它工具反复写）ReShade 会扫两遍，顺手去重
+        string[] distinct = parts.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (distinct.Length != parts.Length)
+        {
+            parts = distinct;
             any = true;
         }
 

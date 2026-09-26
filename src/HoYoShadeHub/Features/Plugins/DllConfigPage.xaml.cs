@@ -171,6 +171,23 @@ public sealed partial class DllConfigPage : PageBase
                 vm.SelectedVersion = previous;
             }
 
+            // 需求6：把归档里这一类 dll 装过的版本铺出来（每行一个删除）
+            try
+            {
+                var store = new DllVersionStore(AppConfig.CacheRoot);
+                vm.SetInstalledVersions(store.ListVersions(family.Id)
+                    .Select(stored => new InstalledDllVersionRow(
+                        family.Id,
+                        stored.Version,
+                        stored.Version,
+                        isCurrent: DllVersion.IsSame(stored.Version, vm.CurrentVersion)
+                                   || DllVersion.SameNumbers(stored.Version, vm.CurrentVersion))));
+            }
+            catch
+            {
+                vm.SetInstalledVersions([]);
+            }
+
             Families.Add(vm);
         }
     }
@@ -295,6 +312,24 @@ public sealed partial class DllConfigPage : PageBase
                 // 记下装的是哪个变体：PE 版本号里没有 SF / SF-v2 这种信息，不记就分不出来
                 AppConfig.SetInstalledDllVariant(component.Family, component.Version);
 
+                // 需求6：顺带把这一版归档到 <CacheRoot>\dlls\<family>\<version>\（硬链接优先，跨盘复制）。
+                // 归档失败绝不能让安装失败 —— DllVersionStore 的方法都不抛。
+                try
+                {
+                    var store = new DllVersionStore(AppConfig.CacheRoot);
+                    int archived = store.Archive(
+                        component.Family,
+                        component.Version,
+                        result.Installed.Select(name => Path.Combine(_host.AddonsPath, name)));
+
+                    _logger.LogInformation("Runtime dll archived: {Family} {Version} -> {Count} files",
+                        component.Family, component.Version, archived);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Archive runtime dll {Family} {Version}", component.Family, component.Version);
+                }
+
                 string extra = result.Overwritten.Count > 0 ? $"（覆盖了 {string.Join("、", result.Overwritten)}）" : string.Empty;
                 TextBlock_Status.Text = $"{family?.DisplayName ?? component.Family} {component.Version} 装好了：{string.Join("、", result.Installed)}{extra}";
                 if (!quiet)
@@ -323,6 +358,39 @@ public sealed partial class DllConfigPage : PageBase
             _isWorking = false;
             ProgressBar_Overall.IsIndeterminate = false;
             ProgressBar_Overall.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// 需求6：删掉归档里的一个 dll 版本。
+    /// 只删 <c>&lt;CacheRoot&gt;\dlls\&lt;family&gt;\&lt;version&gt;\</c>，共享 Addons 目录里
+    /// 当前生效的那一份不动（否则 ReShade 直接少文件）。
+    /// </summary>
+    private void Button_DeleteDllVersion_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: InstalledDllVersionRow row })
+        {
+            return;
+        }
+
+        try
+        {
+            var store = new DllVersionStore(AppConfig.CacheRoot);
+            if (store.DeleteVersion(row.FamilyId, row.Version))
+            {
+                _logger.LogInformation("Archived runtime dll deleted: {Family} {Version}", row.FamilyId, row.Version);
+                TextBlock_Status.Text = $"已删掉归档里的 {row.FamilyId} {row.Version}（共享目录里现在用的那份没动）。";
+                BuildFamilies();
+            }
+            else
+            {
+                TextBlock_Status.Text = $"归档里没有 {row.FamilyId} {row.Version}，可能已经被删了。";
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Delete archived dll version {Family} {Version}", row.FamilyId, row.Version);
+            TextBlock_Status.Text = "删除失败：" + ex.Message;
         }
     }
 
@@ -450,6 +518,8 @@ public partial class DllFamilyViewModel : ObservableObject
             currentVersion = recordedVariant;
         }
 
+        CurrentVersion = currentVersion;
+
         bool hasAny = InstalledDlls(installed, family).Any();
         InstalledText = hasAny
             ? (string.IsNullOrWhiteSpace(currentVersion) ? "已装（读不出版本）" : $"已装：{DllVersion.Normalize(currentVersion)}")
@@ -471,6 +541,28 @@ public partial class DllFamilyViewModel : ObservableObject
 
     public string InstalledText { get; }
 
+    /// <summary>盘上现在这一版（PE 版本 + 记账变体），给「使用中」角标用</summary>
+    public string? CurrentVersion { get; }
+
+    // ===================== 需求6：这一类 dll 的已安装版本（每行一个删除） =====================
+
+    public ObservableCollection<InstalledDllVersionRow> InstalledVersionRows { get; } = [];
+
+    public void SetInstalledVersions(IEnumerable<InstalledDllVersionRow> rows)
+    {
+        InstalledVersionRows.Clear();
+        foreach (InstalledDllVersionRow row in rows)
+        {
+            InstalledVersionRows.Add(row);
+        }
+
+        OnPropertyChanged(nameof(InstalledVersionsSummary));
+    }
+
+    public string InstalledVersionsSummary => InstalledVersionRows.Count == 0
+        ? "已安装版本：（还没有归档；装 / 重装一次就会留档）"
+        : $"已安装版本：{InstalledVersionRows.Count} 个";
+
     public Visibility RequiredBadgeVisibility { get; }
 
     public ObservableCollection<string> Versions { get; }
@@ -489,4 +581,29 @@ public partial class DllFamilyViewModel : ObservableObject
 
     private static IEnumerable<InstalledDll> InstalledDlls(IEnumerable<InstalledDll> installed, DllFamily family) =>
         installed.Where(d => DllInstaller.Matches(d.FileName, family));
+}
+
+/// <summary>
+/// 「DLL 配置」页「已安装版本」列表里的一行（需求6）：归档里的一份版本 + 删除。
+/// 数据模板里只能挂 Click，所以删除动作由页面处理器读这一行来做。
+/// </summary>
+public sealed class InstalledDllVersionRow
+{
+    public InstalledDllVersionRow(string familyId, string version, string? displayText, bool isCurrent)
+    {
+        FamilyId = familyId;
+        Version = version;
+        DisplayText = string.IsNullOrWhiteSpace(displayText) ? version : displayText;
+        IsCurrent = isCurrent;
+    }
+
+    public string FamilyId { get; }
+
+    public string Version { get; }
+
+    public string DisplayText { get; }
+
+    public bool IsCurrent { get; }
+
+    public Visibility CurrentVisibility => IsCurrent ? Visibility.Visible : Visibility.Collapsed;
 }

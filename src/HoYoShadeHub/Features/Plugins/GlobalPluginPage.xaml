@@ -103,10 +103,6 @@
                              VerticalAlignment="Center"
                              PlaceholderText="搜索…"
                              TextChanged="TextBox_Search_TextChanged" />
-                    <Button x:Name="Button_CleanStale"
-                            Click="Button_CleanStaleReferences_Click"
-                            Content="清理失效条目"
-                            ToolTipService.ToolTip="扫一遍所有游戏的 ReShade.ini，把 DisabledAddons / LoadFromDllMain 里指向「已经不存在的插件文件」的条目删掉" />
     <Button x:Name="Button_CheckAllUpdates" Click="Button_CheckAllUpdates_Click" Content="检查全部更新" ToolTipService.ToolTip="立刻向 GitHub 强制检查一遍（平时一天只自动查一次）" />
                     <Button x:Name="Button_Dlss5CompatCheck" Click="Button_Dlss5CompatCheck_Click" Content="DLSS5 兼容性检测" Style="{ThemeResource AccentButtonStyle}" ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性" />
                     <Button x:Name="Button_InstallLocal"
@@ -239,14 +235,16 @@
                                                                     </ItemsPanelTemplate>
                                                                 </ItemsControl.ItemsPanel>
                                                             </ItemsControl>
+                                                            <!--  需求5a：这个插件当前真的被选中的那个游戏启用 → 标「使用中」（不是全局开关）  -->
                                                             <Border Padding="6,1"
                                                                     VerticalAlignment="Center"
                                                                     Background="{ThemeResource AccentFillColorDefaultBrush}"
                                                                     CornerRadius="3"
-                                                                    Visibility="{x:Bind InstalledVisibility}">
+                                                                    ToolTipService.ToolTip="当前选中的这个游戏启用了它（看该游戏 ReShade.ini 的 DisabledAddons）"
+                                                                    Visibility="{x:Bind InUseVisibility, Mode=OneWay}">
                                                                 <TextBlock FontSize="11"
                                                                            Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                                                           Text="已安装" />
+                                                                           Text="使用中" />
                                                             </Border>
                                                             <Border Padding="6,1"
                                                                     VerticalAlignment="Center"
@@ -292,9 +290,6 @@
                                                                   ToolTipService.ToolTip="全局开关 = 改这个插件文件名后缀（.addon64  .addon64x）"
                                                                   Visibility="{x:Bind GlobalSwitchVisibility}" />
                                                     <Button Click="Button_CheckPluginUpdate_Click" Content="检查更新" />
-                                                    <Button Click="Button_Install_Click"
-                                                            Content="{x:Bind ActionText}"
-                                                            IsEnabled="{x:Bind CanInteract}" />
                                                 </StackPanel>
                                             </Grid>
 
@@ -308,10 +303,6 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"
                                                            TextWrapping="Wrap" />
-                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                                           Text="{x:Bind VersionText}"
-                                                           TextWrapping="Wrap" />
                                                 <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind DiskOnlyHint}"
@@ -321,10 +312,45 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind StatusText}"
                                                            TextWrapping="Wrap" />
-                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                                           Text="{x:Bind FilesText}"
-                                                           TextWrapping="Wrap" />
+                                                <!--  已安装版本（每行：左侧竖条 + 重装 + 删除），摆在「全部版本」下拉上面  -->
+                                                <ItemsControl ItemsSource="{x:Bind InstalledVersionRows}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="local:InstalledPluginVersionRow">
+                                                            <StackPanel Margin="0,1" Orientation="Horizontal" Spacing="6">
+                                                                <Border Width="3"
+                                                                        CornerRadius="2"
+                                                                        Background="{x:Bind BarBrush, Mode=OneWay}" />
+                                                                <TextBlock VerticalAlignment="Center"
+                                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                           Text="{x:Bind DisplayText}" />
+                                                                <Border Padding="6,1"
+                                                                        VerticalAlignment="Center"
+                                                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                        CornerRadius="3"
+                                                                        Visibility="{x:Bind CurrentVisibility}">
+                                                                    <TextBlock FontSize="11"
+                                                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                               Text="使用中" />
+                                                                </Border>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_ReinstallPluginVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="用这个 tag 重装（覆盖共享目录里当前生效的那份）">
+                                                                    <TextBlock FontSize="12" Text="重装" />
+                                                                </Button>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_DeletePluginVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="删除这个归档版本（不影响其它版本，也不动当前生效的那份）">
+                                                                    <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                                </Button>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+
                                                 <!--  版本：下拉选一个装（默认选中当前装着的那个），切版本 = 重新装那个 tag  -->
                                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                                     <ComboBox MinWidth="200"
@@ -335,7 +361,7 @@
                                                               SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
                                                     <Button VerticalAlignment="Bottom"
                                                             Click="Button_InstallVersion_Click"
-                                                            Content="切换 / 重装这个版本"
+                                                            Content="{x:Bind InstallVersionActionText, Mode=OneWay}"
                                                             IsEnabled="{x:Bind CanInteract}" />
                                                     <Button VerticalAlignment="Bottom"
                                                             Click="Button_OpenPluginFolder_Click"
@@ -538,13 +564,20 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind VersionText}"
                                                            TextWrapping="Wrap" />
-                                                <ComboBox MinWidth="200"
-                                                          Header="版本"
-                                                          HorizontalAlignment="Left"
-                                                          DropDownOpened="ComboBox_PluginVersions_DropDownOpened"
-                                                          ItemsSource="{x:Bind Versions}"
-                                                          PlaceholderText="点开卡片时自动获取版本"
-                                                          SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                <!--  需求7：版本下拉和下载 / 安装按钮同一行  -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock VerticalAlignment="Center" Text="版本" />
+                                                    <ComboBox MinWidth="200"
+                                                              DropDownOpened="ComboBox_PluginVersions_DropDownOpened"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开卡片时自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Center"
+                                                            Click="Button_InstallVersion_Click"
+                                                            Content="{x:Bind ActionText}"
+                                                            IsEnabled="{x:Bind CanInteract}"
+                                                            Style="{ThemeResource AccentButtonStyle}" />
+                                                </StackPanel>
                                                 <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind VersionsHint}"
@@ -553,11 +586,6 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind StatusText}"
                                                            TextWrapping="Wrap" />
-                                                <Button HorizontalAlignment="Left"
-                                                        Click="Button_InstallVersion_Click"
-                                                        Content="{x:Bind ActionText}"
-                                                        IsEnabled="{x:Bind CanInteract}"
-                                                        Style="{ThemeResource AccentButtonStyle}" />
                                                 <HyperlinkButton Padding="0"
                                                                  Click="Hyperlink_Homepage_Click"
                                                                  Content="{x:Bind Homepage}"
@@ -692,6 +720,45 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind MetaText}"
                                                            TextWrapping="Wrap" />
+
+                                                <!--  需求4：这个来源的已安装版本（每行一个删除），摆在版本下拉上面  -->
+                                                <ItemsControl ItemsSource="{x:Bind InstalledVersionRows}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="local:InstalledOptiScalerVersionRow">
+                                                            <StackPanel Margin="0,1" Orientation="Horizontal" Spacing="6">
+                                                                <Border Width="3"
+                                                                        CornerRadius="2"
+                                                                        Background="{x:Bind BarBrush, Mode=OneWay}" />
+                                                                <TextBlock VerticalAlignment="Center"
+                                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                           Text="{x:Bind DisplayText}" />
+                                                                <Border Padding="6,1"
+                                                                        VerticalAlignment="Center"
+                                                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                        CornerRadius="3"
+                                                                        Visibility="{x:Bind CurrentVisibility}">
+                                                                    <TextBlock FontSize="11"
+                                                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                               Text="使用中" />
+                                                                </Border>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_ReinstallOptiScalerVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="用这个版本重装（重新下载并覆盖构建目录）">
+                                                                    <TextBlock FontSize="12" Text="重装" />
+                                                                </Button>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_DeleteOptiScalerVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="删除这个已下载的构建版本（只删这一个目录，其它版本和当前选择都不动）">
+                                                                    <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                                </Button>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
 
                                                 <StackPanel Orientation="Horizontal"
                                                             Spacing="8"
@@ -975,6 +1042,85 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind DetailText}"
                                                            TextWrapping="Wrap" />
+
+                                                <!--  需求4：模块的已安装版本（每行一个删除），摆在版本下拉上面  -->
+                                                <ItemsControl ItemsSource="{x:Bind InstalledVersionRows}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="local:InstalledModuleVersionRow">
+                                                            <StackPanel Margin="0,1" Orientation="Horizontal" Spacing="6">
+                                                                <Border Width="3"
+                                                                        CornerRadius="2"
+                                                                        Background="{x:Bind BarBrush, Mode=OneWay}" />
+                                                                <TextBlock VerticalAlignment="Center"
+                                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                                           Text="{x:Bind DisplayText}" />
+                                                                <Border Padding="6,1"
+                                                                        VerticalAlignment="Center"
+                                                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                        CornerRadius="3"
+                                                                        Visibility="{x:Bind CurrentVisibility}">
+                                                                    <TextBlock FontSize="11"
+                                                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                               Text="使用中" />
+                                                                </Border>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_ReinstallModuleVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="用这个 tag 重装这个模块版本">
+                                                                    <TextBlock FontSize="12" Text="重装" />
+                                                                </Button>
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_DeleteModuleVersion_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="删除这个模块版本目录（只删这一个 tag，当前用的那份不动）">
+                                                                    <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                                </Button>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+
+                                                <!--  版本：下拉选一个装（默认选中当前装着的那个），换版本 = 重新装那个 tag  -->
+                                                <StackPanel Orientation="Horizontal"
+                                                            Spacing="8"
+                                                            Visibility="{x:Bind VersionPickerVisibility}">
+                                                    <TextBlock VerticalAlignment="Center" Text="版本" />
+                                                    <ComboBox MinWidth="200"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开卡片时自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Center"
+                                                            Click="Button_SwitchModuleVersion_Click"
+                                                            Content="{x:Bind SwitchVersionText, Mode=OneWay}"
+                                                            IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
+                                                </StackPanel>
+
+                                                <!--  注入时机（按模块，两处共用同一个值）：0~30 秒，留空 = 跟随全局  -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                                               Text="注入时机" />
+                                                    <NumberBox Width="150"
+                                                               Minimum="0"
+                                                               Maximum="30"
+                                                               SmallChange="1"
+                                                               SpinButtonPlacementMode="Compact"
+                                                               PlaceholderText="{x:Bind InjectDelayPlaceholder, Mode=OneWay}"
+                                                               Value="{x:Bind InjectDelayValue, Mode=TwoWay}"
+                                                               ToolTipService.ToolTip="启动游戏时这个模块等几秒再注入。越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样），调大才会等；留空 = 跟随全局。" />
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                                               Text="{x:Bind InjectDelayHint, Mode=OneWay}" />
+                                                </StackPanel>
+
+                                                <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                                           Text="{x:Bind SwitchStatusText, Mode=OneWay}"
+                                                           TextWrapping="Wrap"
+                                                           Visibility="{x:Bind SwitchStatusVisibility, Mode=OneWay}" />
                                                 <HyperlinkButton Padding="0"
                                                                  Click="Hyperlink_Homepage_Click"
                                                                  Content="{x:Bind Homepage}"
@@ -1050,17 +1196,19 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind DetailText}"
                                                            TextWrapping="Wrap" />
-                                                <ComboBox MinWidth="200"
-                                                          Header="版本"
-                                                          HorizontalAlignment="Left"
-                                                          ItemsSource="{x:Bind Versions}"
-                                                          PlaceholderText="点开卡片时自动获取版本"
-                                                          SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
-                                                <Button HorizontalAlignment="Left"
-                                                        Click="Button_DownloadModule_Click"
-                                                        Content="下载 / 更新"
-                                                        IsEnabled="{x:Bind CanInteract}"
-                                                        Style="{ThemeResource AccentButtonStyle}" />
+                                                <!--  需求6：版本下拉和下载按钮同一行  -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock VerticalAlignment="Center" Text="版本" />
+                                                    <ComboBox MinWidth="200"
+                                                              ItemsSource="{x:Bind Versions}"
+                                                              PlaceholderText="点开卡片时自动获取版本"
+                                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" />
+                                                    <Button VerticalAlignment="Center"
+                                                            Click="Button_DownloadModule_Click"
+                                                            Content="{x:Bind ActionText, Mode=OneWay}"
+                                                            IsEnabled="{x:Bind CanInteract}"
+                                                            Style="{ThemeResource AccentButtonStyle}" />
+                                                </StackPanel>
                                                 <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind StatusText}"

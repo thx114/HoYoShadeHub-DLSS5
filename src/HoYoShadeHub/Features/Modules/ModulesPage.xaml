@@ -31,8 +31,11 @@
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>
 
-        <ListView x:Name="ListView_Modules" Grid.Row="2" SelectionMode="None">
-            <ListView.ItemTemplate>
+        <!--  统一成 ScrollViewer + ItemsControl（ListView 虽然自带滚动，但这里不需要选中，
+              和 OptiScaler 页保持一套写法；模板内容一字未动）  -->
+        <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
+            <ItemsControl x:Name="ListView_Modules">
+            <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="local:ModuleChoiceItem">
                     <Border Margin="0,0,0,6"
                             Padding="14,10"
@@ -71,6 +74,41 @@
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="{x:Bind Detail}"
                                            TextWrapping="Wrap" />
+                                <!--  版本 + 注入时机放同一行（注入时机按模块，和「全局插件 → 模块」共用同一个值）  -->
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <!--  需求1：不用 Header（会占垂直空间、把这一行挤成两行），改成左边一个「版本」标签 + 无 Header 的下拉，全部居中对齐  -->
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Text="版本"
+                                               Visibility="{x:Bind VersionPickerVisibility}" />
+                                    <ComboBox MinWidth="160"
+                                              VerticalAlignment="Center"
+                                              ItemsSource="{x:Bind Versions}"
+                                              SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}"
+                                              Visibility="{x:Bind VersionPickerVisibility}" />
+                                    <TextBlock VerticalAlignment="Center"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Text="{x:Bind VersionHint}"
+                                               TextWrapping="Wrap"
+                                               Visibility="{x:Bind VersionHintVisibility}" />
+                                    <TextBlock VerticalAlignment="Center"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Text="注入时机" />
+                                    <NumberBox Width="150"
+                                               Minimum="0"
+                                               Maximum="30"
+                                               SmallChange="1"
+                                               SpinButtonPlacementMode="Compact"
+                                               PlaceholderText="{x:Bind InjectDelayPlaceholder, Mode=OneWay}"
+                                               Value="{x:Bind InjectDelayValue, Mode=TwoWay}"
+                                               ToolTipService.ToolTip="启动游戏时这个模块等几秒再注入。越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样），调大才会等；留空 = 跟随全局。" />
+                                    <TextBlock VerticalAlignment="Center"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                               Style="{ThemeResource CaptionTextBlockStyle}"
+                                               Text="{x:Bind InjectDelayHint}" />
+                                </StackPanel>
+
                                 <TextBlock Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="{x:Bind MissingText}"
@@ -80,8 +118,9 @@
                         </Grid>
                     </Border>
                 </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
+            </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
 
         <TextBlock x:Name="TextBlock_Status"
                    Grid.Row="3"

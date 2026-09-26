@@ -480,6 +480,41 @@ if (args.Contains("--online"))
     }
 
     Console.WriteLine();
+    Console.WriteLine("== 11.3 联网：Veritas 版本列表（published_at 排序，不是 atom 的 updated_at）==");
+    try
+    {
+        var veritasSource = new ExtensionSource
+        {
+            Type = ExtensionSourceType.GithubRelease,
+            Repository = "hessiser/veritas",
+            TagPattern = @"^\d",
+        };
+
+        List<ExtensionVersion> veritas = await resolver.ListVersionsAsync(veritasSource, 20);
+        Check(veritas.Count > 0, $"veritas 读到 {veritas.Count} 个版本（第一条 {veritas.FirstOrDefault()?.Tag}）");
+
+        List<Version> parsed = [.. veritas
+            .Select(v => Version.TryParse(v.Tag, out Version? parsedTag) ? parsedTag : null)
+            .Where(v => v is not null)
+            .Select(v => v!)];
+
+        bool versionDesc = true;
+        for (int i = 1; i < parsed.Count; i++)
+        {
+            if (parsed[i - 1] < parsed[i]) { versionDesc = false; break; }
+        }
+
+        Check(parsed.Count == veritas.Count && versionDesc,
+            $"版本是「新→旧」版本倒序（第一条 {veritas[0].Tag} / 最后一条 {veritas[^1].Tag}）");
+
+        ExtensionVersion? v48 = veritas.FirstOrDefault(v => v.Tag == "0.2.48");
+        Check(v48?.Published is { } p48 && p48.UtcDateTime.ToString("yyyy-MM-dd") == "2026-05-02",
+            $"0.2.48 用的是 published_at（2026-05-02），不是 atom 的 updated_at（2026-06-05）：{v48?.Published:u}");
+    }
+    catch (Exception ex)
+    {
+        Check(false, $"veritas 版本列表：{ex.GetType().Name} {ex.Message}");
+    }
     Console.WriteLine("== 11.2 联网：远端目录（catalog/）逐条解析（--online + 环境变量 HYSX_CATALOG_DIR）==");
     string? catalogDir = Environment.GetEnvironmentVariable("HYSX_CATALOG_DIR");
     if (string.IsNullOrWhiteSpace(catalogDir))
@@ -1354,6 +1389,32 @@ Check(untouched == @"D:\MyAddons\Stuff;D:\x", "分号写法我们认不准，原
 string? missingIni = ShadePathAligner.Align(Path.Combine(root, "nope", "ReShade.ini"), shadeRoot).Changed
     ? "changed" : null;
 Check(missingIni is null, "ini 不存在 → 什么都不做、不抛异常");
+
+// 第三方整合包（群友的 Seri 案例）：reshade-shaders 形状但根不叫 HoYoShade ——
+// 一样要被「指回」当前 HoYoShade（以前直接跳过 → 指回无效、红标消不掉），重复条目顺手去重
+string seriRoot = @"C:\ProgramData\ReShade Addons\Seri";
+string seriPath = seriRoot + @"\reshade-shaders\Shaders\**";
+Check(ShadePathAligner.RootOf(seriPath) == seriRoot, "第三方包的根也能被反推出来");
+
+string seriIni = Path.Combine(root, "serigame", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(seriIni)!);
+File.WriteAllLines(seriIni, [
+    "[ADDON]",
+    @"AddonPath=" + shadeRoot + @"\reshade-shaders\Addons",
+    "",
+    "[GENERAL]",
+    @"EffectSearchPaths=" + shadeRoot + @"\reshade-shaders\Shaders\**," + shadeRoot + @"\reshade-shaders\Shaders\**," + seriPath,
+    @"TextureSearchPaths=" + shadeRoot + @"\reshade-shaders\Textures\**",
+]);
+
+ShadePathAlignResult seriAligned = ShadePathAligner.Align(seriIni, shadeRoot);
+Check(seriAligned.ChangedKeys.Contains("[GENERAL] EffectSearchPaths"), "第三方路径被指回 + 重复条目被去重：" + string.Join("、", seriAligned.ChangedKeys));
+string afterAlign = File.ReadAllText(seriIni);
+Check(!afterAlign.Contains("ProgramData"), "Seri 的路径被改写成当前根了");
+Check(afterAlign.Split(shadeRoot + @"\reshade-shaders\Shaders\**").Length - 1 == 1, "当前根的搜索路径只剩一条（去重生效）");
+Check(!ShadePathAligner.Align(seriIni, shadeRoot).Changed, "修完再对齐是幂等的");
+try { Directory.Delete(Path.GetDirectoryName(seriIni)!, true); } catch { }
+
 Console.WriteLine("== 25. OptiScaler 本地库（下载 / 单选 / 删除）==");
 string optiRoot = Path.Combine(userDataFolder, "OptiScaler");
 var library = new OptiScalerLibrary(optiRoot);
@@ -1716,6 +1777,402 @@ Check(OptiScalerCatalog.Find("neurotic")?.Repository == "MagicalPrincessUnicorn/
 
 
 Console.WriteLine();
+Console.WriteLine();
+Console.WriteLine("== 27. DLSS5 Feed：预设里的效果开关（含根键 ini）==");
+
+string presetDir = Path.Combine(root, "Presets");
+Directory.CreateDirectory(presetDir);
+
+string presetPath = Path.Combine(presetDir, "Mod OFF.ini");
+File.WriteAllLines(presetPath, [
+    "Techniques=MartysMods_MXAO@MartysMods_MXAO.fx",
+    "TechniqueSorting=MartysMods_MXAO@MartysMods_MXAO.fx,DPX@DPX.fx",
+    @"PreprocessorDefinitions=RESHADE_DEPTH_LINEARIZATION_FAR_PLANE=1000.0,fLUT_TextureName=""DarkNRich.png""",
+    "",
+    "[MartysMods_MXAO.fx]",
+    "MXAO_TWO_LAYER=1",
+]);
+
+string feedIni = Path.Combine(root, "feedgame", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(feedIni)!);
+File.WriteAllLines(feedIni, [
+    "[ADDON]",
+    "DisabledAddons=",
+    "",
+    "[GENERAL]",
+    "PresetPath=" + presetPath,
+]);
+
+ReShadeProfile feedProfile = ReShadeProfile.Load(feedIni);
+Check(feedProfile.ResolvePresetPath() == presetPath, "PresetPath 解析出来了");
+
+Check(ReShadePresetEditor.IsFeedAddon("dlss5-feed.addon64"), "dlss5-feed.addon64 认成 Feed 插件");
+Check(!ReShadePresetEditor.IsFeedAddon("renodx-dlss5.addon64"), "别的插件不会误判");
+
+string TechniquesLine() => File.ReadAllLines(presetPath).First(l => l.StartsWith("Techniques="));
+string DefinitionsLine() => File.ReadAllLines(presetPath).FirstOrDefault(l => l.StartsWith("PreprocessorDefinitions=")) ?? string.Empty;
+
+Check(ReShadePresetEditor.TrySetEnabled(feedProfile, true, out string? feedError), $"打开 Feed 的预设开关（{feedError}）");
+Check(TechniquesLine() == "Techniques=MartysMods_MXAO@MartysMods_MXAO.fx,Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx",
+    "Kernel 排在 Feed 前面、原有的 technique 保留：" + TechniquesLine());
+Check(DefinitionsLine().Contains("DLSS5_MV_PROVIDER=3"), "写进了 DLSS5_MV_PROVIDER=3");
+Check(DefinitionsLine().Contains("DarkNRich.png"), "别的预处理器定义原样保留");
+Check(File.ReadAllText(presetPath).Contains("[MartysMods_MXAO.fx]"), "节还在");
+Check(File.ReadAllText(presetPath).Contains("MXAO_TWO_LAYER=1"), "节里的参数没被动");
+Check(ReShadePresetEditor.IsEnabled(feedProfile), "读回来是开着的");
+
+Check(ReShadePresetEditor.TrySetEnabled(feedProfile, true, out _), "再开一次不报错");
+Check(TechniquesLine() == "Techniques=MartysMods_MXAO@MartysMods_MXAO.fx,Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx",
+    "幂等：不会重复加 technique");
+
+Check(ReShadePresetEditor.TrySetEnabled(feedProfile, false, out _), "关掉 Feed 的预设开关");
+Check(TechniquesLine() == "Techniques=MartysMods_MXAO@MartysMods_MXAO.fx", "只剩原来的 technique：" + TechniquesLine());
+Check(!DefinitionsLine().Contains("DLSS5_MV_PROVIDER"), "预处理器定义也摘掉了");
+Check(File.ReadAllText(presetPath).Contains("TechniqueSorting=MartysMods_MXAO@MartysMods_MXAO.fx,DPX@DPX.fx,Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx"),
+    "TechniqueSorting 是全集清单，故意留着");
+Check(!ReShadePresetEditor.IsEnabled(feedProfile), "读回来是关着的");
+
+// 根键本来不存在时：插在第一个节头之前
+string barePath = Path.Combine(presetDir, "bare.ini");
+File.WriteAllLines(barePath, ["[Some.fx]", "A=1"]);
+string bareIni = Path.Combine(root, "baregame", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(bareIni)!);
+File.WriteAllLines(bareIni, ["[GENERAL]", "PresetPath=" + barePath]);
+Check(ReShadePresetEditor.TrySetEnabled(ReShadeProfile.Load(bareIni), true, out _), "空预设也能开");
+string[] bareLines = File.ReadAllLines(barePath);
+Check(bareLines.Length == 5
+      && bareLines[0].StartsWith("Techniques=")
+      && bareLines[1].StartsWith("TechniqueSorting=")
+      && bareLines[2] == "PreprocessorDefinitions=DLSS5_MV_PROVIDER=3"
+      && bareLines[3] == "[Some.fx]",
+    "根键插在第一个节头之前：" + string.Join(" | ", bareLines));
+
+// 目录条目
+var feedCatalog = ExtensionCatalogService.LoadBuiltin();
+ExtensionManifest? feedManifest = feedCatalog.Extensions.FirstOrDefault(e => e.Id == "dlss5.feed");
+Check(feedManifest is not null, "内置目录有 dlss5.feed");
+Check(feedManifest!.Requires is ["lumenitefx"], "dlss5.feed 声明依赖 lumenitefx");
+Check(feedManifest.Rules.Any(r => r.To.Contains("Addons", StringComparison.OrdinalIgnoreCase))
+      && feedManifest.Rules.Any(r => r.To.Contains("Shaders", StringComparison.OrdinalIgnoreCase)),
+    "既装 addon 也装 DLSS5_Feed.fx");
+Check(feedManifest.Tags?.Contains("dlss5") == true, "带 dlss5 标签（自动进 LoadFromDllMain）");
+
+ExtensionManifest? lumManifest = feedCatalog.Extensions.FirstOrDefault(e => e.Id == "lumenitefx");
+Check(lumManifest is not null, "内置目录有 lumenitefx");
+Check(lumManifest!.Rules.All(r => !r.To.Contains("Addons", StringComparison.OrdinalIgnoreCase)),
+    "lumenitefx 不是插件（不进「全局插件」列表）");
+
+AddonFileInfo? feedAddon = AddonFileInfo.Parse("dlss5-feed.addon64");
+Check(feedAddon is not null
+      && ExtensionAddonMatcher.Match([feedManifest], [feedAddon!]).ContainsKey("dlss5.feed"),
+    "dlss5-feed.addon64 能被目录认领");
+
+// 兼容性检测第 12 项报「没写 AddonPath」之后点的就是对齐修复 —— 必须真的补上
+Directory.CreateDirectory(Path.Combine(shadeRoot, "reshade-shaders", "Addons"));
+string missIni = Path.Combine(root, "missaddon", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(missIni)!);
+File.WriteAllLines(missIni, [
+    "[ADDON]",
+    "DisabledAddons=",
+    "",
+    "[GENERAL]",
+    @"EffectSearchPaths=" + shadeRoot + @"\reshade-shaders\Shaders\**",
+]);
+ShadePathAlignResult addonFix = ShadePathAligner.Align(missIni, shadeRoot);
+Check(addonFix.ChangedKeys.Contains("[ADDON] AddonPath"), "缺 AddonPath 会被补上：" + string.Join("、", addonFix.ChangedKeys));
+string? fixedAddonPath = ReShadeProfile.Load(missIni).AddonPath;
+Check(fixedAddonPath is not null && Path.IsPathFullyQualified(fixedAddonPath) && Directory.Exists(fixedAddonPath),
+    "补的是**绝对**路径（第 12 项会拿它 Directory.Exists）：" + fixedAddonPath);
+Check(!ShadePathAligner.Align(missIni, shadeRoot).Changed, "补完再对齐是幂等的");
+
+// 指到别的 HoYoShade 的搜索路径要能被反推出来（第 12 项靠它报「指到别的 HoYoShade」）
+string otherRoot = Path.Combine(root, "other", "HoYoShade");
+Check(ShadePathAligner.RootOf(otherRoot + @"\reshade-shaders\Shaders\**") == otherRoot,
+    "别的 HoYoShade 的搜索路径能反推出根");
+try { Directory.Delete(Path.Combine(root, "missaddon"), true); } catch { }
+foreach (string entryDir in new[] { Path.Combine(root, "feedgame"), Path.Combine(root, "baregame") })
+{
+    try { Directory.Delete(entryDir, true); } catch { }
+}
+
+Console.WriteLine("== 28. 版本归档 + 每游戏插件包 + 迁移规划（需求 1/2/3/4/G） ==");
+
+string cacheRoot = Path.Combine(root, "cache");
+string gameKey = "hk4e_cn";
+Check(GameAddonPack.SanitizeGameKey("hk4e_cn") == "hk4e_cn", "游戏 key 正常");
+Check(GameAddonPack.SanitizeGameKey("a/b:c*d") == "a_b_c_d", "非法字符替换成 _：" + GameAddonPack.SanitizeGameKey("a/b:c*d"));
+Check(GameAddonPack.SanitizeGameKey("   ") == "unknown", "空 key 退到 unknown");
+Check(GameAddonPack.AddonDirectory(cacheRoot, gameKey) == Path.Combine(cacheRoot, "games", gameKey, "Addons"),
+    "每游戏插件包目录映射");
+
+var versionStore = new AddonVersionStore(cacheRoot);
+Check(versionStore.RootPath == Path.Combine(cacheRoot, "plugins"), "归档根 = cache\\plugins");
+Check(versionStore.DirectoryFor("dlss5.neural.interposer", "1.1.5")
+      == Path.Combine(cacheRoot, "plugins", "dlss5.neural.interposer", "1.1.5"), "归档目录映射");
+
+// 造一个假的宿主 + 已装记录
+string archiveHostRoot = Path.Combine(root, "archive-host");
+Directory.CreateDirectory(Path.Combine(archiveHostRoot, "reshade-shaders", "Addons"));
+Directory.CreateDirectory(Path.Combine(archiveHostRoot, "reshade-shaders", "Shaders"));
+File.WriteAllText(Path.Combine(archiveHostRoot, "ReShade64.dll"), "fake");
+var archiveHost = new ShadeHost(archiveHostRoot);
+
+string archivedAddon = Path.Combine(archiveHost.AddonsPath, "renodx-dlss.addon64");
+File.WriteAllText(archivedAddon, "v1-addon");
+File.WriteAllText(Path.Combine(archiveHostRoot, "reshade-shaders", "Shaders", "foo.fx"), "v1-shader");
+
+var archiveRecord = new InstalledExtension
+{
+    Id = "renodx.dlss",
+    Name = "RenoDX DLSS",
+    Version = "1.0",
+    ResolvedTag = "v1.0",
+    Files =
+    {
+        new InstalledExtension.InstalledExtensionFile { Path = "reshade-shaders/Addons/renodx-dlss.addon64" },
+        new InstalledExtension.InstalledExtensionFile { Path = "reshade-shaders/Shaders/foo.fx" },
+    },
+};
+
+AddonArchiveResult archive1 = versionStore.Archive(archiveHost, archiveRecord);
+Check(archive1.Archived == 2 && versionStore.Has("renodx.dlss", "v1.0"), "归档当前安装的文件：" + archive1.Archived);
+Check(versionStore.AddonFiles("renodx.dlss", "v1.0").Count == 1, "归档里只挑 Addons 下的文件");
+Check(versionStore.Archive(archiveHost, archiveRecord).Archived == 0, "归档幂等（第二次全跳过）");
+
+// 换一份内容（模拟安装器用 tmp+Move 替换，生成新的 inode）
+File.Delete(archivedAddon);
+File.WriteAllText(archivedAddon, "v2-addon");
+archiveRecord.ResolvedTag = "v1.1";
+versionStore.Archive(archiveHost, archiveRecord);
+Check(versionStore.InstalledTags("renodx.dlss").Count == 2, "同一个插件两个版本共存");
+
+string archivedV1 = Path.Combine(versionStore.DirectoryFor("renodx.dlss", "v1.0"), "reshade-shaders", "Addons", "renodx-dlss.addon64");
+Check(File.ReadAllText(archivedV1) == "v1-addon", "老版本的归档没被新版本覆盖（硬链接 + inode 替换）");
+
+// 规划插件包：共享目录里的全部文件 + 选版本的那个来自归档
+File.WriteAllText(Path.Combine(archiveHost.AddonsPath, "other.addon64"), "other");
+var selections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["renodx.dlss"] = "v1.0" };
+List<AddonPackEntry> plan = GameAddonPack.Plan(archiveHost.AddonsPath, selections, (id, tag) => versionStore.AddonFiles(id, tag));
+Check(plan.Count == 2, "包计划包含共享目录的全部文件：" + plan.Count);
+AddonPackEntry pickedEntry = plan.First(e => e.FileName == "renodx-dlss.addon64");
+Check(pickedEntry.ExtensionId == "renodx.dlss"
+      && pickedEntry.SourcePath.Contains(Path.Combine("plugins", "renodx.dlss", "v1.0"), StringComparison.OrdinalIgnoreCase),
+    "选过版本的文件来自归档：" + pickedEntry.SourcePath);
+Check(!GameAddonPack.Plan(archiveHost.AddonsPath, new Dictionary<string, string>(), (id, tag) => versionStore.AddonFiles(id, tag))
+        .Any(e => e.ExtensionId is not null),
+    "没选版本时全部用共享目录的文件（保持今天的行为）");
+
+string packAddons = GameAddonPack.AddonDirectory(cacheRoot, gameKey);
+GameAddonPack.Sync(packAddons, plan, selections.Select(kv => (kv.Key, kv.Value)));
+Check(File.Exists(Path.Combine(packAddons, "renodx-dlss.addon64")) && File.Exists(Path.Combine(packAddons, "other.addon64")),
+    "包目录里有全部文件");
+Check(File.ReadAllText(Path.Combine(packAddons, "renodx-dlss.addon64")) == "v1-addon", "包里用的是归档那一版");
+Check(File.Exists(Path.Combine(packAddons, GameAddonPack.MarkerFileName)), "包目录带 pack.json 标记");
+Check(GameAddonPack.IsPackDirectory(packAddons), "IsPackDirectory 认标记");
+Check(!GameAddonPack.IsPackDirectory(archiveHost.AddonsPath), "普通共享目录不算插件包");
+
+// 不再需要的旧行会被清掉
+File.Delete(Path.Combine(archiveHost.AddonsPath, "other.addon64"));
+List<AddonPackEntry> plan2 = GameAddonPack.Plan(archiveHost.AddonsPath, selections, (id, tag) => versionStore.AddonFiles(id, tag));
+GameAddonPack.Sync(packAddons, plan2, selections.Select(kv => (kv.Key, kv.Value)));
+Check(!File.Exists(Path.Combine(packAddons, "other.addon64")), "不再需要的旧行被清掉");
+
+// ShadePathAligner 不能把每游戏插件包改回 HoYoShade
+string packIni = Path.Combine(root, "packgame", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(packIni)!);
+File.WriteAllLines(packIni, [
+    "[ADDON]",
+    "AddonPath=" + packAddons,
+    "DisabledAddons=",
+]);
+ShadePathAlignResult packAlign = ShadePathAligner.Align(packIni, shadeRoot);
+Check(!packAlign.ChangedKeys.Contains("[ADDON] AddonPath"), "Align 跳过每游戏插件包：" + string.Join("、", packAlign.ChangedKeys));
+Check(ReShadeProfile.Load(packIni).AddonPath == packAddons, "包路径原样保留");
+Check(!ShadePathAligner.Align(packIni, shadeRoot).Changed, "认包路径的那个 ini 对齐是幂等的");
+
+// 删除单个版本
+Check(versionStore.DeleteVersion("renodx.dlss", "v1.1"), "删掉一个归档版本");
+Check(versionStore.InstalledTags("renodx.dlss").Count == 1, "只剩一个版本");
+Check(!File.Exists(versionStore.DirectoryFor("renodx.dlss", "v1.1")), "被删版本的目录真的没了");
+
+// 迁移规划
+Check(CacheMigrationPlanner.NeedsMigration(false, true, false, false, false, false, false), "装过插件但没归档 -> 需要引导");
+Check(!CacheMigrationPlanner.NeedsMigration(true, true, false, true, false, true, false), "已迁移过 -> 不引导");
+Check(!CacheMigrationPlanner.NeedsMigration(false, false, false, false, false, false, false), "全新安装 -> 不引导");
+// OptiScaler 不参与迁移：它自己的库原地多版本共存，老 OptiScaler 还在也不该弹引导
+Check(!CacheMigrationPlanner.NeedsMigration(false, false, false, true, false, false, false), "老 OptiScaler 还在也不引导（不迁移）");
+
+string legacyOpti = Path.Combine(root, "legacy-opti");
+string cacheOpti = Path.Combine(cacheRoot, "optiscaler");
+Directory.CreateDirectory(Path.Combine(legacyOpti, "src", "v1"));
+Check(CacheMigrationPlanner.PlanMoves(legacyOpti, null, cacheOpti, null).Count == 0, "OptiScaler 不规划搬迁");
+
+// 模块要迁移
+string legacyModules = Path.Combine(root, "legacy-modules");
+string cacheModules = Path.Combine(cacheRoot, "modules");
+Directory.CreateDirectory(Path.Combine(legacyModules, "veritas"));
+List<LegacyStoreMove> plannedMoves = CacheMigrationPlanner.PlanMoves(null, legacyModules, null, cacheModules);
+Check(plannedMoves.Count == 1 && plannedMoves[0].Source == legacyModules && plannedMoves[0].Target == cacheModules && !plannedMoves[0].TargetExists,
+    "规划出模块搬迁");
+Directory.CreateDirectory(cacheModules);
+Check(CacheMigrationPlanner.PlanMoves(null, legacyModules, null, cacheModules)[0].TargetExists, "目标已存在要标记，不能覆盖");
+Check(CacheMigrationPlanner.PlanMoves(null, Path.Combine(root, "nope"), null, cacheModules).Count == 0, "源不存在就不规划");
+
+Console.WriteLine("== 29. addon→扩展归属 + 插件包体检 + dll 版本归档 ==");
+
+// addon 文件名 → 扩展 id（每游戏插件卡片的版本下拉靠它把文件对到归档）
+Check(ExtensionAddonMatcher.MatchExtensionId([feedManifest], "dlss5-feed.addon64") == "dlss5.feed",
+    "addon 文件名能对到扩展 id");
+Check(ExtensionAddonMatcher.MatchExtensionId([feedManifest], "definitely-not-an-addon.txt") is null,
+    "认不出来的文件名返回 null");
+
+// pack.json 里的版本选择要能读回来（兼容性检测第 20 项靠它报「这个游戏在用哪一版」）
+AddonPackEntry[] planFinal = [.. plan2];
+GameAddonPack.Sync(packAddons, planFinal, selections.Select(kv => (kv.Key, kv.Value)));
+Dictionary<string, string> packSelections = GameAddonPack.ReadSelections(packAddons);
+Check(packSelections.Count == 1 && packSelections.TryGetValue("renodx.dlss", out string? pickedTag) && pickedTag == "v1.0",
+    "pack.json 的版本选择能读回来：" + string.Join(",", packSelections.Select(kv => kv.Key + "=" + kv.Value)));
+Check(GameAddonPack.ReadSelections(archiveHost.AddonsPath).Count == 0, "不是包目录就没有选择记录");
+
+// 体检：同步状态下应该全对得上
+AddonPackAudit auditOk = GameAddonPackAudit.Inspect(cacheRoot, gameKey, archiveHost.AddonsPath);
+Check(auditOk.IsPack, "体检认得这是一个插件包");
+Check(auditOk.Ok,
+    "同步状态下体检通过（缺文件 " + string.Join(",", auditOk.MissingFiles)
+    + " / 过期 " + string.Join(",", auditOk.StaleFiles)
+    + " / 多余 " + string.Join(",", auditOk.ExtraFiles) + "）");
+Check(!GameAddonPackAudit.Inspect(cacheRoot, "no-such-game", archiveHost.AddonsPath).IsPack, "没包目录 → IsPack=false");
+
+// 共享目录新增一个文件 → 包里缺它
+File.WriteAllText(Path.Combine(archiveHost.AddonsPath, "late.addon64"), "late");
+Check(GameAddonPackAudit.Inspect(cacheRoot, gameKey, archiveHost.AddonsPath).MissingFiles.Contains("late.addon64"),
+    "共享目录新增文件 → 包里缺文件被查出来");
+File.Delete(Path.Combine(archiveHost.AddonsPath, "late.addon64"));
+
+// 包里的文件被换成别的内容（硬链接断了）→ 报「过期」
+// 硬链接是同一个 inode —— 「链接不在了」模拟成「删掉包里这份、重新写一个新文件」，
+// 源（归档）那份保持不动，大小就不一样了
+string packLinkedFile = Path.Combine(packAddons, "renodx-dlss.addon64");
+File.Delete(packLinkedFile);
+File.WriteAllText(packLinkedFile, "a brand new file that is not linked to the archive");
+Check(GameAddonPackAudit.Inspect(cacheRoot, gameKey, archiveHost.AddonsPath).StaleFiles.Contains("renodx-dlss.addon64"),
+    "包内容和源对不上（硬链接断了）→ 报过期");
+
+// 归档版本被删掉 → 报「选中的版本没了」
+versionStore.DeleteVersion("renodx.dlss", "v1.0");
+Check(GameAddonPackAudit.Inspect(cacheRoot, gameKey, archiveHost.AddonsPath).MissingArchiveVersions.Contains("renodx.dlss@v1.0"),
+    "归档版本被删 → 体检报缺失");
+
+// dll 运行时归档：<CacheRoot>\dlls\<family>\<version>\
+string dllCache = Path.Combine(root, "dllcache");
+var dllStore = new DllVersionStore(dllCache);
+Check(dllStore.RootPath == Path.Combine(dllCache, "dlls"), "dll 归档根 = cache\\dlls");
+Check(dllStore.DirectoryFor("dlssnr", "310.8.0") == Path.Combine(dllCache, "dlls", "dlssnr", "310.8.0"),
+    "dll 归档目录映射");
+
+string dllStaging = Path.Combine(root, "dllstage");
+Directory.CreateDirectory(dllStaging);
+string nrdllPath = Path.Combine(dllStaging, "nvngx_dlssnr.dll");
+File.WriteAllText(nrdllPath, "nr-310.8");
+Check(dllStore.Archive("dlssnr", "310.8.0", [nrdllPath]) == 1, "归档一个 dll 版本");
+Check(dllStore.Has("dlssnr", "310.8.0")
+      && File.Exists(Path.Combine(dllStore.DirectoryFor("dlssnr", "310.8.0"), "nvngx_dlssnr.dll")),
+    "归档里有那个 dll");
+Check(dllStore.Archive("dlssnr", "310.8.0", [nrdllPath]) == 0, "dll 归档幂等（第二次跳过）");
+Check(dllStore.Archive("dlssnr", "310.8.0", [Path.Combine(dllStaging, "missing.dll")]) == 0,
+    "源不存在不报错也不计数（安装不能被归档拖累）");
+Check(dllStore.Archive("dlssnr", "  ", [nrdllPath]) == 0, "版本为空不归档");
+Check(dllStore.InstalledVersions("dlssnr").Count == 1, "归档版本列表：1 个");
+Check(dllStore.DeleteVersion("dlssnr", "310.8.0") && !dllStore.Has("dlssnr", "310.8.0"), "删掉 dll 归档版本");
+
+Console.WriteLine("== 30. 插件自己登记加载方式的检测（第 7 条） ==");
+Check(AddonSelfRegistrationDetector.Detect(System.Text.Encoding.ASCII.GetBytes("xx LoadFromDllMain yy")),
+    "ASCII 的 LoadFromDllMain 认成自登记");
+Check(AddonSelfRegistrationDetector.Detect(System.Text.Encoding.Unicode.GetBytes("xx WritePrivateProfileString yy")),
+    "UTF-16 的 WritePrivateProfileString 认成自登记（写 ini）");
+Check(!AddonSelfRegistrationDetector.Detect(System.Text.Encoding.ASCII.GetBytes("normal addon, only GetPrivateProfileString and DisabledAddons")),
+    "只读 ini / 只提 DisabledAddons 的不算自登记");
+Check(!AddonSelfRegistrationDetector.Detect((byte[]?)null), "null 不算自登记");
+Check(!AddonSelfRegistrationDetector.Detect([]), "空数组不算自登记");
+if (Directory.Exists(realAddons))
+{
+    foreach (string probe in Directory.EnumerateFiles(realAddons, "*.addon64*").Take(3))
+    {
+        Console.WriteLine("    [探测] " + Path.GetFileName(probe) + " -> 自登记=" + AddonSelfRegistrationDetector.Detect(probe));
+    }
+}
+Console.WriteLine("== 31. 便携版「只认自己目录树」的作用域判断 ==");
+// 便携根目录**自己**必须算在树内 —— 老实现写的是 path.StartsWith(root + '\\')，
+// 根目录自己不满足这个前缀，于是便携版永远找不到用户数据目录 → DB 不初始化 →
+// playtime 子进程报 no such table: PlayTimeItem。
+Check(PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", @"D:\APPS\HoYoShadeHub"),
+    "便携根目录自己算在树内（老实现这里是 false，就是它引起的）");
+Check(PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", @"D:\APPS\HoYoShadeHub\cache"),
+    "子目录算在树内");
+Check(PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub\", @"D:\APPS\HoYoShadeHub\cache\games"),
+    "根目录带结尾分隔符也认");
+Check(PortableDataFolderScope.IsInside(@"d:\apps\hoyoshadehub", @"D:\APPS\HoYoShadeHub\Cache"),
+    "大小写不敏感");
+Check(!PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", @"D:\APPS\HoYoShadeHub-new"),
+    "同前缀的隔壁目录不算（这条就是那个过滤器的目的）");
+Check(!PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", @"D:\APPS"),
+    "上级目录不算");
+Check(!PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", @"C:\Users\thx11\AppData\Local\HoYoShadeHub"),
+    "别的盘 / 别人家的数据目录不算");
+Check(!PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", null), "null 路径不算");
+Check(!PortableDataFolderScope.IsInside(null, @"D:\APPS\HoYoShadeHub\cache"), "null 根不算");
+Check(!PortableDataFolderScope.IsInside(@"D:\APPS\HoYoShadeHub", "  "), "空白路径不算");
+
+Console.WriteLine("== 31. 按 addonPatterns 删同族文件 + 插件包副本清理（第 8 条） ==");
+string patRoot = Path.Combine(root, "pattern-clean");
+Directory.CreateDirectory(patRoot);
+foreach (string n in new[] { "foo.addon64", "foo(1.0).addon64x", "foo-extra.addon64x", "foobar.addon64", "bar.addon64" })
+{
+    File.WriteAllText(Path.Combine(patRoot, n), "x");
+}
+
+// 模式照扩展目录的写法：带版本的 .addon64*、带括号的、带短横线的变体都覆盖；foobar 不匹配
+string[] fooPatterns = ["foo.addon64*", "foo(*", "foo-*"];
+AddonPatternCleanResult patResult = AddonPatternCleaner.DeleteMatching(patRoot, fooPatterns);
+Check(patResult.DeletedCount == 3, "按模式删掉 3 个同族文件：" + string.Join(",", patResult.Deleted));
+Check(!File.Exists(Path.Combine(patRoot, "foo.addon64"))
+      && !File.Exists(Path.Combine(patRoot, "foo(1.0).addon64x"))
+      && !File.Exists(Path.Combine(patRoot, "foo-extra.addon64x")), "三种变体都删掉了");
+Check(File.Exists(Path.Combine(patRoot, "foobar.addon64")) && File.Exists(Path.Combine(patRoot, "bar.addon64")),
+    "不匹配模式的文件不动（foobar 没被前缀误删，证明是 GlobMatcher 不是前缀比较）");
+Check(AddonPatternCleaner.DeleteMatching(patRoot, fooPatterns, ["foo.addon64"]).DeletedCount == 0,
+    "alreadyDeleted 里给过的名字不重复计");
+Check(AddonPatternCleaner.DeleteMatching(Path.Combine(root, "no-such-dir"), fooPatterns).DeletedCount == 0,
+    "目录不存在返回空结果");
+
+// 8b：共享目录里删掉后，重拼插件包会把包目录里那份（硬链接副本）清掉
+string packRoot = Path.Combine(root, "pattern-pack");
+string sharedForPack = Path.Combine(root, "pattern-shared");
+Directory.CreateDirectory(sharedForPack);
+File.WriteAllText(Path.Combine(sharedForPack, "foo.addon64"), "aaa");
+List<AddonPackEntry> packPlan = GameAddonPack.Plan(sharedForPack, null, null);
+Check(packPlan.Count == 1, "包计划 1 个文件");
+GameAddonPack.Sync(packRoot, packPlan, null);
+Check(File.Exists(Path.Combine(packRoot, "foo.addon64")) && File.Exists(Path.Combine(packRoot, GameAddonPack.MarkerFileName)),
+    "包里先有一份副本 + pack.json");
+File.Delete(Path.Combine(sharedForPack, "foo.addon64"));
+GameAddonPack.Sync(packRoot, GameAddonPack.Plan(sharedForPack, null, null), null);
+Check(!File.Exists(Path.Combine(packRoot, "foo.addon64")), "共享文件删掉后重拼，包里的副本被清掉");
+Console.WriteLine("== 32. RTX HDR 和显示器 HDR 的搭配判定（第 4 条） ==");
+Check(RtxHdrCoexistence.Evaluate(false, true) == RtxHdrVerdict.NotEnabled, "RTX HDR 没开 → 不用管（就算系统 HDR 开着）");
+Check(RtxHdrCoexistence.Evaluate(false, false) == RtxHdrVerdict.NotEnabled, "RTX HDR 没开、系统 HDR 也没开 → 不用管");
+Check(RtxHdrCoexistence.Evaluate(true, false) == RtxHdrVerdict.EnabledWithoutSystemHdr,
+    "RTX HDR 开着但显示器 HDR 没开 → 判定为「失效」（用户反馈的这条）");
+Check(RtxHdrCoexistence.Evaluate(true, true) == RtxHdrVerdict.EnabledWithSystemHdr, "开着且系统 HDR 也开着 → 生效，提醒叠加");
+Check(RtxHdrCoexistence.Evaluate(true, null) == RtxHdrVerdict.EnabledWithUnknownSystemHdr, "开着但读不到显示器 HDR → 只说读不到");
+Check(RtxHdrCoexistence.Evaluate(null, true) == RtxHdrVerdict.UnknownToggleWithSystemHdr,
+    "驱动里读不到 RTX HDR、系统 HDR 开着 → 提醒去 NVIDIA app 确认");
+Check(RtxHdrCoexistence.Evaluate(null, false) == RtxHdrVerdict.UnknownToggleWithoutSystemHdr,
+    "驱动里读不到 RTX HDR、系统 HDR 也关着 → 放心");
+Check(RtxHdrCoexistence.Evaluate(null, null) == RtxHdrVerdict.UnknownToggleWithoutSystemHdr,
+    "两边都读不到 → 不报问题（绝不猜一个值吓人）");
+Check(RtxHdrCoexistence.Evaluate(true, false) != RtxHdrVerdict.EnabledWithSystemHdr,
+    "失效判定不会被当成「生效」");
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
 return _failed == 0 ? 0 : 1;

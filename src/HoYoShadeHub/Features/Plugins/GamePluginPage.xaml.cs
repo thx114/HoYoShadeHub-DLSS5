@@ -18,6 +18,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace HoYoShadeHub.Features.Plugins;
@@ -209,6 +210,9 @@ public sealed partial class GamePluginPage : PageBase
             _isApplying = false;
         }
 
+        // 注入时机（HoYoShade / ReShade 这一步）：按游戏，独立于插件列表是否可用
+        UpdateShadeInjectDelayUi();
+
         _plugins = new GamePluginService(
             entry,
             _host,
@@ -242,6 +246,10 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
+        // DLSS5 Feed：效果开关（LumeniteFX Kernel + DLSS5_Feed）写在预设里，
+        // 跟着这个游戏的插件开关同步一次；切游戏时还会走 GameCatalog.SyncDlss5FeedPreset
+        _plugins.SyncDlss5FeedPreset(out _);
+
         // DLSS5 类插件：只要开着就默认从 DllMain 加载（用户要求）
         int synced = _plugins.SyncDlss5LoadFromDllMain();
         if (synced > 0)
@@ -249,9 +257,18 @@ public sealed partial class GamePluginPage : PageBase
             _logger.LogInformation("Auto-added {Count} DLSS5 addons to LoadFromDllMain for {Game}", synced, entry.DisplayName);
         }
 
+        // 需求1：同一个插件装了多个版本时，版本下拉就长在**这张插件卡片里**
+        var versionStore = new AddonVersionStore(AppConfig.CacheRoot);
+        var tagsByExtension = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
         foreach (GameAddonState state in _plugins.GetAddons())
         {
-            Addons.Add(new AddonItemViewModel(state, OnAddonEnabledChanged, OnLoadFromDllMainChanged));
+            var item = new AddonItemViewModel(state, OnAddonEnabledChanged, OnLoadFromDllMainChanged)
+            {
+                VersionDispatchQueue = DispatcherQueue,
+            };
+            ApplyAddonVersionChoice(item, versionStore, tagsByExtension);
+            Addons.Add(item);
         }
 
         TextBlock_AddonsEmpty.Text = "插件目录里还没有 addon。到左下角「全局插件」里装一个。";
@@ -333,10 +350,28 @@ public sealed partial class GamePluginPage : PageBase
     /// 这份 ini 的 <c>AddonPath</c> 和当前 HoYoShade 的插件目录不一致时给一句人话。
     /// 红/黄标是按**这个游戏 ini 指的目录**算的（ReShade 运行时就是这么加载的），
     /// 所以两边对不上时得说清楚是哪一边，附一个「指回当前 HoYoShade」的按钮。
+    ///
+    /// <para>
+    /// 例外：<b>每游戏插件包</b>（<c>&lt;CacheRoot&gt;\games\&lt;游戏&gt;\Addons</c>）是新系统的
+    /// 正常状态，不是「指向了别的 HoYoShade」。这时候只给一句中性说明，按钮收起来 ——
+    /// 点它反而会把包路径改回共享目录，破坏「这个游戏用哪一版」。
+    /// </para>
     /// </summary>
     private void UpdatePathHint(string? addonDirectory)
     {
         string? hostAddons = _host?.AddonsPath;
+
+        // 这个游戏用的就是专属插件目录（每游戏插件包）—— 正常状态，不劝人指回
+        if (GameAddonPack.IsPackDirectory(addonDirectory))
+        {
+            TextBlock_PathHint.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+            TextBlock_PathHint.Text = $"这个游戏用的是专属插件目录（{addonDirectory}）{DescribePackSelections(addonDirectory)}；" +
+                                      "上面的红/黄标就是按它算的，其它游戏不受影响。";
+            TextBlock_PathHint.Visibility = Visibility.Visible;
+            Button_AlignIni.Visibility = Visibility.Collapsed;
+            return;
+        }
+
         bool differs = !string.IsNullOrWhiteSpace(addonDirectory)
                        && !string.IsNullOrWhiteSpace(hostAddons)
                        && !string.Equals(addonDirectory.TrimEnd('\\', '/'), hostAddons!.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
@@ -348,11 +383,144 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
+        TextBlock_PathHint.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
         TextBlock_PathHint.Text = $"⚠ 这个游戏的 ReShade.ini 指向 {addonDirectory}，不是当前 HoYoShade 的插件目录（{hostAddons}）。" +
                                   "上面的红/黄标是按**游戏 ini 指的目录**算的 —— ReShade 运行时就是去那儿找插件和 dll 的。" +
                                   "启动/注入时 Hub 会自动把它指回当前 HoYoShade，也可以现在就点右边的按钮。";
         TextBlock_PathHint.Visibility = Visibility.Visible;
         Button_AlignIni.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>插件包标记里记的「扩展 id → tag」，拼成一句给人看的版本说明</summary>
+    private static string DescribePackSelections(string? addonDirectory)
+    {
+        try
+        {
+            Dictionary<string, string> selections = GameAddonPack.ReadSelections(addonDirectory);
+            return selections.Count == 0
+                ? string.Empty
+                : "（插件版本：" + string.Join("、", selections.Select(kv => $"{kv.Key}={kv.Value}")) + "）";
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    #endregion
+
+    #region 每游戏插件版本（需求1）
+
+    /// <summary>
+    /// 把「这个 addon 属于哪个扩展、归档里有几个版本、这个游戏选的是哪一版」填进**这张插件卡片**。
+    /// 归档里 &gt;= 2 个版本才显示下拉；只有一个 / 认不出扩展时整条不出现（卡片保持原来那一行）。
+    /// </summary>
+    private void ApplyAddonVersionChoice(
+        AddonItemViewModel item,
+        AddonVersionStore store,
+        Dictionary<string, List<string>> tagsByExtension)
+    {
+        try
+        {
+            if (CurrentGameId is not { } gameId)
+            {
+                return;
+            }
+
+            // addon 文件 → 扩展 id（靠扩展目录里的 addonPatterns 认领）
+            string? extensionId = GameCatalog.ExtensionIdOfAddonFile(item.FileName);
+            if (string.IsNullOrWhiteSpace(extensionId))
+            {
+                return;
+            }
+
+            if (!tagsByExtension.TryGetValue(extensionId, out List<string>? tags))
+            {
+                tags = store.InstalledTags(extensionId);
+                tagsByExtension[extensionId] = tags;
+            }
+
+            item.ConfigureVersionChoice(
+                extensionId,
+                tags,
+                AppConfig.GetPluginVersion(gameId, extensionId));
+            item.VersionChanged = OnAddonVersionChanged;
+        }
+        catch
+        {
+            // 归档读不出来就整条不显示，不影响插件列表
+        }
+    }
+
+    /// <summary>用户在这张卡片里换了版本：落盘 + 重拼这个游戏的插件包 + 重新读盘</summary>
+    private void OnAddonVersionChanged(AddonItemViewModel item, string? tag)
+    {
+        if (CurrentGameId is not { } gameId || item.ExtensionId is not { } extensionId)
+        {
+            return;
+        }
+
+        // 下拉是 TwoWay 绑定：刷新列表时**重新赋一次同样的值**也会走到这里。
+        // 值没变就立刻返回 —— 否则会变成「刷新 → 重新赋值 → 回调 → 再刷新」的无限循环，
+        // 目录在共享 / 专属包之间来回翻、ReShade.ini 被反复写（用户报的切换版本时崩溃就是这个）。
+        string? current = AppConfig.GetPluginVersion(gameId, extensionId);
+        if (string.Equals(current ?? string.Empty, tag ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        AppConfig.SetPluginVersion(gameId, extensionId, tag);
+
+        try
+        {
+            string? pack = GameAddonPackService.Sync(gameId, _entry, _host);
+            TextBlock_Status.Text = tag is null
+                ? $"「{item.Name}」改回默认版本；这个游戏专属的插件包已收掉。"
+                : pack is null
+                    ? $"「{item.Name}」选了 {tag}，但没拼出插件包（归档里可能没有这一版）。"
+                    : $"「{item.Name}」在这个游戏里改用 {tag}；插件目录已指到专属包：{pack}";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Sync addon pack for {Game}", gameId.GameBiz);
+            TextBlock_Status.Text = "同步插件包失败：" + ex.Message;
+        }
+
+        // 这里**只更新「插件目录」那行说明，绝不重建列表**。
+        //
+        // 这个回调是 ComboBox 改选中项触发的，用户此刻往往正开着下拉框（或刚关）。
+        // 这时候 Clear + 重建绑在 ItemsControl / ComboBox 上的集合，是 WinUI 3 已知的崩法：
+        // 原生 AV → user32 弹「Exception Processing Message 0xc0000005」→ 点确定进程就没了
+        // （用户报的 HoYoShadeHubTrayMenu 系统错误；就算不崩，刷新完下拉也会变成空的）。
+        //
+        // 换版本只改游戏 ini 的 [ADDON] AddonPath 和专属包目录，插件清单本身没变，
+        // 所以不需要整页重读 —— 把那一行说明按现读的 ini 更新一下就够了。
+        UpdatePathHint(ResolveCurrentAddonDirectory());
+    }
+
+    /// <summary>
+    /// 从 ini 现读一次这个游戏实际用的插件目录。
+    /// <c>_plugins.AddonDirectory</c> 是建服务时缓存的，换版本（改了 AddonPath）之后会过期。
+    /// </summary>
+    private string? ResolveCurrentAddonDirectory()
+    {
+        try
+        {
+            if (_entry?.ReShadeIniPath is { } ini && File.Exists(ini))
+            {
+                string? resolved = ReShadeProfile.Load(ini).ResolveAddonDirectory();
+                if (!string.IsNullOrWhiteSpace(resolved))
+                {
+                    return resolved;
+                }
+            }
+        }
+        catch
+        {
+            // 读不动就用缓存那份
+        }
+
+        return _plugins?.AddonDirectory;
     }
 
     #endregion
@@ -407,6 +575,15 @@ public sealed partial class GamePluginPage : PageBase
             TextBlock_Status.Text = $"「{item.Name}」在 {_plugins.Game.DisplayName} 里已{(enabled ? "启用" : "禁用")}。" +
                                     $"（只影响这个游戏，写在 {_plugins.ReShadeIniPath}）";
             WarnIfGameRunning();
+
+            // DLSS5 Feed：预设里的效果开关跟着一起改（共享预设，切游戏会再同步）
+            if (GamePluginService.IsDlss5FeedAddon(item.FileName))
+            {
+                _ = _plugins.SyncDlss5FeedPreset(out string? presetNote);
+                TextBlock_Status.Text += string.IsNullOrWhiteSpace(presetNote)
+                    ? "　已同步 ReShade 预设：LumeniteFX Kernel + DLSS5 Feed 两个效果。"
+                    : "　但 ReShade 预设没同步上：" + presetNote;
+            }
 
             // 神经插帧器：启用时顺带把它要的 nvngx_dlssnr.dll 复制到游戏 exe 旁边（用户要求）
             if (enabled && GamePluginService.IsNeuralInterposer(item.FileName))
@@ -477,6 +654,43 @@ public sealed partial class GamePluginPage : PageBase
 
 
 
+    /// <summary>「注入时机」输入框：0~30 秒，留空 = 跟随全局默认（按游戏）</summary>
+    private void UpdateShadeInjectDelayUi()
+    {
+        _isApplying = true;
+        try
+        {
+            int? current = AppConfig.GetShadeInjectDelaySeconds(CurrentGameBiz);
+            NumberBox_ShadeInjectDelay.Value = current is int value ? value : double.NaN;
+            NumberBox_ShadeInjectDelay.PlaceholderText =
+                $"跟随全局（{AppConfig.GetDefaultInjectionDelaySeconds(CurrentGameBiz)} 秒）";
+        }
+        finally
+        {
+            _isApplying = false;
+        }
+    }
+
+    private void NumberBox_ShadeInjectDelay_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_isApplying)
+        {
+            return;
+        }
+
+        int? seconds = double.IsNaN(args.NewValue)
+            ? null
+            : (int)Math.Clamp(Math.Round(args.NewValue), 0, AppConfig.MaxInjectionWarmupSeconds);
+
+        AppConfig.SetShadeInjectDelaySeconds(CurrentGameBiz, seconds);
+
+        TextBlock_Status.Text = seconds is null
+            ? "HoYoShade / ReShade 注入时机：跟随全局默认。"
+            : seconds <= 0
+                ? "HoYoShade / ReShade 注入：立即注入（不等）。"
+                : $"HoYoShade / ReShade 注入：等游戏起来 {seconds} 秒后再注入。";
+    }
+
     /// <summary>「启动游戏时强制 off」：存到 AppConfig，启动/注入时生效</summary>
     private void CheckBox_ForceHookOff_Changed(object sender, RoutedEventArgs e)
     {
@@ -529,29 +743,56 @@ public sealed partial class GamePluginPage : PageBase
     /// </summary>
     private async void Button_Dlss5CompatCheck_Click(object sender, RoutedEventArgs e)
     {
-        // 没装 HoYoShade 也要能检测：DLSS5 还有「OptiScaler 的 DLSS-NR」那条路，那条不需要 HoYoShade。
-        ShadeHost? host = _host ?? PluginHostLocator.Resolve(out _);
-
-        var context = new Dlss5CompatContext
-        {
-            ShadeHost = host,
-            Game = _entry,
-            GameId = CurrentGameId,
-            Profile = _plugins?.Profile,
-            ProfileError = _plugins?.ProfileError,
-            AddonStates = _plugins?.GetAddons(),
-            HookPoint = _plugins?.GetHookPoint() ?? 0,
-            PluginService = _plugins,
-            Delivery = Dlss5CompatContext.ResolveDelivery(CurrentGameId, host),
-            OptiScalerDllPath = AppConfig.GetSelectedOptiScalerDll(CurrentGameId),
-        };
-
-        var dialog = new Dlss5CompatDialog(context)
+        // 初始 context 和「重新检测」用的工厂是同一个 —— 每次检测都重新读盘
+        var dialog = new Dlss5CompatDialog(BuildDlss5CompatContext(), BuildDlss5CompatContext)
         {
             XamlRoot = XamlRoot,
         };
 
         await dialog.ShowAsync();
+    }
+
+    /// <summary>
+    /// 组装 DLSS5 检测上下文。「重新检测」每次都会重新走一遍（重建 GamePluginService 重读 ini / 插件目录）：
+    /// 修复（比如把 ini 路径指回当前 HoYoShade）改的是**盘上的文件**，页面缓存的 service 还是修复前那份 ——
+    /// 不重建的话，修完再检还是旧内容，看起来就是「指回了也没用」（群友反馈）。
+    /// </summary>
+    private Dlss5CompatContext BuildDlss5CompatContext()
+    {
+        // 没装 HoYoShade 也要能检测：DLSS5 还有「OptiScaler 的 DLSS-NR」那条路，那条不需要 HoYoShade。
+        ShadeHost? host = _host ?? PluginHostLocator.Resolve(out _);
+
+        GamePluginService? plugins = _plugins;
+        if (_entry is not null)
+        {
+            try
+            {
+                plugins = new GamePluginService(
+                    _entry,
+                    host,
+                    PluginHostLocator.AddonNameCachePath,
+                    GameCatalog.AddonCandidateNames(),
+                    GameCatalog.TagsOfAddonFile);
+            }
+            catch
+            {
+                plugins = _plugins;
+            }
+        }
+
+        return new Dlss5CompatContext
+        {
+            ShadeHost = host,
+            Game = _entry,
+            GameId = CurrentGameId,
+            Profile = plugins?.Profile,
+            ProfileError = plugins?.ProfileError,
+            AddonStates = plugins?.GetAddons(),
+            HookPoint = plugins?.GetHookPoint() ?? 0,
+            PluginService = plugins,
+            Delivery = Dlss5CompatContext.ResolveDelivery(CurrentGameId, host),
+            OptiScalerDllPath = AppConfig.GetSelectedOptiScalerDll(CurrentGameId),
+        };
     }
 
     private async void Button_PickExe_Click(object sender, RoutedEventArgs e)
@@ -714,6 +955,22 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
+        // 指向每游戏插件包 = 正常状态，别把它改回共享目录（会让这个游戏用错版本）
+        try
+        {
+            if (GameAddonPack.IsPackDirectory(ReShadeProfile.Load(gameIni).AddonPath))
+            {
+                ShowInfo("不用改",
+                    "这个游戏用的是专属插件目录（每游戏插件包）。想改用共享目录里的当前版本，就在插件卡片的「版本」下拉里选回「默认（用全局当前版本）」。",
+                    InfoBarSeverity.Informational);
+                return;
+            }
+        }
+        catch
+        {
+            // 读不了 ini 就继续走原来的对齐流程
+        }
+
         if (_host is null)
         {
             ShowInfo("没有 HoYoShade", "先在上面指定一个 HoYoShade 目录。", InfoBarSeverity.Warning);
@@ -806,6 +1063,7 @@ public partial class AddonItemViewModel : ObservableObject
         Version = state.Version;
         CanToggle = state.CanToggle;
         IsDlss5 = state.IsDlss5;
+        SelfRegistersInIni = state.SelfRegistersInIni;
 
         // 缺 dll 的标记（红 = 缺必需，黄 = 缺建议）
         DllSeverity = state.DllStatus.Severity;
@@ -844,6 +1102,9 @@ public partial class AddonItemViewModel : ObservableObject
     /// <summary>DLSS5 那一类插件（驱动版本检查只对它们做）</summary>
     public bool IsDlss5 { get; }
 
+    /// <summary>插件自己会往 ini 里登记加载方式（那种就不显示「从 DllMain 加载」）</summary>
+    public bool SelfRegistersInIni { get; }
+
     [ObservableProperty]
     private bool enabled;
 
@@ -853,13 +1114,14 @@ public partial class AddonItemViewModel : ObservableObject
     public Visibility GloballyDisabledVisibility => CanToggle ? Visibility.Collapsed : Visibility.Visible;
 
     /// <summary>
-    /// 「从 DllMain 加载」只对 DLSS5 那一类插件有意义 —— 别的插件整条勾选框都不显示
-    ///（用户要求：不是灰掉，是直接消失）。
+    /// 「从 DllMain 加载」只在「DLSS5 那一类 + 插件自己不会往 ini 里登记加载方式」时显示
+    ///（别的插件、以及自己会登记的插件都整条消失，不是灰掉）。
     /// </summary>
-    public Visibility LoadFromDllMainVisibility => IsDlss5 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility LoadFromDllMainVisibility =>
+        IsDlss5 && !SelfRegistersInIni ? Visibility.Visible : Visibility.Collapsed;
 
-    /// <summary>能改的时候才可点（关掉插件 / 非 DLSS5 都是灰的）</summary>
-    public bool CanEditLoadFromDllMain => CanToggle && Enabled && IsDlss5;
+    /// <summary>能改的时候才可点（关掉插件 / 非 DLSS5 / 自己会登记的都是灰的）</summary>
+    public bool CanEditLoadFromDllMain => CanToggle && Enabled && IsDlss5 && !SelfRegistersInIni;
 
     /// <summary>0 = 没问题，1 = 缺建议（黄），2 = 缺必需（红）</summary>
     public int DllSeverity { get; }
@@ -871,6 +1133,130 @@ public partial class AddonItemViewModel : ObservableObject
     public Visibility DllRequiredVisibility => DllSeverity >= 2 ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility DllRecommendedVisibility => DllSeverity == 1 ? Visibility.Visible : Visibility.Collapsed;
+
+    // ===================== 需求1：这张卡片的「版本」下拉 =====================
+
+    /// <summary>默认项 = 用共享目录里当前生效的那一份</summary>
+    public const string DefaultVersionLabel = "默认（用全局当前版本）";
+
+    /// <summary>这个 addon 文件属于哪个扩展（认不出来就是 null）</summary>
+    public string? ExtensionId { get; private set; }
+
+    private readonly Dictionary<string, string?> _versionTags = new(StringComparer.Ordinal);
+
+    /// <summary>程序填初值的那一次不算用户选的</summary>
+    private bool _suppressVersion;
+
+    /// <summary>下拉选项：第一项是「默认（用全局当前版本）」，后面是归档里的 tag</summary>
+    public ObservableCollection<string> VersionOptions { get; } = [];
+
+    /// <summary>归档里 &gt;= 2 个版本才显示下拉（否则整条不出现）</summary>
+    public Visibility VersionChoiceVisibility =>
+        VersionOptions.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>悬停说明：这个游戏用哪一版</summary>
+    public string VersionChoiceHint { get; private set; } = string.Empty;
+
+    [ObservableProperty]
+    private string? selectedVersionOption;
+
+    /// <summary>用户选中的 tag（「默认」= null）</summary>
+    public string? SelectedVersionTag
+        => _versionTags.TryGetValue(SelectedVersionOption ?? string.Empty, out string? tag) ? tag : null;
+
+    /// <summary>下拉变化时的回调（页面拿去落盘 + 重拼这个游戏的插件包）</summary>
+    internal Action<AddonItemViewModel, string?>? VersionChanged { get; set; }
+
+    /// <summary>
+    /// 页面给的分发队列：用来**延迟**把选中项写进 ComboBox。
+    /// 立刻写会被随后铺进来的 ItemsSource 顶成 null，界面看起来就是「下拉是空的」（用户反馈）。
+    /// </summary>
+    internal Microsoft.UI.Dispatching.DispatcherQueue? VersionDispatchQueue { get; set; }
+
+    /// <summary>
+    /// 填「版本」下拉。只有一个版本 / 认不出扩展时整条不显示（卡片保持原来那一行）。
+    /// </summary>
+    public void ConfigureVersionChoice(string? extensionId, IReadOnlyList<string> archivedTags, string? selectedTag)
+    {
+        ExtensionId = extensionId;
+        _suppressVersion = true;
+        try
+        {
+            VersionOptions.Clear();
+            _versionTags.Clear();
+
+            if (string.IsNullOrWhiteSpace(extensionId) || archivedTags.Count < 2)
+            {
+                SelectedVersionOption = null;
+                VersionChoiceHint = string.Empty;
+            }
+            else
+            {
+                VersionOptions.Add(DefaultVersionLabel);
+                _versionTags[DefaultVersionLabel] = null;
+                foreach (string tag in archivedTags)
+                {
+                    _versionTags[tag] = tag;
+                    VersionOptions.Add(tag);
+                }
+
+                VersionChoiceHint = $"这个游戏用哪一版（归档里 {archivedTags.Count} 个版本）；选完会为它单独拼一份插件目录，其它游戏不受影响。";
+            }
+        }
+        finally
+        {
+            _suppressVersion = false;
+        }
+
+        string? desired = VersionOptions.Count < 2
+            ? null
+            : selectedTag is { Length: > 0 } && _versionTags.ContainsKey(selectedTag)
+                ? selectedTag
+                : DefaultVersionLabel;
+
+        SetSelectedVersionOptionSilently(desired);
+
+        // ComboBox 把新的 ItemsSource 铺好之后会把刚设的 SelectedItem 顶掉/清空，界面看起来就是
+        // 「刷新后下拉是空的」。所以再用一个分发轮次补设一次（Low：等这一轮的布局 / 绑定回写跑完）。
+        if (desired is not null && VersionDispatchQueue is { } queue)
+        {
+            queue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                () => SetSelectedVersionOptionSilently(desired));
+        }
+
+        OnPropertyChanged(nameof(VersionChoiceVisibility));
+    }
+
+    /// <summary>替下拉设选中项，但不触发用户改动回调</summary>
+    private void SetSelectedVersionOptionSilently(string? value)
+    {
+        _suppressVersion = true;
+        try
+        {
+            SelectedVersionOption = value;
+        }
+        finally
+        {
+            _suppressVersion = false;
+        }
+    }
+
+    partial void OnSelectedVersionOptionChanged(string? value)
+    {
+        // null 一律忽略。
+        //
+        // 下拉是 TwoWay 绑定（SelectedItem），而刷新列表时会重建卡片：ComboBox 的 ItemsSource
+        // 被换掉的那一刻 SelectedItem 会瞬时变成 null，这个 null 顺着绑定写回来 ——
+        // 它不是用户的选择（用户选「默认」拿到的是 DefaultVersionLabel 这个字符串），
+        // 但会调 VersionChanged(null) → 把用户刚选的版本清成「默认」→ 专属插件包被收掉。
+        // 实测日志就是这样：选了版本 275ms 后目录又翻回共享目录（用户报的切版本崩溃）。
+        if (_suppressVersion || value is null)
+        {
+            return;
+        }
+
+        VersionChanged?.Invoke(this, SelectedVersionTag);
+    }
 
     partial void OnEnabledChanged(bool value)
     {
@@ -909,3 +1295,4 @@ public partial class AddonItemViewModel : ObservableObject
         _suppress = false;
     }
 }
+

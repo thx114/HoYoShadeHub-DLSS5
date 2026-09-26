@@ -1,6 +1,7 @@
 using HoYoShadeHub.Extensions.Networking;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Services;
 
@@ -111,14 +112,28 @@ public sealed class DownloadService
 
         if (existing > 0)
         {
-            received = await TryResumeAsync(appliedUrl, partPath, existing, knownETag, progress, cancellationToken, pauseToken);
-            completed = received == existing;
-            if (!completed)
+            // 没有 ETag 对账就没法保证续上的字节还属于同一个文件（资源变了就是坏包）—— 宁可重下。
+            // 以前 knownETag 为空也硬续，If-Range 都不带，服务器回 200 / 206 都分不清，纯粹碰运气。
+            if (string.IsNullOrEmpty(knownETag))
             {
-                // Server refused the range (or the file changed) -- start over.
                 DeleteQuietly(partPath);
                 DeleteQuietly(metaPath);
                 received = 0;
+                completed = false;
+            }
+            else
+            {
+                // TryResumeAsync：-1 = 没法续（服务器不认 Range / 资源变了），推倒重来；
+                // >=0 = 已经拿全（416 收口，或者追加到 ContentRange 标的全长）。
+                received = await TryResumeAsync(appliedUrl, partPath, existing, knownETag, progress, cancellationToken, pauseToken);
+                completed = received >= 0;
+                if (!completed)
+                {
+                    // Server refused the range (or the file changed) -- start over.
+                    DeleteQuietly(partPath);
+                    DeleteQuietly(metaPath);
+                    received = 0;
+                }
             }
         }
         else
@@ -152,8 +167,9 @@ public sealed class DownloadService
     }
 
     /// <summary>
-    /// Attempts a Range request. Returns the resulting byte count; equals <paramref name="existing"/>
-    /// when the server answered 416 (already have everything) and the caller should treat it as done.
+    /// 断点续传：从 <paramref name="existing"/> 开始循环发 Range 请求，直到拿全。
+    /// 返回值：-1 = 没法续（服务器不认 Range / 资源变了 / 行为异常），调用方删掉 part 从零重下；
+    /// &gt;= 0 = 已经拿全（416 收口，或追加到 ContentRange 标的全长）。
     /// </summary>
     private async Task<long> TryResumeAsync(
         string appliedUrl,
@@ -164,52 +180,66 @@ public sealed class DownloadService
         CancellationToken cancellationToken,
         DownloadPauseToken? pauseToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, appliedUrl);
-        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(existing, null);
-        if (!string.IsNullOrEmpty(knownETag))
-        {
-            request.Headers.TryAddWithoutValidation("If-Range", knownETag);
-        }
-
-        using HttpResponseMessage response = await _httpClient.SendAsync(
-            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
-        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
-        {
-            // We already hold the whole thing.
-            long? fullLength = response.Content.Headers.ContentRange?.Length;
-            if (fullLength is null or <= 0 || existing >= fullLength)
-            {
-                return existing;
-            }
-
-            return -1;
-        }
-
-        if (response.StatusCode != HttpStatusCode.PartialContent)
-        {
-            // Server ignored the range header -- cannot resume, caller restarts.
-            return -1;
-        }
-
-        // If-Range failed: the resource changed under us, restart.
-        string? currentETag = response.Headers.ETag?.ToString();
-        if (!string.IsNullOrEmpty(knownETag) && !string.IsNullOrEmpty(currentETag)
-            && !string.Equals(knownETag, currentETag, StringComparison.Ordinal))
-        {
-            return -1;
-        }
-
-        long? contentLength = response.Content.Headers.ContentRange?.Length;
         long received = existing;
 
-        await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken))
-        await using (var destination = new FileStream(partPath, FileMode.Append, FileAccess.Write, FileShare.None, BufferSize, useAsync: true))
+        // 以前只发一次 Range：206 追加一段就返回「追加后的总数」，调用方拿它跟 existing 比永远不等，
+        // 刚续下来的字节整个被删掉重新下 —— 断点续传等于从来没生效过。现在一轮一轮续到收口。
+        for (int attempt = 0; attempt < 64; attempt++)
         {
-            received = await PumpAsync(source, destination, received, contentLength, progress, cancellationToken, pauseToken);
+            using var request = new HttpRequestMessage(HttpMethod.Get, appliedUrl);
+            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(received, null);
+            if (!string.IsNullOrEmpty(knownETag))
+            {
+                request.Headers.TryAddWithoutValidation("If-Range", knownETag);
+            }
+
+            using HttpResponseMessage response = await _httpClient.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                // 416：带 If-Range 才敢下「已经拿全」的结论 —— 服务器明确说 bytes=received- 要不到，
+                // 即已有的字节覆盖到（或超过）全长。全长反而更大的话是服务器行为不对劲，别把半截当完整。
+                long? fullLength = response.Content.Headers.ContentRange?.Length;
+                if (fullLength is null or <= 0 || received >= fullLength)
+                {
+                    return received;
+                }
+
+                return -1;
+            }
+
+            if (response.StatusCode != HttpStatusCode.PartialContent)
+            {
+                // 服务器不认 Range（或 If-Range 没对上回了 200）—— 没法续，推倒重来。
+                return -1;
+            }
+
+            // If-Range failed: the resource changed under us, restart.
+            string? currentETag = response.Headers.ETag?.ToString();
+            if (!string.IsNullOrEmpty(knownETag) && !string.IsNullOrEmpty(currentETag)
+                && !string.Equals(knownETag, currentETag, StringComparison.Ordinal))
+            {
+                return -1;
+            }
+
+            long? total = response.Content.Headers.ContentRange?.Length;
+
+            await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var destination = new FileStream(partPath, FileMode.Append, FileAccess.Write, FileShare.None, BufferSize, useAsync: true))
+            {
+                received = await PumpAsync(source, destination, received, total, progress, cancellationToken, pauseToken);
+            }
+
+            // 一段 206 不够（服务器截短了）就接着要下一段；total 拿不到就靠下一轮的 416 收口。
+            if (total is > 0 && received >= total.Value)
+            {
+                return received;
+            }
         }
 
-        return received;
+        // 64 轮还没收口：防御上限，按「没法续」处理。
+        return -1;
     }
 
     private async Task<long> DownloadFromScratchAsync(
@@ -286,28 +316,18 @@ public sealed class DownloadService
                 return null;
             }
 
-            string text = File.ReadAllText(metaPath);
-            int start = text.IndexOf("\"etag\"", StringComparison.Ordinal);
-            if (start < 0)
+            // sidecar 是 WriteSidecar 写的标准 JSON，必须用 JSON 解析。以前手工找引号，
+            // 而 ETag 本来就带引号（GitHub / S3 形如 "abc"），写进 JSON 变成 \"abc\" ——
+            // 手工解析取到的是一截反斜杠，If-Range 发的是垃圾，服务器回 200，续传报废。
+            using var document = JsonDocument.Parse(File.ReadAllText(metaPath));
+            if (!document.RootElement.TryGetProperty("etag", out JsonElement value)
+                || value.ValueKind != JsonValueKind.String)
             {
                 return null;
             }
 
-            int colon = text.IndexOf(':', start);
-            int firstQuote = text.IndexOf('"', colon + 1);
-            if (colon < 0 || firstQuote < 0)
-            {
-                return null;
-            }
-
-            int secondQuote = text.IndexOf('"', firstQuote + 1);
-            if (secondQuote < 0)
-            {
-                return null;
-            }
-
-            string value = text[(firstQuote + 1)..secondQuote];
-            return value.Length == 0 ? null : value;
+            string etag = value.GetString() ?? string.Empty;
+            return etag.Length == 0 ? null : etag;
         }
         catch
         {

@@ -196,7 +196,19 @@ public sealed class Dlss5CompatContext
                 return "没有可对齐的 ReShade.ini。";
             }
 
+            // 每游戏插件包是正常状态：AddonPath 本来就该指着它，不能被「指回」共享目录
+            bool usesPack = GameAddonPack.IsPackDirectory(Profile?.AddonPath);
+
             ShadePathAlignResult result = ShadePathAligner.Align(ini, ShadeHost);
+
+            if (usesPack)
+            {
+                return "这个游戏用的是专属插件目录（每游戏插件包）—— 这是正常状态，AddonPath 不会被动；"
+                       + (result.Changed
+                           ? "其它路径已指回当前 HoYoShade：" + string.Join("、", result.ChangedKeys) + "。"
+                           : "其它路径本来就对得上。");
+            }
+
             return result.Changed
                 ? "已把 " + string.Join("、", result.ChangedKeys) + " 指回当前 HoYoShade。"
                 : "没有需要改的键（路径本来就对得上）。";

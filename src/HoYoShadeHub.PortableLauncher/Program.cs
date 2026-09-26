@@ -13,7 +13,7 @@ namespace HoYoShadeHub.PortableLauncher;
 /// <list type="number">
 /// <item>读同目录 <c>version.ini</c> 里的 <c>exe_path</c>，把参数原样传给它跑起来；</item>
 /// <item>没有 version.ini 就扫 <c>app-*</c> 子目录，挑最新那个 <c>HoYoShadeHub.exe</c>；</item>
-/// <item>起来之后把其它 <c>app-*</c> 目录删掉（旧版本残留）；</item>
+/// <item>起来之后把其它 <c>app-*</c> 目录删掉（旧版本残留）——**正在跑的那份跳过**（见 <see cref="CleanupOldAppFolders"/>）；</item>
 /// <item>什么都找不到 → 弹窗问要不要去下载。</item>
 /// </list>
 ///
@@ -240,6 +240,20 @@ internal static class Program
                     continue;
                 }
 
+                // ⚠ 别删「正在跑的那一份」。
+                //
+                // 用户（或更新器）在旧实例还开着的时候又启动了一次：版本目录改成新的 app-X，
+                // 而旧实例仍在 app-Y 里跑。这时把 app-Y 删掉，旧实例后续**懒加载**的程序集
+                // 就全部找不到（System.Threading.Thread / Microsoft.Extensions.* 之类），
+                // 表现是「打开目录」报 FileNotFoundException、OptiScaler 页怎么点都没反应；
+                // 而且删除只会删掉**当时没被加载**的那部分文件 —— 留下一个残包
+                //（之前那个只剩 150 个文件的 app-1.3.7-z1i 就是这么来的）。
+                if (IsInUse(folder))
+                {
+                    Log(trace, $"Skip in-use version: {name}");
+                    continue;
+                }
+
                 Log(trace, $"Removing old version: {name}");
 
                 try
@@ -255,6 +269,42 @@ internal static class Program
         catch
         {
             // ignore
+        }
+    }
+
+    /// <summary>
+    /// 这个 app-* 目录里是不是有实例正在跑。
+    ///
+    /// <para>
+    /// 办法就是试着**独占读写**它的主 exe：进程映像的文件是以只读方式映射的，
+    /// 还开着的时候独占打开必然 SharingViolation。比查进程列表靠谱 ——
+    /// 旧实例可能是提权跑的，普通权限读不到它的可执行路径。
+    /// </para>
+    /// </summary>
+    private static bool IsInUse(string folder)
+    {
+        try
+        {
+            string exe = Path.Combine(folder, "HoYoShadeHub.exe");
+            if (!File.Exists(exe))
+            {
+                return false;
+            }
+
+            using FileStream _ = new(exe, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return false;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

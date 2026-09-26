@@ -138,12 +138,11 @@
                 <NavigationViewItem Content="{x:Bind lang:Lang.GameLauncherSettingDialog_ThirdPartyIntegration}"
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                     Tag="3" />
-                <!--  额外注入 DLL：搬到左侧「模块」页了（在那儿可以启用多个模块）—— 这里留着条目占位，
-                      免得 FlipView 的序号跟着变；界面上不再显示。  -->
-                <NavigationViewItem Content="额外注入 DLL"
+                <!--  额外注入 DLL + 注入前预热（等进程稳一稳）。模块的启用搬到了左侧「模块」页，
+                      但这个页面还管着「额外注入 DLL」和预热设置，所以导航项重新显示出来。  -->
+                <NavigationViewItem Content="额外注入 / 预热"
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    Tag="4"
-                                    Visibility="Collapsed" />
+                                    Tag="4" />
             </NavigationView.MenuItems>
 
 
@@ -932,7 +931,7 @@
                                    Text="额外注入 DLL" />
                         <TextBlock FontSize="12"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Text="点「开始游戏 / 启动注入器」之后，等这个游戏的进程一出现，就把选中的 DLL 注入进去（比如 OptiScaler、DLSS Enabler 的 dlss-enabler-upscaler.dll）。跟 HoYoShade 的注入器并行，**不依赖「注入模式」**；同一时间只注入一个。"
+                                   Text="点「开始游戏 / 启动注入器」之后，等这个游戏的进程出现并稳下来（见下面「注入前预热」），就把选中的 DLL 注入进去（比如 OptiScaler、DLSS Enabler 的 dlss-enabler-upscaler.dll）。跟 HoYoShade 的注入器并行，**不依赖「注入模式」**；同一时间只注入一个。"
                                    TextWrapping="Wrap" />
                         <TextBlock x:Name="TextBlock_ExtraInjectDll"
                                    FontSize="12"
@@ -955,6 +954,38 @@
                                     Command="{x:Bind ClearExtraInjectDllCommand}"
                                     CornerRadius="8"
                                     Content="清除" />
+                        </StackPanel>
+
+                        <!--  注入前「等进程稳一稳」（用户实测：星铁刚起时注入会偶发把游戏带崩）。
+                              按游戏记：inject_warmup_enabled_{biz} / inject_warmup_seconds_{biz}。  -->
+                        <TextBlock Margin="0,12,0,0"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Text="默认注入时机（全局）" />
+                        <TextBlock FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="找到游戏进程后先等它「稳」一会再注入（存活到下面的秒数，并且主窗口已经出现）。越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒 = 立即注入（和以前一样），调大才会等。模块 / 插件 / OptiScaler 各自还能在对应页面单独设「注入时机」，没单独设的就跟随这里的默认。"
+                                   TextWrapping="Wrap" />
+                        <ToggleSwitch x:Name="ToggleSwitch_InjectionWarmup"
+                                      MinWidth="0"
+                                      OffContent="不预热：进程一出现就注入（默认）"
+                                      OnContent="先等进程稳一稳再注入"
+                                      Toggled="ToggleSwitch_InjectionWarmup_Toggled" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock VerticalAlignment="Center" Text="默认等待秒数" />
+                            <NumberBox x:Name="NumberBox_InjectionWarmup"
+                                       Width="150"
+                                       Minimum="0"
+                                       Maximum="30"
+                                       SmallChange="1"
+                                       SpinButtonPlacementMode="Compact"
+                                       ValueChanged="NumberBox_InjectionWarmup_ValueChanged"
+                                       ToolTipService.ToolTip="进程要存活到这个秒数（并且主窗口出现）才注入；0 = 立即注入。范围 0~30，只影响这一个游戏。" />
+                            <TextBlock x:Name="TextBlock_InjectionWarmupHint"
+                                       VerticalAlignment="Center"
+                                       FontSize="12"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       TextWrapping="Wrap" />
                         </StackPanel>
                     </StackPanel>
                 </FlipViewItem>

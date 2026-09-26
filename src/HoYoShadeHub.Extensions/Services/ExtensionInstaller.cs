@@ -43,6 +43,9 @@ public sealed class ExtensionUninstallResult
 
     /// <summary>同族的其它文件（别的版本 / 被改名禁用的 .addon64x）也一起删掉了</summary>
     public List<string> DeletedStaleFiles { get; init; } = [];
+
+    /// <summary>没拦住的非致命问题（比如文件被游戏占用删不掉），卸载本身照常完成、账本照常摘</summary>
+    public List<string> Warnings { get; init; } = [];
 }
 
 /// <summary>
@@ -179,7 +182,8 @@ public sealed class ExtensionInstaller
         ShadeHost host,
         ExtensionManifest manifest,
         ResolvedExtensionPayload payload,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        AddonVersionStore? versionStore = null)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(manifest);
@@ -309,7 +313,29 @@ public sealed class ExtensionInstaller
                     result.OverwrittenFiles.Add(item.RelativePath);
                 }
 
-                File.Copy(source, destination, overwrite: true);
+                // 用「临时文件 + 原子替换」写入。直接 File.Copy 覆盖会**保留目标文件的 inode**，
+                // 于是指向它的硬链接（版本归档 / 每游戏插件包）会跟着被改掉 —— 老版本就白留了。
+                string staged = destination + ".hysx-new";
+                try
+                {
+                    File.Copy(source, staged, overwrite: true);
+                    File.Move(staged, destination, overwrite: true);
+                }
+                finally
+                {
+                    // copy/move 半路失败（磁盘满 / 目标被游戏锁着）时别把 .hysx-new 留在 Addons 目录里
+                    if (File.Exists(staged))
+                    {
+                        try
+                        {
+                            File.Delete(staged);
+                        }
+                        catch
+                        {
+                            // 删不掉就算了，下次安装会覆盖
+                        }
+                    }
+                }
 
                 var info = new FileInfo(destination);
                 record.Files.Add(new InstalledExtension.InstalledExtensionFile
@@ -338,6 +364,21 @@ public sealed class ExtensionInstaller
             }
 
             await _store.UpsertAsync(record, cancellationToken);
+
+            // 装好的这一版再归档一份（<CacheRoot>\plugins\<extId>\<tag>\）——
+            // 共享 Addons 目录永远只有一份当前版本，归档留给「反复切版本不用重新下」和
+            // 「每个游戏用不同版本」的插件包。归档失败不该让安装失败。
+            if (versionStore is not null)
+            {
+                try
+                {
+                    versionStore.Archive(host, record);
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
 
             var previousHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (previous is not null)
@@ -444,15 +485,24 @@ public sealed class ExtensionInstaller
                 continue;
             }
 
-            string actual = await HysxUtil.ComputeSha256Async(path, cancellationToken);
-            if (!HysxUtil.IsHashEqual(actual, file.Sha256))
+            try
             {
-                result.SkippedModifiedFiles.Add(file.Path);
-                continue;
-            }
+                string actual = await HysxUtil.ComputeSha256Async(path, cancellationToken);
+                if (!HysxUtil.IsHashEqual(actual, file.Sha256))
+                {
+                    result.SkippedModifiedFiles.Add(file.Path);
+                    continue;
+                }
 
-            File.Delete(path);
-            result.DeletedFiles.Add(file.Path);
+                File.Delete(path);
+                result.DeletedFiles.Add(file.Path);
+            }
+            catch
+            {
+                // 文件被占用（游戏开着，addon 已被加载）删不掉：跳过并提醒，而不是让整个卸载炸掉 ——
+                // 异常往上抛的话，后面的账本摘除永远走不到，重试也永远卡在同一个文件上
+                result.Warnings.Add("文件被占用删不掉（关掉游戏再卸一次可以彻底清掉）：" + file.Path);
+            }
         }
 
         foreach (string deleted in result.DeletedFiles)

@@ -212,8 +212,12 @@ public sealed class LocalPackageInstaller
             foreach (string source in addonFiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                // 与 ExtensionInstaller 相同的「临时文件 + Move 换 inode」：直接 Copy 覆盖会保留目标 inode，
+                // 指着它的硬链接（版本归档 / 每游戏插件包）内容会被一起改掉 —— 老版本就白归档了
                 string target = Path.Combine(_addonsDirectory, Path.GetFileName(source));
-                File.Copy(source, target, overwrite: true);
+                string staged = target + ".hysx-new";
+                File.Copy(source, staged, overwrite: true);
+                File.Move(staged, target, overwrite: true);
                 installed.Add(Path.GetFileName(target));
             }
 

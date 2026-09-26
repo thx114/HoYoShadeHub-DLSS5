@@ -153,6 +153,45 @@
                                                    Text="{x:Bind InstalledText, Mode=OneWay}"
                                                    TextWrapping="Wrap" />
 
+                                        <!--  需求6：这一类 dll 装过的版本（归档 <CacheRoot>\dlls\<family>\<version>\），每行一个删除  -->
+                                        <ItemsControl ItemsSource="{x:Bind InstalledVersionRows, Mode=OneWay}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="local:InstalledDllVersionRow">
+                                                    <Grid Margin="0,1" ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0"
+                                                                    Orientation="Horizontal"
+                                                                    Spacing="6"
+                                                                    VerticalAlignment="Center">
+                                                            <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind DisplayText, Mode=OneWay}" />
+                                                            <Border Padding="6,1"
+                                                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                    CornerRadius="3"
+                                                                    Visibility="{x:Bind CurrentVisibility, Mode=OneWay}">
+                                                                <TextBlock FontSize="11"
+                                                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                           Text="使用中" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                        <Button Grid.Column="1"
+                                                                MinWidth="0"
+                                                                Padding="8,2"
+                                                                Click="Button_DeleteDllVersion_Click"
+                                                                ToolTipService.ToolTip="删除归档里的这个版本（共享目录里当前生效的那份不动）">
+                                                            <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                        </Button>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                                   Style="{ThemeResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind InstalledVersionsSummary, Mode=OneWay}"
+                                                   TextWrapping="Wrap" />
+
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <ComboBox MinWidth="200"
                                                       ItemsSource="{x:Bind Versions, Mode=OneWay}"

@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Frameworks;
+using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -16,38 +17,155 @@ using System.Threading;
 
 namespace HoYoShadeHub.Features.OptiScaler;
 
-/// <summary>OptiScaler 构建列表里的一行（单选）</summary>
+/// <summary>
+/// OptiScaler 页里的一张「来源」卡片：这个来源在本地装了哪几版，
+/// 用卡片里的「切换版本」下拉给这个游戏选一版（用户要求第 2 条：不要再套娃）。
+/// </summary>
 public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
 {
-    public string Id { get; init; } = string.Empty;
+    private readonly Dictionary<string, OptiScalerBuild> _buildsById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _labelToId = new(StringComparer.OrdinalIgnoreCase);
+    private bool _suppressBuildChange;
 
-    public string Title { get; init; } = string.Empty;
-
-    public string Detail { get; init; } = string.Empty;
-
-    public string TagsText { get; init; } = string.Empty;
-
-    /// <summary>这个构建来自哪个 OptiScaler 来源分支（配置的分支限制靠它判断）</summary>
+    /// <summary>来源 id（配置的分支限制靠它判断）</summary>
     public string SourceId { get; init; } = string.Empty;
 
-    /// <summary>卡片上显示的「当前文件」说明（profiles\<游戏>.ini 是否存在 / 何时改的）</summary>
-    public string CurrentProfileText { get; set; } = string.Empty;
+    /// <summary>来源显示名（目录里配的名字，没有就用 id）</summary>
+    public string SourceName { get; init; } = string.Empty;
 
-    public string? DllPath { get; init; }
+    /// <summary>来源标签（hdr / dlss5 …）</summary>
+    public string TagsText { get; init; } = string.Empty;
 
-    private bool _isSelected;
-    public bool IsSelected
+    /// <summary>
+    /// 卡片标题：来源名 + 版本。
+    /// 现在**一个构建一张卡片**（用户要的「多个 opt 单选、点卡片就换」），
+    /// 所以同一个来源的多版必须靠版本号区分。
+    /// </summary>
+    public string Title
     {
-        get => _isSelected;
-        set => SetProperty(ref _isSelected, value);
+        get
+        {
+            string name = string.IsNullOrWhiteSpace(SourceName) ? SourceId : SourceName;
+            string? version = CurrentBuild?.Version;
+            return string.IsNullOrWhiteSpace(version) ? name : $"{name}  ·  {version}";
+        }
     }
 
-    public Visibility DllMissingVisibility
-        => string.IsNullOrWhiteSpace(DllPath) ? Visibility.Visible : Visibility.Collapsed;
+    /// <summary>「切换版本」下拉的选项（这个来源装在本地的版本，新 → 旧）</summary>
+    public ObservableCollection<string> BuildOptions { get; } = [];
+
+    [ObservableProperty]
+    private string? selectedBuildOption;
+
+    /// <summary>这个游戏现在用的就是这个来源的某一版 → 卡片标「使用中」</summary>
+    private bool _isInUse;
+    public bool IsInUse
+    {
+        get => _isInUse;
+        set
+        {
+            if (SetProperty(ref _isInUse, value))
+            {
+                OnPropertyChanged(nameof(InUseVisibility));
+            }
+        }
+    }
+
+    public Visibility InUseVisibility => IsInUse ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>当前选中的构建（下拉里那一个）</summary>
+    public OptiScalerBuild? CurrentBuild
+        => SelectedBuildOption is { Length: > 0 } label && _labelToId.TryGetValue(label, out string? id)
+           && _buildsById.TryGetValue(id, out OptiScalerBuild? build)
+            ? build
+            : null;
+
+    /// <summary>当前构建 id（换版本 / 配配置按它记）</summary>
+    public string CurrentBuildId => CurrentBuild?.Id ?? string.Empty;
+
+    public string? DllPath => CurrentBuild?.DllPath;
+
+    public string Detail => CurrentBuild is not { } build
+        ? "这个来源没有可用构建"
+        : (string.IsNullOrWhiteSpace(build.DllPath) ? $"目录：{build.Directory}" : $"注入：{build.DllPath}");
+
+    public Visibility DllMissingVisibility =>
+        string.IsNullOrWhiteSpace(DllPath) ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>这个构建的目录（套配置要往它的 profiles\ 里写；没 dll 就没有）</summary>
     public string? BuildDirectory
         => string.IsNullOrWhiteSpace(DllPath) ? null : Path.GetDirectoryName(DllPath);
+
+    /// <summary>卡片上显示的「当前文件」说明（profiles\<游戏>.ini 是否存在 / 何时改的）</summary>
+    public string CurrentProfileText { get; set; } = string.Empty;
+
+    /// <summary>换版本时回调页面（页面用 _loading 屏蔽加载期的那次）</summary>
+    internal Action<OptiScalerBuildItemViewModel, string?>? BuildChanged { get; set; }
+
+    /// <summary>把本地装到的构建铺进下拉并选中指定的那个（选过的不属于这个来源就选最新的）</summary>
+    public void SetBuilds(IReadOnlyList<OptiScalerBuild> builds, string? selectedId)
+    {
+        _buildsById.Clear();
+        _labelToId.Clear();
+        BuildOptions.Clear();
+
+        string? match = null;
+
+        foreach (OptiScalerBuild build in builds)
+        {
+            string label = string.IsNullOrWhiteSpace(build.AssetName)
+                ? build.Version
+                : $"{build.Version}  ·  {build.AssetName}";
+
+            // 同名标签（同一版本不同资产）加个后缀，保证唯一
+            string unique = label;
+            int n = 2;
+            while (_labelToId.ContainsKey(unique))
+            {
+                unique = label + " (" + n++ + ")";
+            }
+
+            _buildsById[build.Id] = build;
+            _labelToId[unique] = build.Id;
+            BuildOptions.Add(unique);
+
+            if (string.Equals(build.Id, selectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                match = unique;
+            }
+        }
+
+        IsInUse = builds.Any(b => string.Equals(b.Id, selectedId, StringComparison.OrdinalIgnoreCase));
+
+        _suppressBuildChange = true;
+        SelectedBuildOption = match ?? BuildOptions.FirstOrDefault();
+        _suppressBuildChange = false;
+
+        NotifyBuildDerived();
+    }
+
+    partial void OnSelectedBuildOptionChanged(string? value)
+    {
+        NotifyBuildDerived();
+
+        if (_suppressBuildChange)
+        {
+            return;
+        }
+
+        BuildChanged?.Invoke(this, CurrentBuildId);
+    }
+
+    private void NotifyBuildDerived()
+    {
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(CurrentBuild));
+        OnPropertyChanged(nameof(CurrentBuildId));
+        OnPropertyChanged(nameof(DllPath));
+        OnPropertyChanged(nameof(Detail));
+        OnPropertyChanged(nameof(DllMissingVisibility));
+        OnPropertyChanged(nameof(BuildDirectory));
+    }
 
     /// <summary>「当前配置」下拉的选项：不套配置 + 本地配置名</summary>
     public List<string> PresetOptions { get; set; } = [];
@@ -90,7 +208,7 @@ public sealed partial class OptiScalerPage : PageBase
     public OptiScalerPage()
     {
         InitializeComponent();
-        ListView_Builds.ItemsSource = _items;
+        OptiScalerSourceList.ItemsSource = _items;
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -119,6 +237,9 @@ public sealed partial class OptiScalerPage : PageBase
         {
             _items.Clear();
 
+            // 注入时机（OptiScaler，按游戏）
+            UpdateOptiInjectDelayUi();
+
             string gameName = _gameId?.GameBiz.Value ?? string.Empty;
             TextBlock_Game.Text = string.IsNullOrWhiteSpace(gameName) ? "（没选游戏）" : $"这个游戏：{gameName}";
 
@@ -127,40 +248,37 @@ public sealed partial class OptiScalerPage : PageBase
 
             if (library is not null)
             {
+                // 一个构建一张卡片，点一下就是单选（用户：以前多个 opt 单选、点卡片就换）。
+                // 不再按来源分组折叠成一个下拉 —— 那样卡片本身点不动，用户找不到地方选。
+                // （List() 本身就是新装的在前，顺序照旧）
                 foreach (OptiScalerBuild build in library.List())
                 {
-                    _items.Add(new OptiScalerBuildItemViewModel
-                    {
-                        Id = build.Id,
-                        Title = $"{build.SourceId} · {build.Version}",
-                        Detail = string.IsNullOrWhiteSpace(build.DllPath)
-                            ? $"目录：{build.Directory}"
-                            : $"注入：{build.DllPath}",
-                        SourceId = build.SourceId,
-                        DllPath = build.DllPath,
-                        IsSelected = string.Equals(build.Id, selectedId, StringComparison.OrdinalIgnoreCase),
-                    });
-                }
-            }
+                    OptiScalerSource? source = OptiScalerCatalog.Find(build.SourceId);
 
-            // 每个构建卡片都挂上「当前配置」下拉（本地配置 + 不套配置）
-            foreach (OptiScalerBuildItemViewModel item in _items)
-            {
-                AttachPreset(item);
+                    var item = new OptiScalerBuildItemViewModel
+                    {
+                        SourceId = build.SourceId,
+                        SourceName = source?.Name ?? build.SourceId,
+                        TagsText = source?.Tags is { Length: > 0 } tags ? string.Join(" ", tags) : string.Empty,
+                    };
+
+                    item.SetBuilds([build], selectedId);
+                    item.BuildChanged = OnBuildChanged;
+                    AttachPreset(item);
+                    _items.Add(item);
+                }
             }
 
             InitializeDllNameBox();
 
             TextBlock_Count.Text = _items.Count == 0
                 ? "一个构建都没有 —— 先到左下角「全局插件 → OptiScaler」里下一个。"
-                : $"{_items.Count} 个构建；已装 {_items.Count(i => !string.IsNullOrWhiteSpace(i.DllPath))} 个。";
+                : $"共 {_items.Count} 个构建，点卡片选一个。";
 
-            // 没选过就不自动替他选：没选 = 这个游戏不注入
-            ListView_Builds.SelectedItem = _items.FirstOrDefault(i => i.IsSelected);
-
-            TextBlock_Status.Text = ListView_Builds.SelectedItem is null
-                ? "这个游戏还没选构建 —— 上面选一个才会注入。"
-                : $"这个游戏用：{((OptiScalerBuildItemViewModel)ListView_Builds.SelectedItem).Title}";
+            OptiScalerBuildItemViewModel? inUse = _items.FirstOrDefault(i => i.IsInUse);
+            TextBlock_Status.Text = inUse is null
+                ? "这个游戏还没选构建 —— 在卡片里「切换版本」选一个才会注入。"
+                : $"这个游戏用：{inUse.Title} · {inUse.SelectedBuildOption}";
         }
         finally
         {
@@ -170,65 +288,99 @@ public sealed partial class OptiScalerPage : PageBase
 
     private void Button_Refresh_Click(object sender, RoutedEventArgs e) => Load();
 
-    private void ListView_Builds_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    /// <summary>「注入时机」输入框：0~30 秒，留空 = 跟随全局默认（按游戏）</summary>
+    private void UpdateOptiInjectDelayUi()
+    {
+        _loading = true;
+        try
+        {
+            int? current = _gameId is null ? null : AppConfig.GetOptiScalerInjectDelaySeconds(_gameId.GameBiz);
+            NumberBox_OptiInjectDelay.Value = current is int value ? value : double.NaN;
+            NumberBox_OptiInjectDelay.PlaceholderText = _gameId is null
+                ? "跟随全局"
+                : $"跟随全局（{AppConfig.GetDefaultInjectionDelaySeconds(_gameId.GameBiz)} 秒）";
+            NumberBox_OptiInjectDelay.IsEnabled = _gameId is not null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void NumberBox_OptiInjectDelay_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
         if (_loading || _gameId is null)
         {
             return;
         }
 
-        foreach (OptiScalerBuildItemViewModel item in _items)
-        {
-            item.IsSelected = ReferenceEquals(item, ListView_Builds.SelectedItem);
-        }
+        int? seconds = double.IsNaN(args.NewValue)
+            ? null
+            : (int)Math.Clamp(Math.Round(args.NewValue), 0, AppConfig.MaxInjectionWarmupSeconds);
 
-        if (ListView_Builds.SelectedItem is not OptiScalerBuildItemViewModel selected)
+        AppConfig.SetOptiScalerInjectDelaySeconds(_gameId.GameBiz, seconds);
+
+        TextBlock_Status.Text = seconds is null
+            ? "OptiScaler 注入时机：跟随全局默认。"
+            : seconds <= 0
+                ? "OptiScaler 注入：立即注入（不等）。"
+                : $"OptiScaler 注入：等游戏起来 {seconds} 秒后再注入。";
+    }
+
+    /// <summary>
+    /// 点整张卡片 = 这个游戏改用这一版（单选，和以前那个 ListView 单选是一个意思）。
+    /// 卡片里的下拉 / 按钮自己会吃掉点击，所以只有点卡片空白处才会走到这里。
+    /// </summary>
+    private void Card_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        if (_loading || _gameId is null
+            || sender is not FrameworkElement { DataContext: OptiScalerBuildItemViewModel item })
         {
             return;
         }
 
-        AppConfig.SetSelectedOptiScalerId(_gameId, selected.Id);
+        OnBuildChanged(item, item.CurrentBuildId);
+        e.Handled = true;
+    }
+
+    /// <summary>某张卡片被选中（点卡片 / 从下拉里换）：给这个游戏选这个构建</summary>
+    private void OnBuildChanged(OptiScalerBuildItemViewModel item, string? buildId)
+    {
+        if (_loading || _gameId is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(buildId))
+        {
+            return;
+        }
+
+        AppConfig.SetOptiScalerVersion(_gameId, buildId);
 
         // 在这里选构建 = 明确要用它 —— 顺手把启动选项里的「启用OptiScaler」也勾上
         AppConfig.SetUseOptiScalerLaunchOption(_gameId, true);
 
-        TextBlock_Status.Text = $"这个游戏改用：{selected.Title}";
+        // 只有真正选中的那张卡片算「使用中」
+        foreach (OptiScalerBuildItemViewModel other in _items)
+        {
+            other.IsInUse = ReferenceEquals(other, item);
+        }
+
+        TextBlock_Status.Text = $"这个游戏改用：{item.Title} · {item.SelectedBuildOption}";
+
+        // 「当前配置」按构建走，换版本要重新挂一遍
+        AttachPreset(item);
 
         // 「全局插件 → OptiScaler」那边也用 state.json 里那个「当前构建」，同步一下省得两边不一致
         try
         {
-            CreateLibrary()?.Select(selected.Id);
+            CreateLibrary()?.Select(buildId);
         }
         catch
         {
             // 同步失败不影响这边的选择
         }
-    }
-
-    private void Button_ClearChoice_Click(object sender, RoutedEventArgs e)
-    {
-        if (_gameId is null)
-        {
-            return;
-        }
-
-        AppConfig.SetSelectedOptiScalerId(_gameId, null);
-        AppConfig.SetUseOptiScalerLaunchOption(_gameId, false);
-        _loading = true;
-        try
-        {
-            ListView_Builds.SelectedItem = null;
-            foreach (OptiScalerBuildItemViewModel item in _items)
-            {
-                item.IsSelected = false;
-            }
-        }
-        finally
-        {
-            _loading = false;
-        }
-
-        TextBlock_Status.Text = "这个游戏不再注入 OptiScaler。";
     }
 
     private void Button_OpenLibrary_Click(object sender, RoutedEventArgs e)
@@ -269,7 +421,7 @@ public sealed partial class OptiScalerPage : PageBase
 
         string saved = _gameId is null
             ? string.Empty
-            : AppConfig.GetValue(string.Empty, PresetKey(_gameId.GameBiz.ToString(), item.Id));
+            : AppConfig.GetValue(string.Empty, PresetKey(_gameId.GameBiz.ToString(), item.CurrentBuildId));
 
         item.CurrentPreset = !string.IsNullOrWhiteSpace(saved)
                              && !string.Equals(saved, OptiScalerPresets.CurrentLabel, StringComparison.Ordinal)
@@ -312,7 +464,7 @@ public sealed partial class OptiScalerPage : PageBase
         }
 
         string gameKey = _gameId.GameBiz.ToString();
-        AppConfig.SetValue(preset, PresetKey(gameKey, item.Id));
+        AppConfig.SetValue(preset, PresetKey(gameKey, item.CurrentBuildId));
         // 记下「这个游戏挂的是哪份配置」 游戏改完退出时按它同步回配置
         AppConfig.SetValue(preset, OptiScalerPresets.FollowKey(gameKey));
 
@@ -560,7 +712,7 @@ public sealed partial class OptiScalerPage : PageBase
         string? addKey = _gameId?.GameBiz.ToString();
         if (!string.IsNullOrWhiteSpace(addKey))
         {
-            AppConfig.SetValue(name, PresetKey(addKey, item.Id));
+            AppConfig.SetValue(name, PresetKey(addKey, item.CurrentBuildId));
         // 记下「这个游戏挂的是哪份配置」 游戏改完退出时按它同步回配置
         AppConfig.SetValue(name, OptiScalerPresets.FollowKey(addKey));
         }
@@ -747,7 +899,7 @@ public sealed partial class OptiScalerPage : PageBase
                 return;
             }
 
-            AppConfig.SetValue(newName, PresetKey(gameKey, item.Id));
+            AppConfig.SetValue(newName, PresetKey(gameKey, item.CurrentBuildId));
             TextBlock_Status.Text = $"已把当前配置存成配置「{newName}」，下拉已切过去。";
             Load();
             return;
@@ -762,7 +914,7 @@ public sealed partial class OptiScalerPage : PageBase
         if (!string.IsNullOrWhiteSpace(gameKey))
         {
             // 下拉原来指着旧名字，跟着改过去
-            AppConfig.SetValue(newName, PresetKey(gameKey, item.Id));
+            AppConfig.SetValue(newName, PresetKey(gameKey, item.CurrentBuildId));
         }
 
         TextBlock_Status.Text = $"「{preset}」已改名为「{newName}」。";

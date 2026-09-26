@@ -1,6 +1,7 @@
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
+using HoYoShadeHub.Extensions.Services;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Games;
@@ -30,6 +31,12 @@ public sealed class GameAddonState
 
     /// <summary>它要的运行时 dll 是不是也躺在**游戏目录**里（interposer 那条路径需要）</summary>
     public bool InGameDirectory { get; init; }
+
+    /// <summary>
+    /// 插件自己会不会往 ini 里登记加载方式（见 <see cref="AddonSelfRegistrationDetector"/>）。
+    /// 会的话「从 DllMain 加载」这个勾选项就不显示（用户要求第 7 条）。
+    /// </summary>
+    public bool SelfRegistersInIni { get; init; }
 
     public string FileName => File.FileName;
 
@@ -249,6 +256,8 @@ public sealed class GamePluginService
                 IsDlss5 = IsDlss5Addon(file.FileName),
                 DllStatus = AddonDllChecker.CheckFiles(dllFileNames!, TagsOf(file.FileName)),
                 InGameDirectory = HasRuntimeFileInGameDirectory(file, dllFileNames),
+                // 它自己会登记加载方式的话，界面上就不显示「从 DllMain 加载」那个勾
+                SelfRegistersInIni = AddonSelfRegistrationDetector.Detect(ResolveActualPath(file)),
             });
         }
 
@@ -546,7 +555,53 @@ public sealed class GamePluginService
         }
 
         Profile.Save();
+
+        // DLSS5 Feed：效果开关只存在于预设文件里，跟着这个游戏的插件开关一起改。
+        // 预设可能多游戏共用，切游戏时还有一次同步（见 SyncDlss5FeedPreset）。
+        if (ReShadePresetEditor.IsFeedAddon(addonFileName))
+        {
+            ReShadePresetEditor.TrySetEnabled(Profile, enabled, out _);
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// 这个 addon 是不是「DLSS5 Feed」（dlss5-feed.addon64*）——
+    /// 它还要在 ReShade 预设里勾上 LumeniteFX Kernel + DLSS5_Feed。
+    /// </summary>
+    public static bool IsDlss5FeedAddon(string? addonFileName) => ReShadePresetEditor.IsFeedAddon(addonFileName);
+
+    /// <summary>
+    /// 把**该游戏当前生效的预设**同步成这个游戏里 DLSS5 Feed 的开关状态。
+    ///
+    /// <para>
+    /// 预设有可能是多个游戏共用的（本机所有游戏的 PresetPath 都指向
+    /// Presets/Mod OFF.ini），所以切游戏时要按当前游戏重新同步一次：
+    /// 这个游戏开着 Feed 就补上 Lumenite_Kernel + DLSS5_Feed，否则去掉。
+    /// 幂等，别的内容一个字节都不动。
+    /// </para>
+    /// </summary>
+    /// <param name="note">失败原因；成功为 null</param>
+    public bool SyncDlss5FeedPreset(out string? note)
+    {
+        note = null;
+
+        if (Profile is null)
+        {
+            return false;
+        }
+
+        bool enabled = GetAddons().Any(a =>
+            ReShadePresetEditor.IsFeedAddon(a.FileName) && a.Enabled && !a.GloballyDisabled);
+
+        bool ok = ReShadePresetEditor.TrySetEnabled(Profile, enabled, out string? error);
+        if (!ok)
+        {
+            note = error;
+        }
+
+        return ok;
     }
 
     private string ResolveNameFor(string addonFileName)

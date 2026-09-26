@@ -86,6 +86,8 @@ public sealed partial class MainView : UserControl
 
     private void MainView_Loaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
+        // 版本更新引导：窗口已经显示之后**直接弹**（不能再放到插件页导航里，那样会把页面卡死）
+        _ = CacheMigrationService.PromptIfNeededAsync(XamlRoot, _logger);
         CheckSystemProxy();
         // 「显示主窗口」全局快捷键按用户要求删掉了（不再注册；设置页里那个输入框也隐藏了）
         // HotkeyManager.InitializeHotkey(this.XamlRoot.GetWindowHandle());
@@ -111,6 +113,11 @@ public sealed partial class MainView : UserControl
         CurrentGameId = e.Item1;
         CurrentGameFeatureConfig = GameFeatureConfig.FromGameId(CurrentGameId);
         UpdateNavigationView();
+
+        // DLSS5 Feed 的效果开关写在（可能多个游戏共用的）ReShade 预设里，
+        // 切游戏时按当前游戏重新同步一次 —— 别让上一个游戏的效果留在别的游戏上。
+        GameId? switchedGameId = CurrentGameId;
+        _ = Task.Run(() => GameCatalog.SyncDlss5FeedPreset(switchedGameId));
     }
 
 

@@ -62,4 +62,35 @@ public static class ExtensionAddonMatcher
 
         return result;
     }
+
+    /// <summary>
+    /// 只认一个文件：返回认领它的扩展 id（没有条目认领就是 null）。
+    /// 给「这个 addon 属于哪个扩展」用（每游戏插件版本下拉靠它把 addon 文件对到扩展的版本归档）。
+    /// </summary>
+    public static string? MatchExtensionId(IEnumerable<ExtensionManifest> manifests, AddonFileInfo file)
+    {
+        if (file is null || string.IsNullOrWhiteSpace(file.FileName))
+        {
+            return null;
+        }
+
+        foreach (ExtensionManifest manifest in manifests)
+        {
+            if (manifest.AddonPatterns is not { Length: > 0 })
+            {
+                continue;
+            }
+
+            if (manifest.AddonPatterns.Any(p => GlobMatcher.IsMatch(p, file.FileName)))
+            {
+                return manifest.Id;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>只认一个文件名：返回认领它的扩展 id（文件名解析不出来 / 没条目认领就是 null）。</summary>
+    public static string? MatchExtensionId(IEnumerable<ExtensionManifest> manifests, string addonFileName)
+        => AddonFileInfo.Parse(addonFileName) is { } file ? MatchExtensionId(manifests, file) : null;
 }

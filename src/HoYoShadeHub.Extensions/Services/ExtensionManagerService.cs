@@ -27,14 +27,18 @@ public sealed class ExtensionStatus
 /// </summary>
 public sealed class ExtensionManagerService
 {
-    public ExtensionManagerService(ShadeHost host)
+    public ExtensionManagerService(ShadeHost host, AddonVersionStore? versionStore = null)
     {
         Host = host;
         Store = new InstalledExtensionStore(host);
         Installer = new ExtensionInstaller(Store);
         Fetcher = new ExtensionPackageFetcher();
         Catalog = new ExtensionCatalogService();
+        VersionStore = versionStore;
     }
+
+    /// <summary>版本归档库（&lt;CacheRoot&gt;\plugins）。为 null 时安装不归档（老调用方式）。</summary>
+    public AddonVersionStore? VersionStore { get; }
 
     public ShadeHost Host { get; }
 
@@ -96,12 +100,21 @@ public sealed class ExtensionManagerService
     /// 下载 → 解压 → 按规则落位 → 记帐 → 必要时补 ReShade.ini。
     /// </summary>
     /// <param name="tagOverride">装指定版本（GitHub tag）；null = 最新版</param>
-    public async Task<ExtensionInstallResult> InstallAsync(
+    public Task<ExtensionInstallResult> InstallAsync(
         ExtensionManifest manifest,
         IProgress<DownloadProgress>? progress = null,
         CancellationToken cancellationToken = default,
         string? tagOverride = null,
         DownloadPauseToken? pauseToken = null)
+        => InstallInternalAsync(manifest, progress, cancellationToken, tagOverride, pauseToken, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+    private async Task<ExtensionInstallResult> InstallInternalAsync(
+        ExtensionManifest manifest,
+        IProgress<DownloadProgress>? progress,
+        CancellationToken cancellationToken,
+        string? tagOverride,
+        DownloadPauseToken? pauseToken,
+        HashSet<string> visiting)
     {
         if (!manifest.IsValid)
         {
@@ -115,8 +128,80 @@ public sealed class ExtensionManagerService
             throw new InvalidOperationException($"扩展 {manifest.Id} 不支持装到 {hostName}。");
         }
 
-        using ResolvedExtensionPayload payload = await Fetcher.FetchAsync(manifest, progress, cancellationToken, tagOverride, pauseToken);
-        return await Installer.InstallAsync(Host, manifest, payload, cancellationToken);
+        if (!visiting.Add(manifest.Id))
+        {
+            throw new InvalidOperationException($"扩展依赖出现环：{manifest.Id}");
+        }
+
+        try
+        {
+            using ResolvedExtensionPayload payload = await Fetcher.FetchAsync(manifest, progress, cancellationToken, tagOverride, pauseToken);
+            ExtensionInstallResult result = await Installer.InstallAsync(Host, manifest, payload, cancellationToken, VersionStore);
+
+            await InstallDependenciesAsync(manifest, progress, cancellationToken, pauseToken, visiting);
+            return result;
+        }
+        finally
+        {
+            visiting.Remove(manifest.Id);
+        }
+    }
+
+    /// <summary>
+    /// 把 <c>requires</c> 里声明的依赖一起装上（用户要求：「启用这个插件要一并装上并启用」）。
+    /// 已装过 / 目录里没有这个 id 就跳过；依赖装不上只当没装，不打断主包。
+    /// </summary>
+    private async Task InstallDependenciesAsync(
+        ExtensionManifest manifest,
+        IProgress<DownloadProgress>? progress,
+        CancellationToken cancellationToken,
+        DownloadPauseToken? pauseToken,
+        HashSet<string> visiting)
+    {
+        if (manifest.Requires is not { Length: > 0 })
+        {
+            return;
+        }
+
+        ExtensionCatalogDocument catalog;
+        try
+        {
+            catalog = await Catalog.LoadAsync(cancellationToken);
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (string id in manifest.Requires)
+        {
+            if (string.IsNullOrWhiteSpace(id) || visiting.Contains(id))
+            {
+                continue;
+            }
+
+            ExtensionManifest? dependency = catalog.Extensions.FirstOrDefault(
+                m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+            if (dependency is null || !dependency.IsValid)
+            {
+                continue;
+            }
+
+            if (await Store.FindAsync(id, cancellationToken) is not null)
+            {
+                continue;
+            }
+
+            try
+            {
+                await InstallInternalAsync(dependency, progress, cancellationToken, null, pauseToken, visiting);
+            }
+            catch
+            {
+                // 依赖装不上不该让主包失败
+            }
+        }
     }
 
     /// <param name="removeSiblings">连同一个插件的其它版本文件一起删（用户要求「删插件要能删干净」）</param>

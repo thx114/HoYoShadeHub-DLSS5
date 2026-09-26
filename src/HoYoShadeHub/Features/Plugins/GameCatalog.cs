@@ -369,6 +369,24 @@ internal static class GameCatalog
     }
 
     /// <summary>
+    /// addon 文件名 → 认领它的扩展条目 id（靠目录里的 <c>addonPatterns</c>）。
+    /// 每游戏插件页的版本下拉靠它把盘上的 addon 文件对到扩展的版本归档。
+    /// 认不出来返回 null。
+    /// </summary>
+    public static string? ExtensionIdOfAddonFile(string addonFileName)
+    {
+        try
+        {
+            ExtensionManifest[] manifests = ExtensionCatalogService.LoadBuiltin().Extensions;
+            return ExtensionAddonMatcher.MatchExtensionId(manifests, addonFileName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// addon 文件名 → 它属于哪个扩展条目的 tags（靠目录里的 <c>addonPatterns</c> 认领）。
     /// 用来判断「这个插件是不是 DLSS5 类，要不要那套 dll」。
     /// </summary>
@@ -398,6 +416,47 @@ internal static class GameCatalog
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 切游戏时同步「DLSS5 Feed」在 ReShade 预设里的开关。
+    ///
+    /// <para>
+    /// 效果开关只存在于 <c>[GENERAL] PresetPath</c> 指的那个预设文件里，而它常常是
+    /// 多个游戏共用的（本机都指向 <c>Presets/Mod OFF.ini</c>）—— 所以每次切游戏都按
+    /// 「当前这个游戏有没有开 dlss5-feed」重新写一次：开着就补上
+    /// Lumenite_Kernel + DLSS5_Feed，没开就去掉。幂等，别的内容不动。
+    /// </para>
+    /// </summary>
+    public static void SyncDlss5FeedPreset(GameId? gameId)
+    {
+        try
+        {
+            ShadeHost? host = PluginHostLocator.Resolve(out _);
+            if (host is null)
+            {
+                return;
+            }
+
+            GameEntry? entry = GetOrCreate(CreateService(), gameId);
+            if (entry is null)
+            {
+                return;
+            }
+
+            var service = new GamePluginService(
+                entry,
+                host,
+                PluginHostLocator.AddonNameCachePath,
+                AddonCandidateNames(),
+                TagsOfAddonFile);
+
+            service.SyncDlss5FeedPreset(out _);
+        }
+        catch
+        {
+            // 预设同步失败不该影响切游戏
+        }
     }
 
     /// <summary>装了哪些扩展、叫什么名字 —— 给 addon 内部名的二进制匹配当候选</summary>

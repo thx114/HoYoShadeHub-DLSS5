@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.Linq;
@@ -24,7 +24,7 @@ namespace HoYoShadeHub.Features.Plugins;
 /// <para>
 ///  这个操作**不**改各游戏 ReShade.ini 里的绝对路径  那是
 /// <see cref="HoYoShadeHub.Extensions.ReShade.ShadePathAligner"/> 的活，改名之后要再点一次
-/// 「指回当前 HoYoShade」。修完会把这件事写进返回文案里。
+/// 「指回当前 HoYoShade」（用专属插件目录的游戏不用 —— 那本来是正常状态）。修完会把这件事写进返回文案里。
 /// </para>
 /// </summary>
 internal class AsciiPathHelper
@@ -81,7 +81,8 @@ internal class AsciiPathHelper
             return $"已经把 HoYoShade 目录改名成 {target}。\n" +
                    "接下来要做两件事：\n" +
                    "1) 到「全局插件  指定目录」重新指到新目录（如果 Hub 没自动认出来）；\n" +
-                   "2) 到每个游戏的插件页点一次「指回当前 HoYoShade」，把各游戏 ReShade.ini 里的绝对路径改过来。";
+                   "2) 到每个游戏的插件页点一次「指回当前 HoYoShade」，把各游戏 ReShade.ini 里的绝对路径改过来" +
+                   "（用专属插件目录的「每游戏插件包」自动跟着当前 HoYoShade 走，不用管）。";
         }
         catch (Exception ex)
         {

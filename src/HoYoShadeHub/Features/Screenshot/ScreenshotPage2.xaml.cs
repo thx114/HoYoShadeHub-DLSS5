@@ -12,6 +12,7 @@ using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -103,7 +104,8 @@ public sealed partial class ScreenshotPage2 : PageBase
 
     private List<ScreenshotFolder> _folders = new();
 
-    private Dictionary<string, ScreenshotItem> _screenshotDict = new();
+    // FileSystemWatcher 的回调在线程池线程上跑，会并发碰这个字典 —— 必须线程安全
+    private ConcurrentDictionary<string, ScreenshotItem> _screenshotDict = new();
 
     public ObservableCollection<ScreenshotItem> Screenshots { get; set => SetProperty(ref field, value); }
 
@@ -475,7 +477,7 @@ public sealed partial class ScreenshotPage2 : PageBase
         {
             if (Screenshots?.FirstOrDefault(x => x.FilePath == e.FullPath) is ScreenshotItem item)
             {
-                _screenshotDict.Remove(Path.GetFileName(e.FullPath));
+                _screenshotDict.TryRemove(Path.GetFileName(e.FullPath), out _);
                 DispatcherQueue.TryEnqueue(() => Screenshots?.Remove(item));
                 UpdateLabels();
             }
@@ -564,10 +566,17 @@ public sealed partial class ScreenshotPage2 : PageBase
             if (sender is FrameworkElement grid && grid.DataContext is ScreenshotItem item)
             {
                 var deferral = args.GetDeferral();
-                args.AllowedOperations = DataPackageOperation.Copy;
-                var file = await StorageFile.GetFileFromPathAsync(item.FilePath);
-                args.Data.SetStorageItems([file], true);
-                deferral.Complete();
+                try
+                {
+                    args.AllowedOperations = DataPackageOperation.Copy;
+                    var file = await StorageFile.GetFileFromPathAsync(item.FilePath);
+                    args.Data.SetStorageItems([file], true);
+                }
+                finally
+                {
+                    // 中途抛（比如文件刚被删）也必须 Complete，否则拖放源一直挂着
+                    deferral.Complete();
+                }
             }
         }
         catch (Exception ex)

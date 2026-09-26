@@ -40,64 +40,87 @@
                      PlaceholderText="xxx.dll"
                      TextChanged="TextBox_CustomDllName_TextChanged"
                      Visibility="Collapsed" />
+            <!--  注入时机（OptiScaler，按游戏）：越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样）  -->
+            <TextBlock VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Text="注入时机" />
+            <NumberBox x:Name="NumberBox_OptiInjectDelay"
+                       Width="150"
+                       Minimum="0"
+                       Maximum="30"
+                       SmallChange="1"
+                       SpinButtonPlacementMode="Compact"
+                       PlaceholderText="跟随全局"
+                       ValueChanged="NumberBox_OptiInjectDelay_ValueChanged"
+                       ToolTipService.ToolTip="OptiScaler 注入前等游戏稳定几秒。0 = 立即；留空 = 跟随全局默认。只影响这一个游戏。" />
             <TextBlock x:Name="TextBlock_Count"
                        VerticalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </StackPanel>
 
-        <!--  单选：用 ListView 管选中（RadioButton 只负责显示那个圈）。
-              注意：RadioButtons 的 SelectionChanged、以及 DataTemplate 里的 Toggled 会让
-              WinUI 的 XamlTypeInfo 生成器直接崩（MarkupCompilePass1 静默 exit 1），所以这里绕开它们。  -->
-        <ListView x:Name="ListView_Builds"
-                  Grid.Row="2"
-                  SelectionMode="Single"
-                  SelectionChanged="ListView_Builds_SelectionChanged">
-            <ListView.ItemTemplate>
+        <!--  第 2 条修回：**一个构建一张卡片，点一下就是单选**
+              （用户：以前是多个 opt 单选、点卡片就换；被改成「卡片里一个切换版本下拉」之后卡片点不动了）。
+              一个来源装了多版时，每版单独一张卡，标题里带版本号区分。  -->
+        <!--  ItemsControl 没有内置滚动，所以用 ScrollViewer 包住（工具栏/标题固定，只有列表滚）  -->
+        <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
+            <ItemsControl x:Name="OptiScalerSourceList">
+            <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
-                    <!--  单选卡片：加卡片样式（描边 + 圆角 + 内边距），比原来紧凑  -->
                     <Border Margin="0,0,0,6"
                             Padding="12,8"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1"
-                            CornerRadius="8">
+                            CornerRadius="8"
+                            Tapped="Card_Tapped"
+                            ToolTipService.ToolTip="点一下：这个游戏改用这一版（同一时间只有一个「使用中」）">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
+                        <!--  单选圈：只显示状态，不吃点击（点击交给整张卡片）  -->
                         <RadioButton Grid.Column="0"
-                                     VerticalAlignment="Center"
                                      MinWidth="0"
                                      Padding="0,0,4,0"
+                                     VerticalAlignment="Center"
                                      GroupName="OptiScalerBuild"
-                                     IsChecked="{x:Bind IsSelected, Mode=OneWay}"
+                                     IsChecked="{x:Bind IsInUse, Mode=OneWay}"
                                      IsHitTestVisible="False" />
 
                         <StackPanel Grid.Column="1" Spacing="6">
-                            <!--  第一行：名称（贴单选框）+ 位置 + 标签，全挤在一行  -->
+                            <!--  第一行：来源 + 版本 + 标签 + 「使用中」  -->
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                           Text="{x:Bind Title}"
+                                           Text="{x:Bind Title, Mode=OneWay}"
                                            TextTrimming="CharacterEllipsis" />
-                                <TextBlock VerticalAlignment="Bottom"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Text="{x:Bind Detail}"
-                                           TextTrimming="CharacterEllipsis" />
-                                <TextBlock VerticalAlignment="Bottom"
+                                <Border Padding="6,1"
+                                        VerticalAlignment="Center"
+                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                        CornerRadius="3"
+                                        Visibility="{x:Bind InUseVisibility, Mode=OneWay}">
+                                    <TextBlock FontSize="11"
+                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                               Text="使用中" />
+                                </Border>
+                                <TextBlock VerticalAlignment="Center"
                                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="{x:Bind TagsText}"
                                            TextTrimming="CharacterEllipsis" />
-                                <TextBlock VerticalAlignment="Bottom"
+                                <TextBlock VerticalAlignment="Center"
                                            Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="这个包里没有 OptiScaler.dll"
-                                           Visibility="{x:Bind DllMissingVisibility}" />
+                                           Visibility="{x:Bind DllMissingVisibility, Mode=OneWay}" />
                             </StackPanel>
-                            <!--  第二行：下拉=直接切换；修改=改配置内容；保存当前=把当前生效的 ini 存回配置 -->
+                            <!--  第二行：这一版装在哪 / 注入哪个文件  -->
+                            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Style="{ThemeResource CaptionTextBlockStyle}"
+                                       Text="{x:Bind Detail, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" />
+                            <!--  第三行：当前配置  -->
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <TextBlock VerticalAlignment="Center"
                                            Style="{ThemeResource CaptionTextBlockStyle}"
@@ -122,8 +145,9 @@
                     </Grid>
                     </Border>
                 </DataTemplate>
-            </ListView.ItemTemplate>
-        </ListView>
+            </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
 
         <TextBlock x:Name="TextBlock_Status"
                    Grid.Row="3"

@@ -134,6 +134,47 @@
       ]
     },
     {
+      "id": "dlss5.feed",
+      "name": "DLSS5 Feed（游戏自己没有 DLSS 时用）",
+      "version": "latest",
+      "author": "jlrouzies-fr",
+      "description": "给「游戏自己完全没有 DLSS」的情况用（原神这种 64 位 DX11）：Feeder 自己造出 DLAA 调用，再让神经渲染插件挂上去。它需要另一个神经消费者（Deep Fried Chicken 或 renodx-dlss5）配合；动作矢量来源用 LumeniteFX —— 所以启用这个插件会一并装 LumeniteFX，并把 Lumenite_Kernel + DLSS5_Feed 写进该游戏当前生效的 ReShade 预设（DLSS5_MV_PROVIDER=3）。已经有 dlss5-bridge 的 DX11 游戏别同时开这两个。",
+      "homepage": "https://github.com/jlrouzies-fr/DLSS5-Feeder/releases",
+      "tags": ["dlss5", "neural", "feed", "dx11"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "github-release",
+        "repository": "jlrouzies-fr/DLSS5-Feeder",
+        "includePrerelease": true,
+        "tagPattern": "^v[0-9]",
+        "assetPattern": "DLSS5-Feeder-*.zip"
+      },
+      "addonPatterns": ["dlss5-feed*"],
+      "requires": ["lumenitefx"],
+      "rules": [
+        { "match": "*.addon64", "to": "reshade-shaders/Addons", "flatten": true },
+        { "match": "reshade-shaders/Shaders/*.fx", "to": "reshade-shaders/Shaders", "flatten": true }
+      ]
+    },
+    {
+      "id": "lumenitefx",
+      "name": "LumeniteFX（动作矢量滤镜）",
+      "version": "mainline",
+      "author": "umar-afzaal",
+      "description": "ReShade 效果集，其中 Kernel 那支做「重建法线 + 动作矢量」，是 DLSS5 Feed 手册推荐的动作矢量来源。它不是插件（没有 addon），所以不会出现在「全局插件」列表里，只在 DLSS5 Feed 需要时自动装。",
+      "homepage": "https://github.com/umar-afzaal/LumeniteFX",
+      "tags": ["effect", "motion-vectors"],
+      "hosts": ["HoYoShade"],
+      "source": {
+        "type": "direct",
+        "url": "https://codeload.github.com/umar-afzaal/LumeniteFX/zip/refs/heads/mainline"
+      },
+      "rules": [
+        { "match": "LumeniteFX-mainline/Shaders/**", "to": "reshade-shaders/Shaders", "flatten": false, "optional": true },
+        { "match": "LumeniteFX-mainline/Textures/**", "to": "reshade-shaders/Textures", "flatten": false, "optional": true }
+      ]
+    },
+    {
       "id": "renodx.mfgunlock",
       "name": "RenoDX MFG Unlock（RTX 40 系多帧生成解锁）",
       "version": "latest",

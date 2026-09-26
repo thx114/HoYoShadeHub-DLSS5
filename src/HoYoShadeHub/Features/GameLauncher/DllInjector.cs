@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -136,8 +138,16 @@ internal static partial class DllInjector
         }
     }
 
-    /// <summary>等某个进程名起来（游戏是用户自己用启动器拉起来的，所以我们得等）</summary>
-    public static async Task<Process?> WaitForProcessAsync(string processName, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <summary>
+    /// 等某个进程名起来（游戏是用户自己用启动器拉起来的，所以我们得等）。
+    /// <paramref name="excludeProcessIds"/> 里的 pid 会被跳过 —— 给「目标中途退出后换一个新进程重注」用，
+    /// 保证已经注过的 pid 不会重复注。
+    /// </summary>
+    public static async Task<Process?> WaitForProcessAsync(
+        string processName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<int>? excludeProcessIds = null)
     {
         string name = Path.GetFileNameWithoutExtension(processName);
         if (string.IsNullOrWhiteSpace(name))
@@ -154,9 +164,32 @@ internal static partial class DllInjector
             try
             {
                 Process[] hits = Process.GetProcessesByName(name);
-                if (hits.Length > 0)
+                Process? picked = null;
+
+                foreach (Process hit in hits)
                 {
-                    return hits[0];
+                    if (excludeProcessIds is not null && excludeProcessIds.Contains(hit.Id))
+                    {
+                        hit.Dispose();
+                        continue;
+                    }
+
+                    picked = hit;
+                    break;
+                }
+
+                if (picked is not null)
+                {
+                    // 没选中的那些要释放掉
+                    foreach (Process hit in hits)
+                    {
+                        if (!ReferenceEquals(hit, picked))
+                        {
+                            hit.Dispose();
+                        }
+                    }
+
+                    return picked;
                 }
             }
             catch
@@ -168,6 +201,20 @@ internal static partial class DllInjector
         }
 
         return null;
+    }
+
+    /// <summary>这个 pid 现在还活着吗（目标进程中途退出时靠它判断）</summary>
+    public static bool IsProcessAlive(int processId)
+    {
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

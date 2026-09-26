@@ -162,6 +162,7 @@ public sealed partial class GameLauncherSettingDialog : ContentDialog
         await InitializeGamePackagesAsync();
         await InitializeThirdPartyIntegrationAsync();
         UpdateExtraInjectDllUi();
+        UpdateInjectionWarmupUi();
     }
 
 
@@ -210,6 +211,62 @@ public sealed partial class GameLauncherSettingDialog : ContentDialog
         {
             // ignore
         }
+    }
+
+    // ===================== 注入前预热（按游戏） =====================
+
+    /// <summary>程序填控件初值的那一次不算用户改的</summary>
+    private bool _applyingInjectionWarmup;
+
+    private void UpdateInjectionWarmupUi()
+    {
+        _applyingInjectionWarmup = true;
+        try
+        {
+            bool enabled = AppConfig.GetInjectionWarmupEnabled(CurrentGameBiz);
+            int seconds = AppConfig.GetInjectionWarmupSeconds(CurrentGameBiz);
+
+            ToggleSwitch_InjectionWarmup.IsOn = enabled;
+            NumberBox_InjectionWarmup.Value = seconds;
+            NumberBox_InjectionWarmup.IsEnabled = enabled;
+            TextBlock_InjectionWarmupHint.Text = GetInjectionWarmupHint(enabled, seconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Update injection warmup UI");
+        }
+        finally
+        {
+            _applyingInjectionWarmup = false;
+        }
+    }
+
+    private static string GetInjectionWarmupHint(bool enabled, int seconds) => !enabled
+        ? "默认：进程一出现就立刻注入（和以前一样）。星铁这类游戏如果首次启动被带崩，打开上面的开关并设 3~5 秒试试。"
+        : seconds <= 0
+            ? "0 秒 = 立即注入（等于没开预热）"
+            : $"进程存活 {seconds} 秒、并且主窗口出现之后才注入（没单独设「注入时机」的模块 / 插件 / OptiScaler 用这个默认值）";
+
+    private void ToggleSwitch_InjectionWarmup_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_applyingInjectionWarmup)
+        {
+            return;
+        }
+
+        AppConfig.SetInjectionWarmupEnabled(CurrentGameBiz, ToggleSwitch_InjectionWarmup.IsOn);
+        UpdateInjectionWarmupUi();
+    }
+
+    private void NumberBox_InjectionWarmup_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_applyingInjectionWarmup || double.IsNaN(args.NewValue))
+        {
+            return;
+        }
+
+        AppConfig.SetInjectionWarmupSeconds(CurrentGameBiz, (int)Math.Clamp(Math.Round(args.NewValue), 0, AppConfig.MaxInjectionWarmupSeconds));
+        UpdateInjectionWarmupUi();
     }
 
 
@@ -966,7 +1023,11 @@ public sealed partial class GameLauncherSettingDialog : ContentDialog
             ChangeBgError = ex.Message;
             _logger.LogError(ex, "Change custom background failed");
         }
-        defer.Complete();
+        finally
+        {
+            // deferral 不 Complete，拖放源会一直挂着等这次拖放结束 —— 任何路径（含提前 return）都要走到
+            defer.Complete();
+        }
     }
 
     private async void Button_OpenThirdPartyIntegration_Click(object sender, RoutedEventArgs e)

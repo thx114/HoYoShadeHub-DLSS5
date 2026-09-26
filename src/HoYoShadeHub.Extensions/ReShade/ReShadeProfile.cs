@@ -11,6 +11,13 @@ namespace HoYoShadeHub.Extensions.ReShade;
 /// </summary>
 public sealed class IniDocument
 {
+    /// <summary>
+    /// 「没有节头的根键」。ReShade 预设文件的
+    /// <c>PreprocessorDefinitions</c> / <c>Techniques</c> / <c>TechniqueSorting</c>
+    /// 就写在第一个 <c>[</c> 之前，不属于任何节。
+    /// </summary>
+    public const string RootSection = "";
+
     private readonly List<string> _lines;
     private readonly bool _hadBom;
 
@@ -133,6 +140,21 @@ public sealed class IniDocument
     /// <summary>找节范围：返回 [起始行(节头), 结束行(下一节头或文件尾))</summary>
     private (int Start, int End) FindSectionBounds(string section)
     {
+        // 根节没有节头：范围是开头到第一个节头（或文件尾）
+        if (section.Length == 0)
+        {
+            for (int i = 0; i < _lines.Count; i++)
+            {
+                string t = _lines[i].Trim();
+                if (t.StartsWith('[') && t.EndsWith(']'))
+                {
+                    return (0, i);
+                }
+            }
+
+            return (0, _lines.Count);
+        }
+
         string? current = null;
         int start = -1;
 
@@ -159,7 +181,8 @@ public sealed class IniDocument
 
     private int FindKeyLine(string section, string key)
     {
-        string? current = null;
+        // 根节（section == ""）从文件头开始算，到第一个 [ 为止
+        string current = string.Empty;
         for (int i = 0; i < _lines.Count; i++)
         {
             string trimmed = _lines[i].Trim();
@@ -280,6 +303,33 @@ public sealed class ReShadeProfile
 
     /// <summary>[ADDON] AddonPath —— 插件真身所在目录</summary>
     public string? AddonPath => _ini.GetValue(AddonSection, "AddonPath")?.Trim().TrimEnd('\\', '/');
+
+    /// <summary>写 [ADDON] AddonPath（每游戏插件包指向包目录；取消选版本时指回共享目录）</summary>
+    public void SetAddonPath(string addonPath) => _ini.SetValue(AddonSection, "AddonPath", addonPath);
+
+    /// <summary>[GENERAL] PresetPath —— 当前生效的 ReShade 预设（没配过就是 null）</summary>
+    public string? PresetPath => _ini.GetValue("GENERAL", "PresetPath")?.Trim();
+
+    /// <summary>把 PresetPath 解析成绝对路径（相对路径按 ini 所在目录算）</summary>
+    public string? ResolvePresetPath()
+    {
+        string? raw = PresetPath;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.IsPathFullyQualified(raw)
+                ? Path.GetFullPath(raw)
+                : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(FilePath)!, raw));
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     /// <summary>解析 AddonPath 成实际目录（样本里是绝对路径）</summary>
     public string? ResolveAddonDirectory()

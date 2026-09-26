@@ -1,5 +1,6 @@
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
 using HoYoShadeHub.Extensions.Services;
@@ -130,6 +131,18 @@ public static class ModuleRegistry
             "Dx11FsrBridge.dll",
             ["dlss5", "fsr2", "genshin", "bridge"],
             ["release/configs/Dx11FsrBridge.dll", "release/configs/Dx11FsrBridge.ini"]),
+
+        // 星穹铁道伤害统计（release 只挂一个 veritas.dll，注入后自己画伤害面板）
+        new ModuleDefinition(
+            "veritas",
+            "Veritas（星铁伤害统计 / ACT）",
+            "星穹铁道的战斗伤害统计：实时记录每个角色 / 敌人的伤害明细、总伤和 DPS，用法看 Wiki。" +
+            "只对星穹铁道有意义；版本跟游戏版本绑定，游戏更新后要等上游发新版再更新。",
+            "hessiser/veritas",
+            @"^\d",
+            "https://github.com/hessiser/veritas/wiki",
+            "veritas.dll",
+            ["star-rail", "hkrpg", "damage-stat", "act", "overlay"]),
     ];
 
     /// <summary>远端目录（catalog/modules.json）里读到的模块；同 id 覆盖内置</summary>
@@ -255,12 +268,13 @@ public static class ModuleRegistry
 
     /// <summary>
     /// 这个游戏启动时真正要注入的模块：勾了 ∩ 全局开着 ∩ 文件在。
+    /// 每项带 <c>Key</c>（模块 id / 手动 DLL 的全路径），「注入时机」按它存。
     /// <para>
     /// 顺序按用户在「模块」页排的来（<see cref="AppConfig.GetModuleOrder"/>）；
     /// 没排过的排在后面，保持默认顺序 —— 这样新装的模块不会插队到用户排好的前面。
     /// </para>
     /// </summary>
-    public static List<(string Name, string DllPath)> ResolveInjectionDlls(GameId gameId)
+    public static List<(string Key, string Name, string DllPath)> ResolveInjectionDlls(GameId gameId)
     {
         var result = new List<(string Key, string Name, string DllPath)>();
 
@@ -276,7 +290,16 @@ public static class ModuleRegistry
                 continue;
             }
 
-            result.Add((entry.Key, entry.Name, entry.DllPath));
+            // 这个游戏给这个模块选了版本 → 注入那一份（没选就注入默认/最新装的那份）
+            string dllPath = entry.DllPath;
+            if (entry.Definition is { } definition
+                && AppConfig.GetModuleVersion(gameId, definition.Id) is { Length: > 0 } tag
+                && ResolveDllPath(definition, tag) is { } versionDll)
+            {
+                dllPath = versionDll;
+            }
+
+            result.Add((entry.Key, entry.Name, dllPath));
         }
 
         IReadOnlyList<string> order = AppConfig.GetModuleOrder();
@@ -297,7 +320,7 @@ public static class ModuleRegistry
                 // 没排过的统一给一个大值，稳定排序保证它们保持 List() 的默认次序
                 return index < 0 ? int.MaxValue : index;
             })
-            .Select(r => (r.Name, r.DllPath))];
+            .Select(r => (r.Key, r.Name, r.DllPath))];
     }
 
     /// <summary>当前注入顺序下的全部模块 key（含没装的）——「模块」页排序用</summary>
@@ -387,14 +410,44 @@ public static class ModuleRegistry
     /// 模块要注入的 DLL：用户手动指定的 &gt; 模块目录里找（先按提示名，再按代理 dll 名）
     /// &gt; 以前从「OptiScaler 可下载」装的那份（更新后自动接上，不用重装）。
     /// </summary>
-    public static string? ResolveDllPath(ModuleDefinition module)
+    public static string? ResolveDllPath(ModuleDefinition module) => ResolveDllPath(module, null);
+
+    /// <summary>
+    /// 解析要注入的 DLL。<paramref name="versionTag"/> 不为空时（= 每个游戏选的那个版本）
+    /// **只**在那个版本目录里找；多个版本共存时默认也是「最新装的那份」优先 ——
+    /// 直接递归扫整个模块目录会按文件系统顺序随便挑，可能挑到旧版本。
+    /// </summary>
+    public static string? ResolveDllPath(ModuleDefinition module, string? versionTag)
     {
+        // 用户手动指定的 dll 永远优先
         string? chosen = AppConfig.GetModuleDllPath(module.Id);
         if (!string.IsNullOrWhiteSpace(chosen) && File.Exists(chosen))
         {
             return chosen;
         }
 
+        // 1) 指定版本：只认那个版本目录
+        if (!string.IsNullOrWhiteSpace(versionTag)
+            && VersionDirectory(module, versionTag!) is { } picked
+            && FindInjectDll(picked, module.DllHint) is { } pickedDll)
+        {
+            return pickedDll;
+        }
+
+        // 2) 多版本共存：List() 按安装时间倒序 → 取最新装的那份
+        if (!module.IsDirect)
+        {
+            foreach (OptiScalerBuild build in new OptiScalerLibrary(module.Directory).List())
+            {
+                string? dll = FindInjectDll(build.Directory, module.DllHint);
+                if (dll is not null)
+                {
+                    return dll;
+                }
+            }
+        }
+
+        // 3) 兜底：整个模块目录递归找（安装程序型模块的文件直接铺在根目录里）
         string? inModuleDir = FindInjectDll(module.Directory, module.DllHint);
         if (inModuleDir is not null)
         {
@@ -495,6 +548,104 @@ public static class ModuleRegistry
     }
 
     /// <summary>
+    /// 这个模块当前装着的是哪个 tag（下载器写的 build.json）；读不到返回 null。
+    /// 已装模块卡片的版本下拉用它标「(当前)」并默认选中。
+    /// </summary>
+    public static string? InstalledTag(ModuleDefinition module)
+    {
+        try
+        {
+            return module.IsDirect
+                ? null
+                : new OptiScalerLibrary(module.Directory).List().FirstOrDefault()?.Version;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>这个模块装着的所有版本 tag（新 → 旧）。不是 Release 型模块 / 没装返回空表。</summary>
+    public static List<string> InstalledTags(ModuleDefinition module)
+    {
+        try
+        {
+            return module.IsDirect
+                ? []
+                : [.. new OptiScalerLibrary(module.Directory).List().Select(b => b.Version)];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>某个已装版本的目录（<c>&lt;模块&gt;\&lt;来源&gt;\&lt;tag&gt;</c>）；没有返回 null</summary>
+    public static string? VersionDirectory(ModuleDefinition module, string tag)
+    {
+        try
+        {
+            return new OptiScalerLibrary(module.Directory).List()
+                .FirstOrDefault(b => string.Equals(b.Version, tag, StringComparison.OrdinalIgnoreCase))?.Directory;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 删掉一个**版本**（只删那个版本目录，同来源的其它版本与模块记录都保留）。
+    /// 用户要求：多个版本共存之后要能单独删掉不想要的那些。
+    /// </summary>
+    public static bool DeleteVersion(ModuleDefinition module, string tag)
+    {
+        if (module is null || module.IsDirect || string.IsNullOrWhiteSpace(tag))
+        {
+            return false;
+        }
+
+        string? directory = VersionDirectory(module, tag);
+        if (directory is null)
+        {
+            return false;
+        }
+
+        HysxUtil.TryDeleteDirectory(directory);
+
+        // 来源目录空了就一起收掉
+        try
+        {
+            string? sourceDir = Path.GetDirectoryName(directory);
+            if (sourceDir is not null && Directory.Exists(sourceDir)
+                && !Directory.EnumerateFileSystemEntries(sourceDir).Any())
+            {
+                Directory.Delete(sourceDir);
+            }
+        }
+        catch
+        {
+            // 收不掉无所谓
+        }
+
+        // 哪个游戏选了这个 tag 就退回「最新装的那份」，别让选择悬空
+        foreach (GameBiz biz in GameBiz.AllGameBizs)
+        {
+            if (GameId.FromGameBiz(biz) is not { } gameId)
+            {
+                continue;
+            }
+
+            if (string.Equals(AppConfig.GetModuleVersion(gameId, module.Id), tag, StringComparison.OrdinalIgnoreCase))
+            {
+                AppConfig.SetModuleVersion(gameId, module.Id, null);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 装完之后的「补齐文件」。现在只有原神 FSR 桥需要：它的 DLL 下下来就够用，
     /// 但 ini 缺失时补一份最小模板（桥的每个键都有代码默认值，ini 只是方便用户改）。
     /// 已经有一份就一律不动。
@@ -576,6 +727,8 @@ public static class ModuleRegistry
 
         await downloader.InstallAsync(source, chosenTag, asset, library, progress, cancellationToken, confirmBeforeRun);
 
+        // 旧版本**保留**（用户要求：多个版本共存，反复切换不用重新下载）。
+        // 具体注入哪一份由每个游戏选的版本决定（见 ResolveInjectionDlls）。
         EnsurePostInstallFiles(module, AppConfig.ModuleDirectory(module.Id));
 
         return $"{chosenTag} / {asset}";

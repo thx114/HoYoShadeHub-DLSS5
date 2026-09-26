@@ -32,7 +32,8 @@
                        FontWeight="Bold"
                        Text="{x:Bind lang:Lang.DX12IntroDialog_DX12EffectDetails}" />
 
-            <StackPanel HorizontalAlignment="Center"
+            <StackPanel x:Name="PreviewPanel"
+                        HorizontalAlignment="Center"
                         Orientation="Horizontal"
                         Spacing="20">
                 <Grid Width="300"
