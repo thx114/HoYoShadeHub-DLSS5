@@ -41,6 +41,19 @@
                                   ],
                         "api":  "dx12",
                         "description":  "40-绝区零dx12 x6（RTX 40 系 / mfg-ada 分支）"
+                    },
+                    {
+                        "name":  "50-崩铁 x6",
+                        "file":  "ada-eb524c09.ini",
+                        "author":  "thx114",
+                        "gpu":  "blackwell",
+                        "sources":  [
+                                        "mfg-ada"
+                                    ],
+                        "games":  [
+                                      "hkrpg"
+                                  ],
+                        "description":  "50-崩铁 x6（RTX 50 系 / mfg-ada 分支）"
                     }
                 ]
 }
