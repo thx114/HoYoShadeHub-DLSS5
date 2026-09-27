@@ -70,7 +70,7 @@ public static class AddonLocalizer
     /// 补丁算法版本。改动替换规则时必须 +1 —— 记账文件里记的版本比它小，就说明磁盘上那份是旧算法
     /// 打过的（可能已经被写坏），要先从备份还原、再按新算法重打（见 AddonLocalizationJob）。
     /// </summary>
-    public const int AlgorithmVersion = 4;
+    public const int AlgorithmVersion = 5;
 
     public const string BackupFolderName = "i18n-backup";
 
@@ -434,16 +434,19 @@ public static class AddonLocalizer
     /// 只认盖到串尾的片段：<c>窗口 + 长度 &gt;= 英文长度</c>；比英文长出来的字节必须是补零。
     ///
     /// <para>
-    /// 为什么要全写：同一个短常量在别的函数里还有副本，我们分不出哪一份是这条串运行时真正写的那条。
-    /// 实测 <c>Local Tone Intensity</c> 与 <c>Structure Intensity</c> 共用同一份 <c>"sity"</c>，
-    /// 只要漏写一份，界面上就还是「结构强度 sity」；而两条串的映射在对方那份上正好都落在补空格区，
-    /// 后写的那条把前一条盖成空格 —— 所以「全写」反而稳。
+    /// 这类片段天生有歧义：同一个短常量在别的函数里还有副本。实测 <c>"sity"</c> 有两份 —— <c>disp 15</c>
+    /// 那份是 <c>Structure Intensity</c> 的、<c>disp 16</c> 那份是 <c>Local Tone Intensity</c> 的
+    /// （证据是 v3：「全写」时两条串都去写这两份，先写的 Local Tone 把两份都占成自己的字节，
+    /// 界面上坏的正是 Structure 那行）。所以这里**一条串只写一处**：先挑**别的条目都盖不到**的那份
+    /// （唯一归属，最可信），都被共用时挑 <c>|disp - 窗口|</c> 最小的那份 —— 这个差值就是该指令里缓冲
+    /// 相对基址寄存器的偏移，越接近 0 越说明它写的就是串头那块缓冲。挑中的那份要是已经归了别人，
+    /// 就干脆不写（退而求其次会写到别人的缓冲上，实测出「结构强度 ??」）。
     /// </para>
     ///
     /// <para>
-    /// 但有一类片段**必须放过**：它同时是**别的条目**英文的开头。实测 <c>"Mode"</c> 在文件里有 6 份，
-    /// 其中 3 份是 <c>Model A/B/C</c> 的**头**，写成中文界面立刻变「????A」「?式l」
-    /// （见 <see cref="IsSharedConstant"/>）。已经归了别人的片段（<paramref name="assigned"/>）也跳过。
+    /// 另有一类片段**必须放过**：它同时是**别的条目**英文的**开头**。实测 <c>"Mode"</c> 在文件里有 6 份，
+    /// 其中 3 份是 <c>Model A/B/C</c> 的头，写成中文界面立刻变「????A」「?式l」
+    /// （见 <see cref="IsSharedConstant"/>）。
     /// </para>
     /// </summary>
     private static void PatchTailPieces(
@@ -456,9 +459,16 @@ public static class AddonLocalizer
         bool requireDisp,
         ref int written)
     {
+        (int Position, int Size, int Window) best = default;
+        int bestSkew = int.MaxValue;
+        int bestLength = -1;
+        bool bestUnique = false;
+        bool found = false;
+
         foreach ((int position, int size, int disp, bool hasDisp) in immediates)
         {
-            if (size < 2 || (requireDisp && !hasDisp) || assigned.Contains(position)
+            // 这里**不看 assigned**：挑中别人的那份就不再退而求其次（见上面说明）。
+            if (size < 2 || (requireDisp && !hasDisp)
                 || IsSharedConstant(bytes, position, size, source, allSources))
             {
                 continue;
@@ -488,75 +498,88 @@ public static class AddonLocalizer
                     continue;
                 }
 
-                // 这一段要是**别的条目**的尾巴（实测 "sity" 同时是 Structure Intensity 和
-                // Local Tone Intensity 的尾巴），两边的映射会在同一份常量上打架：Local Tone 要把「度」的
-                // 字节写进去，Structure 那边就变成半个 UTF-8 → 界面「结构强度 ??」。
-                // 所以这种共用片段一律补空格（两边的补位区都是空格，只有这种写法两边都不坏）。
-                bool sharedSuffix = IsSharedSuffix(source, window, length, allSources);
+                bool unique = !IsSharedTail(bytes, position, size, source, allSources);
+                int skew = hasDisp ? Math.Abs(disp - window) : int.MaxValue;
+                bool better = !found
+                    || (unique && !bestUnique)
+                    || (unique == bestUnique
+                        && (skew < bestSkew
+                            || (skew == bestSkew && length > bestLength)
+                            || (skew == bestSkew && length == bestLength && position < best.Position)));
 
-                for (int k = 0; k < size; k++)
+                if (better)
                 {
-                    int offset = window + k;
-                    if (offset >= source.Length)
-                    {
-                        // 串尾那个 NUL 是终止符，不能动
-                        break;
-                    }
-
-                    bytes[position + k] = !sharedSuffix && offset < target.Length ? target[offset] : (byte)0x20;
+                    best = (position, size, window);
+                    bestSkew = skew;
+                    bestLength = length;
+                    bestUnique = unique;
+                    found = true;
                 }
-
-                assigned.Add(position);
-                written++;
-                break;
             }
         }
+
+        if (!found || assigned.Contains(best.Position))
+        {
+            return;
+        }
+
+        for (int k = 0; k < best.Size; k++)
+        {
+            int offset = best.Window + k;
+            if (offset >= source.Length)
+            {
+                // 串尾那个 NUL 是终止符，不能动
+                break;
+            }
+
+            bytes[best.Position + k] = offset < target.Length ? target[offset] : (byte)0x20;
+        }
+
+        assigned.Add(best.Position);
+        written++;
     }
 
     /// <summary>
-    /// 这段英文（<c>窗口</c> 起 <c>长度</c> 个字节）是不是**别的条目**英文的结尾 —— 是的话这份常量两边共用，
-    /// 尾巴这一趟只能补空格（见 <see cref="PatchTailPieces"/>）。
+    /// 这份片段是不是**别的条目**也能当尾巴用（同样盖到它串尾、超出部分补零）—— 是的话归属存疑，
+    /// 挑的时候要排在「唯一归属」的后面（见 <see cref="PatchTailPieces"/>）。
     /// </summary>
-    private static bool IsSharedSuffix(byte[] source, int window, int length, IReadOnlyList<byte[]> allSources)
+    private static bool IsSharedTail(
+        byte[] bytes,
+        int position,
+        int size,
+        byte[] source,
+        IReadOnlyList<byte[]> allSources)
     {
         foreach (byte[] other in allSources)
         {
-            if (other.Length < length)
+            if (other.Length < 2 || SameSource(other, source))
             {
                 continue;
             }
 
-            // 跳过同一条（内容一致）
-            if (other.Length == source.Length)
+            for (int window = 0; window < other.Length; window++)
             {
-                bool identical = true;
-                for (int k = 0; k < source.Length; k++)
-                {
-                    if (other[k] != source[k])
-                    {
-                        identical = false;
-                        break;
-                    }
-                }
-
-                if (identical)
+                if (window + size < other.Length)
                 {
                     continue;
                 }
-            }
 
-            bool endsWith = true;
-            for (int k = 0; k < length; k++)
-            {
-                if (other[other.Length - length + k] != source[window + k])
+                int length = Math.Min(size, other.Length - window);
+                if (length < 1 || !Matches(bytes, position, other, window, length))
                 {
-                    endsWith = false;
-                    break;
+                    continue;
                 }
-            }
 
-            if (endsWith)
-            {
+                if (window + size > other.Length && !IsPadding(bytes, position + length, size - length))
+                {
+                    continue;
+                }
+
+                if (length < 2 && !IsPadding(bytes, position + length, size - length))
+                {
+                    continue;
+                }
+
                 return true;
             }
         }
@@ -564,7 +587,27 @@ public static class AddonLocalizer
         return false;
     }
 
+    /// <summary>两条英文是不是同一份内容（<c>string</c> 那种引用相等在这里不可靠，老老实实比字节）</summary>
+    private static bool SameSource(byte[] left, byte[] right)
+    {
+        if (left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for (int k = 0; k < left.Length; k++)
+        {
+            if (left[k] != right[k])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>
+    /// 这个片段是不是「**别的条目**英文的开头」：那样它更可能是那一条的头部写入，而不是这条的尾巴。
     /// 这个片段是不是「**别的条目**英文的开头」：那样它更可能是那一条的头部写入，而不是这条的尾巴。
     /// 实测 <c>"Mode"</c> 既是 <c>Options Mode</c> 的尾巴、又是 <c>Model A/B/C</c> 的头，写下去就把
     /// Model 那几行写成「????A」。片段取到 NUL 为止，长度 1 的不做这个判断（实测只见过 4 字节这种）。

@@ -1918,21 +1918,27 @@ AddonLocalizer.PatchCodeImmediatesForTest(
 Check(System.Text.Encoding.UTF8.GetString(guardBuf, 32, 4) == "Mode",
     "共享常量：Model A 的头不能被当成 Options Mode 的尾巴写掉");
 
-// ★ 共享后缀："sity" 同时是 Structure Intensity 和 Local Tone Intensity 的尾巴。
-//   两边的映射会在这同一份常量上打架（一边要写「度」的字节），所以这种片段一律补空格。
-byte[] sharedBuf = new byte[128];
-Array.Copy(System.Text.Encoding.UTF8.GetBytes("sity"), 0, sharedBuf, 8, 4);
-Array.Copy(System.Text.Encoding.UTF8.GetBytes("Structure Intensity"), 0, sharedBuf, 40, 19);
-Array.Copy(System.Text.Encoding.UTF8.GetBytes("Local Tone Intensity"), 0, sharedBuf, 70, 20);
+// ★ 尾巴片段的归属："sity" 有两份 —— disp 15 那份是 Structure Intensity 的、disp 16 那份是
+//   Local Tone Intensity 的（v3 那版「全写」让先写的 Local Tone 把两份都占成自己的字节，界面上坏的
+//   正是 Structure 那行）。现在先比「是不是别的条目也能当尾巴用」，都被共用才比 |disp - 窗口|，
+//   而且一条串只写自己那一份。
+byte[] ownBuf = new byte[160];
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("sity"), 0, ownBuf, 8, 4);    // disp 15 → Structure 的
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("sity"), 0, ownBuf, 24, 4);   // disp 16 → Local Tone 的
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Structure Intensity"), 0, ownBuf, 40, 19);
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Local Tone Intensity"), 0, ownBuf, 70, 20);
 AddonLocalizer.PatchCodeImmediatesForTest(
-    sharedBuf,
+    ownBuf,
     [
         new AddonI18nEntry { En = "Structure Intensity", Zh = "结构强度" },
         new AddonI18nEntry { En = "Local Tone Intensity", Zh = "局部色调强度" },
     ],
-    [(8, 4, 15, true)]);
-Check(sharedBuf[8] == 0x20 && sharedBuf[9] == 0x20 && sharedBuf[10] == 0x20 && sharedBuf[11] == 0x20,
-    $"共享后缀：两边共用的尾巴一律补空格（实际 {sharedBuf[8]:X2} {sharedBuf[9]:X2} {sharedBuf[10]:X2} {sharedBuf[11]:X2}）");
+    [(8, 4, 15, true), (24, 4, 16, true)]);
+Check(ownBuf[8] == 0x20 && ownBuf[9] == 0x20 && ownBuf[10] == 0x20 && ownBuf[11] == 0x20,
+    $"Structure 那份（disp 15）按自己的映射补空格（实际 {ownBuf[8]:X2} {ownBuf[9]:X2} {ownBuf[10]:X2} {ownBuf[11]:X2}）");
+byte[] localToneTarget = System.Text.Encoding.UTF8.GetBytes("局部色调强度");
+Check(ownBuf[24] == localToneTarget[16] && ownBuf[25] == localToneTarget[17] && ownBuf[26] == 0x20 && ownBuf[27] == 0x20,
+    $"Local Tone 那份（disp 16）写自己的「度」，没被 Structure 那份盖掉（实际 {ownBuf[24]:X2} {ownBuf[25]:X2} {ownBuf[26]:X2} {ownBuf[27]:X2}）");
 Console.WriteLine("-- 下载器的纯逻辑（不联网）--");
 string[] assets = ["OptiScaler-NR-v0.8.3.zip", "OptiScaler-NR-v0.8.3-rtx40-mfg.zip", "OptiScaler-NR-v0.8.3-SHA256SUMS.txt", "NeuRotic-Patch.zip"];
 Check(OptiScalerDownloader.IsUsableAsset(assets[0]) && !OptiScalerDownloader.IsUsableAsset(assets[2]),
