@@ -2325,6 +2325,26 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
 - 收尾（用户确认）：**手动勾选框移除** —— 自动补写后它成了假开关（「关」在下一次刷新页面就被补回），
   取值完全跟随「主插件是否启用」；要 `off` / `foreign` 直接手改 ini 或禁用插件。
   自动补写两条路径保留：启用动作（`SetAddonEnabled`）+ 每游戏插件页刷新兜底（`UpdateHookPointUi`）。
+
+### 42 NR 运行时新生态调研与 310.8.Lecram 入库
+
+- 背景（用户）：「最近出现了很多 NR 的 dll，有 50 系提升 20% 的，有 40 系提升 4% 的，找找仓库」。
+- 调研结论（2026-09-27，源头全部落在 **[RankFTW/rhi-repo](https://github.com/RankFTW/rhi-repo/releases)**，ReShade 插件页的
+  `renodx.dlss5` 等 tagPattern 本就自动覆盖它的 renodx-dlss5-* 资产，无需改）：
+  - **`nvngx_dlssnr_310.8.Lecram`**（[dlssnr-310.8.Lecram](https://github.com/RankFTW/rhi-repo/releases/tag/dlssnr-310.8.Lecram)，2026-09-24，
+    21k+ 下载）：RenoDX 组的 **Lecram（Lecram-Technology Denier）** 改版 NR，单文件 zip（158MB），
+    PE 版本 **310.8.3.0**（NV 官方最新 310.8.0）。社区实测 40 系 5~10%+、50 系更高
+    （「20% / 4%」的说法即由此而来，Chiphell tid-2905088 / A9VG tid-9073617 讨论印证）；
+    全 RTX 通用，30/20 系与 A 卡未广泛验证。
+  - **`renodx-dlss5 7.0.0-rc8 / 8.5.0-rc10`**（2026-09-23/26）：Lecram 主笔的 RenoDX DLSS5 插件新版
+    （论坛称「V7」「画质飞跃」，可调项比 wilsjo2 的 OptiScaler 还多，内置简中）；B 站有 v7 汉化版教程。
+    插件页靠 tagPattern 自动列出，不用改代码。
+  - 已入库过的旧变体：`310.8.0-RTX40`（30/40 系）、`310.8.SF / 310.8.SF-v2`（ShortFuse 分支）。
+  - 邻域（不进 Hub）：ShyVortex/dlss-unlocked（wilsjo2 PreSR-Multipass 的整机安装器）、
+    perseval-BLR/NeuralScreen（桌面实时 NR）、danielblnc/DLSS-NR-on-AMD。
+- 改动：`DllComponentCatalog` 的 dlssnr 族 `AddIfMissing` 一条 `310.8.Lecram`（清单里没有时兜底），
+  备注注明修改版与实测幅度；验货：下载 zip 解包确认单 dll + PE 版本 310.8.3.0。
+- 注意：这是**社区修改的 NVIDIA 二进制**，与已有 RTX40 / SF 变体同一政策（不重分发、直连 RHI 下载）。
 - 验证：x64 Release 构建 0 错误；扩展自测 PASS 497 / FAIL 0（本项 +16 条）。
 - 文件：`HoYoShadeHub.Extensions/ReShade/ReShadeProfile.cs`、
   `HoYoShadeHub.Extensions/Games/GamePluginService.cs`、

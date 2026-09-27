@@ -161,6 +161,12 @@ public static class DllComponentCatalog
         AddIfMissing(components, "dlssnr", "310.8.SF-v2", $"{RhiRepoDownload}/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", "ShortFuse 分支");
         AddIfMissing(components, "dlssnr", "310.8.SF", $"{RhiRepoDownload}/dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip", "ShortFuse 分支");
 
+        // Lecram（RenoDX 组）改的 NR：PE 版本号 310.8.3.0（NV 官方最新 310.8.0）。
+        // 社区实测：40 系 5~10%+，50 系更高；全 RTX 通用，30/20 系与 A 卡未广泛验证。
+        // 单文件 zip（nvngx_dlssnr.dll，158MB），2026-09-24 上架 RHI，21k+ 下载（Chiphell/A9VG 讨论帖印证）。
+        AddIfMissing(components, "dlssnr", "310.8.Lecram", $"{RhiRepoDownload}/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip",
+            "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）");
+
         return new DllCatalog(components, error);
     }
 

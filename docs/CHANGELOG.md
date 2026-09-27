@@ -3,6 +3,12 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · NR 组件目录：Lecram 修改版
+
+- **新：DLL 组件目录的 dlssnr 族新增 `310.8.Lecram`。** RenoDX 组的 Lecram 改版 NR 运行时
+  （PE 版本 310.8.3.0，NV 官方最新 310.8.0），来源 [RHI 仓库](https://github.com/RankFTW/rhi-repo/releases/tag/dlssnr-310.8.Lecram)。
+  社区实测：40 系 5~10%+，50 系更高；全 RTX 通用，30/20 系与 A 卡未广泛验证。详见 §42。
+
 ## 1.3.8.1 · 桥就绪判定 + DLSS5 弹窗误报 + 检测口径修复 + OptiScaler 配置导入
 
 > 逐条「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md) §36~§41。
