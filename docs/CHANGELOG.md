@@ -44,7 +44,7 @@
 - **补充词条**：`Quality`→`质量`、`Balanced`→`均衡`、`Performance`→`性能`（DLSS Mode 那几个下拉值，之前只有
   `Ultra Quality`/`Ultra Performance` 是中文）；`Local Tone Intensity` 的译文从 `局部色调强度` 缩成 `局部色调`
   （短于那条运行时覆盖写的起点，无论共享常量归谁都不会坏）。实测 59 条命中 / 改动 1123 字节。
-## 未发版 · NR 组件目录：Lecram 修改版
+## 1.3.8.5 · NR 组件目录：Lecram 修改版
 
 - **新：DLL 组件目录的 dlssnr 族新增 `310.8.Lecram`。** RenoDX 组的 Lecram 改版 NR 运行时
   （PE 版本 310.8.3.0，NV 官方最新 310.8.0），来源 [RHI 仓库](https://github.com/RankFTW/rhi-repo/releases/tag/dlssnr-310.8.Lecram)。
