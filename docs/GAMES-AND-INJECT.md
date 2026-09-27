@@ -1053,58 +1053,70 @@ StartExtraDllInjection → InjectExtraDllsAsync（一个进程只等一次，两
 （GitHub 更新渠道已经在 1.0.23 落地，设计见 docs/OPEN-SOURCE-PLAN.md §5。）
 
 
-### 10 插件界面汉化：把 addon 里的英文原地换成中文（开发中）
+### 10 插件界面汉化：整条覆盖式原地替换（2026-09-28 重做）
 
-ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UTF-8 字符串常量**（`.rdata`），
-没有 i18n 机制，也不能从外面塞语言包。实测 ReShade 自己的 UI 能显示中文 → 共享的 ImGui 字体图集里已经有 CJK 字形，
-所以「直接改 DLL 里的字面量」这条路走得通。
+ReShade 的 addon 界面是 ImGui 画的，文字是**写在 addon DLL 里的 UTF-8 字符串常量**（`.rdata`）或
+**代码立即数**（编译器把短标签写成 `mov rax, imm64`，运行时在栈上拼），没有 i18n 机制。实测 ReShade 自己的 UI
+能显示中文 → 共享的 ImGui 字体图集里已经有 CJK 字形，所以「直接改 DLL 里的字节」这条路走得通。
 
-- **只做原地替换**（方案 A）：新串的 UTF-8 字节数 ≤ 旧串时，覆盖末尾字节不足的用空格补齐（NUL 结尾不变）。
-  放不下的就跳过并计数（比如 `Reset`(5 字节) 装不下 `重置`(6 字节)）。长句子要换得往 PE 里加节并改指针（方案 B），暂时不做。
-- `AddonLocalizer`（Extensions 层，`I18n/AddonLocalizer.cs`，有 11 个自测）：
-  - 内置表 `Resources/i18n.builtin.json`（嵌入资源）：`renodx-dlss5` / `renodx-dlss` / `dlss5-bridge` 三张，
-    条目形如 `{ "en": "Ultra Performance", "zh": "极致性能" }`。
-  - `LoadTables(extraDirectory)` = 内置 + `<用户数据目录>\.hysx\i18n\*.json`（用户可自己加 / 覆盖）。
-  - `SelectTable(tables, 插件文件名)`：按**最长的 slug 前缀**匹配，所以 `renodx-dlss-super-anus` 会命中 `renodx-dlss` 这张。
-  - `Apply(dllPath, table, backupDirectory)`：先备份到 `<用户数据目录>\.hysx\i18n-backup\<名字>.bak`，
-    再在内存里替换所有出现（含同一个字面量出现多次），最后临时文件 + 原子替换；失败不动原文件。
-  - `Restore(dllPath, backupDirectory)`：从备份还原；返回 `Applied / SkippedTooLong / Missing / Message / BackupPath`。
-- **界面入口**：全局插件页 →「插件文件」每一行有「汉化」和「还原」两个按钮；有备份的行才显示「还原」。
-  点完在页面底部写状态提示，重启游戏生效。
+**先确认过「能不能不补丁」**（2026-09-28）：RHI 仓库最新那版 `renodx-dlss-SF-26.0922.0041`（和本机装的是同一份，
+2846720 字节）里 `UiLanguage` / `Language` / `zh-Hans` / `English` **全都没有**，也没有语言下拉的文案 ——
+这个 addon 就是没有语言机制，只能补丁。反过来 `renodx-dlss5` **自带** 15 种语言（配置键 `UiLanguage`，
+`auto` 跟随 ReShade），那种插件**不该**走补丁这条路，直接写 `[RenoDX.DLSS5] UiLanguage=zh-Hans` 就行。
+
+- **只做原地替换**（方案 A）：新串的 UTF-8 字节数 ≤ 旧串，尾部补空格（NUL 结尾不动）。放不下的跳过并计数
+  （比如 `Reset`(5 字节) 装不下 `重置`(6 字节)）。长句要换得往 PE 里加节并改指针（方案 B），暂时不做。
+- `AddonLocalizer`（Extensions 层，`I18n/AddonLocalizer.cs`）：内置表 `Resources/i18n.builtin.json`（嵌入资源）里
+  `renodx-dlss5` / `renodx-dlss` / `dlss5-bridge` 三张；`LoadTables(extraDirectory)` = 内置 +
+  `<用户数据目录>\.hysx\i18n\*.json`（用户可自己加 / 覆盖）；`SelectTable` 按**最长 slug 前缀**匹配；
+  `Apply` / `Restore` 返回 `Applied / SkippedTooLong / Missing / Message / BackupPath`。
+- **界面入口**：「设置 → 实验性功能」有**两个**按钮 ——「汉化插件（实验性）」和「还原插件汉化」
+  （插件页那行上的「汉化 / 还原」按钮 2026-09-21 已按用户要求隐藏，逻辑保留）。重启游戏生效。
+- 备份：`<用户数据目录>\.hysx\i18n-backup\<名字>.<路径哈希>.bak`，**第一次汉化之前拷、之后永不覆盖**，
+  所以「还原」出来的永远是最初那份原版；同名插件在多个 HoYoShade 目录里各有各的备份。
+  还原入口做之前，用户问过「是不是汉化了就回不去」—— 备份一直在，只是当时界面上没有还原按钮，现在补上了。
+
+#### 10.1 重做的原因：老算法会写出「半个中文 + 英文尾巴」
+
+老算法对代码立即数是「能写多少写多少」：一条英文被拆在好几个立即数里时，它把目标串的对应**切片**写进每个立即数。
+可中文和英文的 UTF-8 边界不一样，只要有一片没接上，就会得到「半截中文 + 英文残尾」，用户截图里的
+`结构强度 sity`、`缩ling`、`呈?t`、`模?`、`上采?镜`、`??曝光`、`漫反射白 (niits)` 全是这么来的
+（真文件对照：980 个改动字节里，坏的全在立即数上）。
+
+**新算法（= 当前实现）：一条串要么整条盖上，要么一个字节都不动。**
+
+1. **字面量**（`FindLiteral`）：只认「前面是 NUL（或文件头）、后面紧跟 NUL」的完整串，换成中文后右侧补空格 ——
+   补空格是为了不破坏 `.rdata` 里那种 `设置键\0标签\0下一个设置键` 的连续表结构。
+2. **代码立即数链**（`FindChain`）：解码器（`TryParseImmediate`）认出所有「写常量」的指令
+   （`B8+r imm32/imm64`、`C6/C7 /0` 的各种 ModRM+SIB+disp8/disp32），然后把**这条英文的每个字节**都盖住才写：
+   片段按「在英文里的偏移」排序，必须从 0 起首尾相接（允许重叠，实测 @"Scaling "@ + @"g Domain"@ 就重叠 2 字节）、
+   最后正好到串尾。每个片段写的是目标串**同一个偏移**上的字节；目标串已经结束就补空格。
+   盖不满 → 整条不写（宁可留英文，也不留半个中文字）。
+3. **两道保险**（都是被真文件逼出来的）：
+   - **必须带位移**：`mov rax, imm64` 后面那条 store 的 disp 就是它运行时落在缓冲上的位置；拿不到就不写。
+     实测有假链：@"Of"@ + 某个碰巧以 `ff` 开头的 8 字节常量「正好」拼出 `Off`，写进去就是乱改别人的常量。
+   - **位移必须连续**：所有片段的 `disp - 偏移` 要相等。实测 `Options Mode` 的头是 0、尾是 `-129`（另一个缓冲/局部量），
+     `Render` 是 `-265`，`Model A/B/C` 是 `+2097/2129/2161` —— 这些链以前会写成「中文头 + 英文尾」，现在整条拒绝。
+   - 片段超出串尾的那几个字节必须是**补零**，否则它其实是别的串。
+4. **全局分配**：长串优先（先给 `Scaling Domain` 挑片段，再轮到 `Scaling`），每个立即数只归一条串；
+   同一条串在界面里出现多次时，每凑齐一整套片段就写一处，再接着找下一处。
+5. **记账带算法版本**：`<用户数据目录>\.hysx\i18n\localized.json` 现在是 `{ "algorithm": 2, "files": [...] }`
+   （老版是纯字符串数组 = 算法 1）。版本比当前小 → 那份是老算法打的（可能已经写坏、英文 needle 也没了），
+   **启动游戏前先自动从备份还原、再按新算法重打**（`AddonLocalizationJob.ReapplyAsync`），不用用户手点。
+6. 点过汉化的插件启动前自动重打（HoYoShade 启动时会把自己的插件部署回原版，不重打就又是英文）。
+
+**实测数据**（把新算法跑在本机那份 `renodx-dlss` 原版备份上）：55 条里命中 53 条 → 汉化 50 条、改动 859 字节、
+放不下 2 条、文件里没有 3 条；28 条立即数链的位移差全部为 0。逐段核对过 `极致质量` / `Hook 方法` / `缩放` /
+`缩放空间` / `角色遮罩` / `最近` / `上采样滤镜` 这类跨立即数拼出来的串，拼装结果与译文逐字节一致。
+
 - 采集工具：`tools/addon-i18n/harvest-strings.ps1`（扫 `.rdata` 里的可打印 ASCII 串，输出到 `tools/addon-i18n/out/`）；
-  目前覆盖：`renodx-dlss5-super-anus` 22 条标签里挑的、`renodx-dlss` 25 条、`dlss5-bridge` 9 条。
+- 诊断 API：`AddonLocalizer.DescribeChains(bytes, "Scaling Domain", immediates)` 会把能凑齐的片段链和
+  「位移差」打出来，用来核对「片段偏移 == 运行时偏移」这个假设（配合 `EnumerateEntriesWithDisp`）。
 
-**还差的**：① 表只覆盖了一小部分界面文本（`out/*.labels.txt` 里还有没翻的）；② 放不下的长句需要方案 B（PE 加节 + 重定位指针）。
-
-**入口已按用户要求收起**（2026-09-21）：插件页那两个「汉化 / 还原」按钮和「全部汉化」都隐藏了，现在入口在
-**「设置 → 实验性功能 → 汉化插件（实验性）」**；实现上多了一个不依赖页面状态的 `AddonLocalizationJob.LocalizeAllAsync()`。
-
-### 10.1 短标签根本不在 .rdata 里 —— 代码立即数（踩坑记录）
-
-用真文件对照才发现，这个插件里**很多界面文本不是字符串**，而是编译器把常量写成 `mov` 立即数、运行时在栈上拼出来：
-
-```
-48 B8 55 70 73 63 61 6C 65 64    mov rax, "Upscaled"
-48 BE 53 74 72 65 6E 67 74 68    mov rsi, "Strength"     ← 「Skin Structure Strength」的尾巴
-48 89 70 1E                      mov [rax+0x1E], rsi
-```
-
-所以只改 `.rdata` 时会出现「中文头 + 英文尾」（头从 `.rdata` 读、尾是这个立即数）。现在的做法：
-
-1. **ModRM/SIB 解码器**（`TryParseImmediate`）认出所有「写常量」的指令：`B8+r imm32/imm64`、`C6/C7 /0` 的各种
-   ModRM+SIB+disp8/disp32（含 r12 基址、RIP 相对），并且按整条指令长度跳字节；
-2. **全局分配**：每个立即数只归一条串。轮次 = 优先级：`长串的一块` > `整条串就在这一个立即数里` > `接在串尾的短块`。
-   为什么必须这样：实测 `"Scaling "` + `"g Domain"` 两条立即数拼出的是 `Scaling Domain`，若被短的 `Scaling` 抢走一块，
-   重叠区就对不上、中文被切成半个 UTF-8 → 界面显示 `?握采` 这种怪字；
-3. **串尾判定只认 NUL**（空格说明后面还接着内容，不能当"整条串结束"）；
-4. **单字节尾巴用位移精确接**：某块的位移是 `0x80`、窗口 0、长 8 → 下一字节必须落在位移 `0x88` 的那个
-   `mov byte ptr [...], imm8` 上（早期版本靠"附近找字节值对得上的 store"，会认错、偏移错一位就把中文写坏）；
-5. 备份按**路径哈希**分开存（`<名字>.<hash>.bak`），同一个插件在多个 HoYoShade 目录里各有各的备份；
-6. 点过汉化的插件会记账，**启动游戏前自动重打一遍**（HoYoShade 启动时会把自己的插件部署回原版）。
-
-仍然换不了的：中文比英文长的短词（`On`/`Auto`/`Model`/`About`/`Debug`/`Links`/`Never`/`Reset`/`Area`/`Bicubic`/`Build`）
-和 `sRGB`/`PQ`/`scRGB`/`BT.2100` 这类标准名 —— 要全中文只能上方案 B（PE 加新节 + 改引用）。
-
+**还差的**：① 表还没覆盖全部界面文本（`out/*.labels.txt` 里还有没翻的，尤其 `Hook 方法` 下面的
+`Never/Optional/Required`、`Encoding`、`NR Signal Encoding` 这些）；② 中文比英文长的短词
+（`On`/`Auto`/`Model`/`About`/`Debug`/`Links`/`Never`/`Reset`/`Bicubic`/`Build`）和
+`sRGB`/`PQ`/`scRGB`/`BT.2100` 这类标准名，要全中文只能上方案 B（PE 加新节 + 改引用）。
 
 ### 11 XXMI 注入（实验性启动选项）
 

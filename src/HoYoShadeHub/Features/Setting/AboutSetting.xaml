@@ -157,12 +157,13 @@
             </Grid>
 
 
-            <!--  实验性功能：插件汉化（入口从插件页挪过来；默认不宣传）  -->
+            <!--  实验性功能：插件汉化 / 还原（入口从插件页挪过来；默认不宣传）  -->
             <TextBlock Margin="0,20,0,0"
                        FontSize="20"
                        Text="实验性功能" />
-            <Grid Margin="0,12,0,0" ColumnSpacing="16">
+            <Grid Margin="0,12,0,0" ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
@@ -179,7 +180,20 @@
                     </StackPanel>
                 </Button>
 
-                <StackPanel Grid.Column="1"
+                <Button Grid.Column="1"
+                        Height="40"
+                        Padding="12,0,16,0"
+                        BorderThickness="0"
+                        Click="Button_RestoreAllAddons_Click"
+                        CornerRadius="4"
+                        ToolTipService.ToolTip="从备份把插件还原成最初的原版（备份是第一次汉化之前留的，之后不会再被覆盖）。重启游戏生效。">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE777;" />
+                        <TextBlock Text="还原插件汉化" />
+                    </StackPanel>
+                </Button>
+
+                <StackPanel Grid.Column="2"
                             Orientation="Horizontal"
                             Spacing="8"
                             VerticalAlignment="Center">

@@ -34,19 +34,33 @@ public sealed record AddonLocalizeResult(int Applied, int SkippedTooLong, int Mi
 /// 插件（ReShade addon）汉化 = **白名单原地替换**：
 ///
 /// <para>
-/// addon 的界面是 ImGui 画的，文案是 <c>.rdata</c> 里的 UTF-8 窄字符串，没有语言机制。
-/// 所以做法是：拿一张翻译表（英文原文 → 中文），在 DLL 里找 NUL 结尾的那条英文，
-/// **只有中文 UTF-8 字节数 ≤ 英文**才原地覆盖（右边补空格），放不下的跳过并汇报。
+/// addon 的界面是 ImGui 画的、没有语言机制（<c>renodx-dlss</c> 连 <c>UiLanguage</c> 都没有；
+/// <c>renodx-dlss5</c> 自带多语言，那种插件**不该**走这儿 —— 直接写
+/// <c>[RenoDX.DLSS5] UiLanguage=zh-Hans</c> 就行）。所以做法是：拿一张翻译表（英文原文 → 中文），
+/// 在 DLL 里**整条覆盖式**原地替换：
+/// <list type="bullet">
+/// <item>NUL 结尾的完整字面量（<c>.rdata</c> 里的标签表）—— 换成中文，右边补空格；</item>
+/// <item>代码立即数拼出来的短标签（<c>mov rax, "Upscaled"</c>）—— 一条串的所有片段都凑齐了才写；
+/// 少一段就整条不写（半截中文 + 英文尾巴 = 界面上的「缩ling」「结构强度 sity」怪字，
+/// 见 <see cref="PatchCodeImmediatesAll"/>）。</item>
+/// </list>
+/// 只有中文 UTF-8 字节数 ≤ 英文才换得动，放不下的跳过并汇报。
 /// </para>
 ///
 /// <para>
-/// 动手前先把原 DLL 备份到 <c>&lt;备份目录&gt;\&lt;文件名&gt;.bak</c>，界面上可以一键还原。
+/// 动手前先把原 DLL 备份到 <c>&lt;备份目录&gt;\&lt;名字&gt;.&lt;路径哈希&gt;.bak</c>，界面上可以一键还原。
 /// 长句放不下的想全量汉化，需要「加 PE 新节 + 改指针」（另一条路，见 docs/GAME-AND-INJECT.md §10）。
 /// </para>
 /// </summary>
 public static class AddonLocalizer
 {
     public const string BuiltinResourceName = "HoYoShadeHub.Extensions.Resources.i18n.builtin.json";
+
+    /// <summary>
+    /// 补丁算法版本。改动替换规则时必须 +1 —— 记账文件里记的版本比它小，就说明磁盘上那份是旧算法
+    /// 打过的（可能已经被写坏），要先从备份还原、再按新算法重打（见 AddonLocalizationJob）。
+    /// </summary>
+    public const int AlgorithmVersion = 2;
 
     public const string BackupFolderName = "i18n-backup";
 
@@ -239,6 +253,13 @@ public static class AddonLocalizer
                 changed++;
             }
 
+            // 立即数那边是「整条盖上」才写、而且已经写进 bytes 了，这里必须一起算 ——
+            // 老版本漏了这一步：只走立即数的条目会算成「没替换」，于是 applied 停在 0、整个文件根本不落盘。
+            if (inCode)
+            {
+                changed += codeHit[index];
+            }
+
             if (changed == 0)
             {
                 missing++;
@@ -287,146 +308,41 @@ public static class AddonLocalizer
     }
 
     /// <summary>
-    /// 很多短标签（Render / Upscaled / Model A …）根本不是字符串 —— 编译器把它们变成
-    /// <c>mov rax, imm64</c> 这类立即数写在代码里，运行时在栈上拼出来（实测 48 B8 "Upscaled"）。
-    /// 只改 .rdata 的话这些标签永远是英文；长句还会变成「中文头 + 英文尾」
-    /// （头从 .rdata 读，尾就是这个立即数）。这里把「立即数正好等于某条英文串的一段」的也一起换。
-    /// </summary>
-    private static int PatchCodeImmediatesLegacy(
-        byte[] bytes,
-        byte[] source,
-        byte[] target,
-        IReadOnlyList<(int Position, int Size)> immediates,
-        HashSet<int>? alreadyPatched = null)
-    {
-        int patched = 0;
-        List<(int Position, int Window, int Length)> applied = [];
-
-        foreach ((int position, int size) in immediates)
-        {
-            // 单字节 store 留给下面那一步（单独认太容易误伤别的常量）；已经被别的条目改过的也不要动
-            if (size < 2 || (alreadyPatched is not null && alreadyPatched.Contains(position)))
-            {
-                continue;
-            }
-
-            bool found = false;
-
-            // 从长到短试：整段（length == size）最稳；尾巴匹配（接到串尾）至少 4 字节，
-            // 否则 "Upsample Filter" 尾巴那 3 个字节 "ter" 会把别的串的 "ter Mask" 咬掉一半
-            // （实测把「角色遮罩」写成了「角色＋9C＋空格＋Mask」）。
-            for (int length = size; length >= 1 && !found; length--)
-            {
-                if (length != size && length < 4)
-                {
-                    break;
-                }
-
-                for (int window = 0; window + length <= source.Length && !found; window++)
-                {
-                    // 比立即数短 → 只能是「接到串尾」那一段（后面跟的是补零，不能动）
-                    if (length < size && window + length != source.Length)
-                    {
-                        continue;
-                    }
-
-                    // 短的立即数（< 8 字节）必须「有根」：这条串的前一段就在前 96 字节内刚被改过。
-                    // 否则 "nt" 这种两字节常量会被别的串抢走 —— 实测 "Present temporal staging" 的目标里
-                    // 也有 "nt"，它先把 imm16 记账了（写进去的还是 "nt"，字节没变），后面的 "Pass Count" 就被跳过。
-                    if (length < 8 && !Anchored(applied, position))
-                    {
-                        continue;
-                    }
-
-                    bool match = true;
-
-                    for (int k = 0; k < length; k++)
-                    {
-                        if (bytes[position + k] != source[window + k])
-                        {
-                            match = false;
-                            break;
-                        }
-                    }
-
-                    if (!match)
-                    {
-                        continue;
-                    }
-
-                    bool changed = false;
-
-                    for (int k = 0; k < length; k++)
-                    {
-                        byte value = window + k < target.Length ? target[window + k] : (byte)0x20;
-
-                        if (bytes[position + k] != value)
-                        {
-                            changed = true;
-                        }
-
-                        bytes[position + k] = value;
-                    }
-
-                    applied.Add((position, window, length));
-
-                    if (changed)
-                    {
-                        alreadyPatched?.Add(position);
-                        patched++;
-                    }
-
-                    found = true;
-                }
-            }
-        }
-
-        // 尾巴常常是「mov byte ptr [rbp+X], 单个字符」。单字节没法单独认（任何常量都像），
-        // 只认紧接着刚改过那一段、而且字节正好是这条串下一个字节的那种 store。
-        // 注意：这里**故意不做**「单字节 store 链」（原来会去附近找 C6 45 xx 那种单字符 store）。
-        // 那个启发式只看「字节值对不对得上」，可能认到别的串的 store 上，偏移错一位就会把中文切成
-        // 半个 UTF-8 字符 —— 用户界面上就会显示出「?握采」这种怪字（实测）。宁可少数一两个单字节尾巴，
-        // 也不要写坏别的字符串。
-
-        return patched;
-    }
-
-    /// <summary>
-    /// 一次性、全局地把「代码立即数」分给各条目 —— 每个立即数只归一条串。
+    /// 把「代码立即数」里的标签换成中文 —— 一条串要么**整条都盖上**，要么一个字节都不动。
     ///
-    /// 为什么必须全局：两条串会抢同一段立即数。实测那条 8 字节立即数本来存的是 <c>"Scaling "</c>，
-    /// 表里更长的 <c>"Scaling Domain"</c> 先把 <c>缩放空间</c> 的前 8 字节写了进去，于是 <c>Scaling</c>
-    /// 这个标签的最后一个字符被切成半个 UTF-8，界面上显示成「?握采」这种怪字。
+    /// <para>
+    /// 这个插件里很多标签不是一整条字符串，而是编译器把片段写成立即数、运行时按位移拼到同一块缓冲上：
+    /// <c>mov dword [rsi+0xA3], "Scal"</c> + <c>mov dword [rsi+0xA7], "ling"</c> 拼出 <c>Scaling</c>；
+    /// <c>mov rax, "Scaling "</c> + <c>mov rax, "g Domain"</c> 拼出 <c>Scaling Domain</c>（两段还重叠）。
+    /// 所以判据不是「某个片段等于英文」，而是**这条英文的每个字节都被某个片段盖住**：
+    /// 片段按「在英文里的偏移」排序，偏移必须从 0 起首尾相接（允许重叠），最后正好盖到串尾。
+    /// </para>
     ///
-    /// 分配优先级：<b>整条串都在这一个立即数里</b> &gt; <b>完整的 8/4 字节块</b> &gt;
-    /// <b>接在串尾的短块</b>（还要求同一条串的前一段就在前 96 字节内）。
-    /// 返回每个条目改了几处。
-    /// </summary>
-    /// <summary>
-    /// 一次性、全局地把「代码立即数」分给各条目 —— 每个立即数只归一条串。
+    /// <para>
+    /// 盖不满就整条不写。老版本「能写多少写多少」，中文被切成半个 UTF-8、后面还留着英文尾巴，
+    /// 界面上就是「缩ling」「结构强度 sity」「上采?镜」「使用曝光值 ue」这种怪字（用户截图报过）。
+    /// 每个片段写的是**目标串同一个偏移上的字节**；目标串在那一段已经结束就补空格（尾随空格看不见）。
+    /// </para>
     ///
-    /// 为什么必须全局：两条串会抢同一段立即数。实测 <c>"Scaling " + "g Domain"</c> 两条立即数
-    /// 拼出的是 "Scaling Domain"，若被短的 <c>Scaling</c> 抢走一块，重叠区就对不上、
-    /// 中文被切成半个 UTF-8，界面上显示成「?握采」这种怪字。
-    ///
-    /// 轮次 = 优先级：0「长串的一块」&gt; 1「整条串就在这一个立即数里」&gt; 2「接在串尾的短块」。
-    /// 最后再用**位移**把单字节尾巴（mov byte ptr [rbp+X], 'x'）精确接上。
+    /// <para>
+    /// 长串优先：更长的条目先挑片段，免得短条目（<c>Scaling</c>）把长条目（<c>Scaling Domain</c>）
+    /// 的片段抢走；每个立即数只归一条串（<c>assigned</c>）。同一条串在界面里出现多次时，
+    /// 每凑齐一整套片段就写一处，然后接着找下一处。
+    /// </para>
     /// </summary>
     private static int[] PatchCodeImmediatesAll(
         byte[] bytes,
         IReadOnlyList<AddonI18nEntry> entries,
-        List<(int Position, int Size, int Disp, bool HasDisp)> immediates)
+        List<(int Position, int Size, int Disp, bool HasDisp)> immediates,
+        bool requireDisp = true)
     {
         int[] patched = new int[entries.Count];
-        HashSet<int> assigned = [];
-        List<(int Entry, int Position, int Window, int Length, int Disp, bool HasDisp)> applied = [];
-        byte[]?[] sources = new byte[]?[entries.Count];
-        byte[]?[] targets = new byte[]?[entries.Count];
 
+        // 只挑「中文放得下」的条目，并按英文长度从长到短分配片段
+        List<(int Index, byte[] Source, byte[] Target)> candidates = [];
         for (int index = 0; index < entries.Count; index++)
         {
             AddonI18nEntry entry = entries[index];
-
             if (string.IsNullOrWhiteSpace(entry.En) || string.IsNullOrWhiteSpace(entry.Zh))
             {
                 continue;
@@ -434,146 +350,210 @@ public static class AddonLocalizer
 
             byte[] source = Encoding.UTF8.GetBytes(entry.En);
             byte[] target = Encoding.UTF8.GetBytes(entry.Zh);
-
-            if (target.Length > source.Length)
+            if (target.Length <= source.Length)
             {
-                continue;
-            }
-
-            sources[index] = source;
-            targets[index] = target;
-        }
-
-        for (int round = 0; round <= 2; round++)
-        {
-            for (int index = 0; index < entries.Count; index++)
-            {
-                if (sources[index] is null || targets[index] is null)
-                {
-                    continue;
-                }
-
-                byte[] source = sources[index]!;
-                byte[] target = targets[index]!;
-
-                foreach ((int position, int size, int disp, bool hasDisp) in immediates)
-                {
-                    if (size < 2 || assigned.Contains(position))
-                    {
-                        continue;
-                    }
-
-                    bool done = false;
-
-                    for (int window = 0; window < source.Length && !done; window++)
-                    {
-                        int length = Math.Min(size, source.Length - window);
-
-                        if (length < 2 || !Matches(bytes, position, source, window, length))
-                        {
-                            continue;
-                        }
-
-                        bool whole = window == 0 && source.Length <= size
-                            && IsPadding(bytes, position + source.Length, size - source.Length);
-                        bool tail = length < size && window + length == source.Length;
-                        int wanted = length == size ? 0 : whole ? 1 : tail ? 2 : -1;
-
-                        // 少于 4 字节的「半截」太弱，不要
-                        if (wanted < 0 || (wanted == 2 && length < 4))
-                        {
-                            continue;
-                        }
-
-                        if (wanted != round)
-                        {
-                            continue;
-                        }
-
-                        // 短的立即数（< 8）要「有根」：同一条串的前一段就在附近刚被改过。
-                        // 但**串首那一块**（window == 0）不需要锚 —— 很多短标签就是 4 字节一块拼的。
-                        if (length < 8 && window != 0 && !AnchoredFor(applied, index, position))
-                        {
-                            continue;
-                        }
-
-                        for (int k = 0; k < length; k++)
-                        {
-                            bytes[position + k] = window + k < target.Length ? target[window + k] : (byte)0x20;
-                        }
-
-                        assigned.Add(position);
-                        applied.Add((index, position, window, length, disp, hasDisp));
-                        patched[index]++;
-                        done = true;
-                    }
-                }
+                candidates.Add((index, source, target));
             }
         }
 
-        // 尾巴常是「mov byte ptr [rbp+X], 单个字符」一个个写的。单字节没法单独认，
-        // 但**位移**能精确对上：某块的位移 0x80、窗口 0、长度 8 → 下一字节就在位移 0x88。
-        // 早期版本靠「附近找一个字节对得上的 store」，会认到别的串上、偏移错一位就把中文写坏，所以现在只认位移。
-        Dictionary<int, List<(int Position, byte Value)>> byteStores = [];
+        candidates.Sort((a, b) => b.Source.Length.CompareTo(a.Source.Length));
 
-        foreach ((int position, int size, int disp, bool hasDisp) in immediates)
+        HashSet<int> assigned = [];
+        foreach ((int index, byte[] source, byte[] target) in candidates)
         {
-            if (size != 1 || !hasDisp || assigned.Contains(position))
+            while (FindChain(bytes, source, immediates, assigned, requireDisp) is { } chain)
             {
-                continue;
-            }
-
-            if (!byteStores.TryGetValue(disp, out List<(int Position, byte Value)>? list))
-            {
-                list = [];
-                byteStores[disp] = list;
-            }
-
-            list.Add((position, bytes[position]));
-        }
-
-        foreach ((int entryIndex, int position, int window, int length, int disp, bool hasDisp) in applied)
-        {
-            if (!hasDisp || sources[entryIndex] is null || targets[entryIndex] is null)
-            {
-                continue;
-            }
-
-            byte[] source = sources[entryIndex]!;
-            byte[] target = targets[entryIndex]!;
-            int next = window + length;
-            int wantDisp = disp + length;
-
-            while (next < source.Length && byteStores.TryGetValue(wantDisp, out List<(int Position, byte Value)>? list))
-            {
-                int store = -1;
-
-                foreach ((int storePosition, byte value) in list)
+                foreach ((int position, int size, int window, _, _) in chain)
                 {
-                    if (value == source[next] && !assigned.Contains(storePosition))
+                    for (int k = 0; k < size; k++)
                     {
-                        store = storePosition;
-                        break;
+                        int offset = window + k;
+                        if (offset >= source.Length)
+                        {
+                            // 立即数尾部那些**补零**（mov rdx, "Mode\0\0\0\0"）是串的终止符，不能动
+                            break;
+                        }
+
+                        bytes[position + k] = offset < target.Length ? target[offset] : (byte)0x20;
                     }
+
+                    assigned.Add(position);
                 }
 
-                if (store < 0)
-                {
-                    break;
-                }
-
-                bytes[store] = next < target.Length ? target[next] : (byte)0x20;
-                assigned.Add(store);
-                patched[entryIndex]++;
-                next++;
-                wantDisp++;
+                // 记「写掉了几个片段」而不是「几处界面」：诊断和自测都按片段数看更直观
+                patched[index] += chain.Count;
             }
         }
 
         return patched;
     }
 
-    /// <summary>测试用入口：只跑一条串（不带位移信息，单字节尾巴那一步不会触发）</summary>
+    /// <summary>
+    /// 找一条**盖满整条英文**的片段链；任何一段缺失（盖不满）就返回 null。
+    /// 「盖满」= 片段按英文里的偏移排序后，从 0 起首尾相接（允许重叠）、最后正好到串尾。
+    ///
+    /// <para>
+    /// 光「拼得上」还不够，两道闸都是实测踩出来的：
+    /// <list type="number">
+    /// <item>**必须带位移**：<c>mov rax, imm64</c> 后面那条 store 的 disp 就是它运行时落在缓冲上的位置。
+    /// 拿不到位移就不知道它落在哪，宁可不写（比如 <c>"Of"</c> + 某个碰巧以 <c>ff</c> 开头的 8 字节常量，
+    /// 拼起来「正好」是 <c>Off</c>，写进去就是乱改别人的常量）。</item>
+    /// <item>**位移必须连续**：所有片段的 <c>disp - 偏移</c> 要相等（同一个缓冲）。
+    /// 实测 <c>Options Mode</c> 的头是 <c>disp-偏移=0</c>、尾却在 <c>-129</c>（另一个缓冲/另一个局部量），
+    /// <c>Render</c> 是 <c>-265</c>、<c>Model A/B/C</c> 是 <c>+2097/2129/2161</c> —— 这些链写下去就是
+    /// 「中文头 + 英文尾」的老毛病，直接整条不写。</item>
+    /// <item>**片段超出串尾的那几个字节必须是补零**：<c>mov rdx, "Mode\\0\\0\\0\\0"</c> 是对的，
+    /// 一个以英文开头的 8 字节常量则说明它其实是别的串。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    private static List<(int Position, int Size, int Window, int Disp, bool HasDisp)>? FindChain(
+        byte[] bytes,
+        byte[] source,
+        List<(int Position, int Size, int Disp, bool HasDisp)> immediates,
+        HashSet<int> assigned,
+        bool requireDisp = true)
+    {
+        // 这条英文在每个立即数里的落点：(立即数位置, 立即数长度, 在英文里的偏移, 位移, 有没有位移)
+        List<(int Position, int Size, int Window, int Disp, bool HasDisp)> pieces = [];
+        foreach ((int position, int size, int disp, bool hasDisp) in immediates)
+        {
+            if (size < 2 || (requireDisp && !hasDisp) || assigned.Contains(position))
+            {
+                continue;
+            }
+
+            for (int window = 0; window + 2 <= source.Length; window++)
+            {
+                int length = Math.Min(size, source.Length - window);
+                if (length < 2 || !Matches(bytes, position, source, window, length))
+                {
+                    continue;
+                }
+
+                // 片段比这条串长 → 多出来的那几个字节必须是补零，否则它其实是别的串/别的常量
+                if (window + size > source.Length && !IsPadding(bytes, position + length, size - length))
+                {
+                    continue;
+                }
+
+                pieces.Add((position, size, window, disp, hasDisp));
+            }
+        }
+
+        if (pieces.Count == 0)
+        {
+            return null;
+        }
+
+        // 覆盖率判定：偏移小的先接，必须从 0 起首尾相接（允许重叠）盖满整条
+        pieces.Sort((a, b) => a.Window != b.Window ? a.Window.CompareTo(b.Window) : b.Size.CompareTo(a.Size));
+        List<(int Position, int Size, int Window, int Disp, bool HasDisp)> chain = [];
+        int covered = 0;
+        int baseline = int.MinValue;
+
+        foreach ((int position, int size, int window, int disp, bool hasDisp) in pieces)
+        {
+            if (window > covered)
+            {
+                continue;
+            }
+
+            int end = Math.Min(window + size, source.Length);
+            if (end <= covered)
+            {
+                continue;
+            }
+
+            // 位移必须跟已有的片段落在同一个缓冲上（没带位移的片段不参与这个判断）
+            if (hasDisp)
+            {
+                if (baseline == int.MinValue)
+                {
+                    baseline = disp - window;
+                }
+                else if (disp - window != baseline)
+                {
+                    return null;
+                }
+            }
+
+            chain.Add((position, size, window, disp, hasDisp));
+            covered = end;
+            if (covered >= source.Length)
+            {
+                break;
+            }
+        }
+
+        // 盖不满就整条不写：宁可留英文，也不能留半个中文字
+        return covered >= source.Length && chain.Count > 0 ? chain : null;
+    }
+
+    /// <summary>
+    /// 立即数里字符串之后的那些字节是不是**补零**（真正的串尾）。
+    /// 只认 0x00，不认空格 —— 实测 <c>"Scaling "</c> 末尾那个空格是它后面还接着
+    /// <c>"g Domain"</c>（两条立即数拼出 "Scaling Domain"），把它当「整条串结束」就会写错。
+    /// </summary>
+    private static bool IsPadding(byte[] bytes, int offset, int count)
+    {
+        for (int k = 0; k < count; k++)
+        {
+            if (offset + k >= bytes.Length || bytes[offset + k] != 0x00)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 诊断用：把一条英文在文件里能凑齐的片段链列出来（含每个片段的位移），
+    /// 用来核对「片段的运行时偏移 == 它在英文里的偏移」这个假设 —— 位移差为 0 才说明拼出来的中文是对的。
+    /// </summary>
+    public static List<string> DescribeChains(
+        byte[] bytes,
+        string english,
+        List<(int Position, int Size, int Disp, bool HasDisp)> immediates)
+    {
+        byte[] source = Encoding.UTF8.GetBytes(english);
+        HashSet<int> assigned = [];
+        List<string> lines = [];
+
+        while (FindChain(bytes, source, immediates, assigned) is { } chain)
+        {
+            int baseline = int.MinValue;
+            List<string> parts = [];
+
+            foreach ((int position, int size, int window, int disp, bool hasDisp) in chain)
+            {
+                assigned.Add(position);
+
+                if (!hasDisp)
+                {
+                    parts.Add($"[偏移 {window} 长 {size} 无位移]");
+                    continue;
+                }
+
+                if (baseline == int.MinValue)
+                {
+                    baseline = disp - window;
+                }
+
+                parts.Add($"[偏移 {window} 长 {size} 位移差 {disp - window - baseline}]");
+            }
+
+            lines.Add(string.Join(" + ", parts));
+        }
+
+        return lines;
+    }
+
+    /// <summary>
+    /// 自测入口：只跑一条串，且**关掉位移闸**（测试里是手写的假立即数，没有 store 位移）。
+    /// 真实调用永远开着位移闸，见 <see cref="FindChain"/>。
+    /// </summary>
     public static int PatchCodeImmediates(
         byte[] bytes,
         byte[] source,
@@ -589,7 +569,7 @@ public static class AddonLocalizer
             rich.Add((position, size, 0, false));
         }
 
-        return PatchCodeImmediatesAll(bytes, [entry], rich)[0];
+        return PatchCodeImmediatesAll(bytes, [entry], rich, requireDisp: false)[0];
     }
 
     /// <summary>测试用入口：带位移的立即数（用来测单字节尾巴那一步）</summary>
@@ -616,7 +596,7 @@ public static class AddonLocalizer
         return list;
     }
 
-    /// <summary>锚定：同一条串的前一段就在前 96 字节内刚被改过</summary>
+    /// <summary>立即数里的第 window 个字节起，是不是等于英文串的同一段</summary>
     private static bool Matches(byte[] bytes, int position, byte[] source, int window, int length)
     {
         for (int k = 0; k < length; k++)
@@ -628,41 +608,6 @@ public static class AddonLocalizer
         }
 
         return true;
-    }
-
-    /// <summary>
-    /// 立即数里字符串之后的那些字节是不是**补零**（真正的串尾）。
-    /// 只认 0x00，不认空格 —— 实测 <c>"Scaling "</c> 末尾那个空格是它后面还接着
-    /// <c>"g Domain"</c>（两条立即数拼出 "Scaling Domain"），把它当"整条串结束"就会写错。
-    /// </summary>
-    private static bool IsPadding(byte[] bytes, int offset, int count)
-    {
-        for (int k = 0; k < count; k++)
-        {
-            if (offset + k >= bytes.Length || bytes[offset + k] != 0x00)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool AnchoredFor(
-        List<(int Entry, int Position, int Window, int Length, int Disp, bool HasDisp)> applied,
-        int entry,
-        int position)
-    {
-        foreach ((int index, int appliedPosition, int window, int length, int disp, bool hasDisp) in applied)
-        {
-            // 距离放宽到 512 字节：编译器不一定把一条串的所有块挨着放（实测尾巴可能在几百字节外）
-            if (index == entry && position > appliedPosition && position - appliedPosition <= 512)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>这份文件里有没有「就是这条英文串的一段」的代码立即数</summary>

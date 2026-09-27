@@ -162,14 +162,6 @@
           "zh": "启动时启用神经渲染"
         },
         {
-          "en": "Diffuse White (nits)",
-          "zh": "漫反射白 (nits)"
-        },
-        {
-          "en": "DLSS evaluation",
-          "zh": "DLSS 评估"
-        },
-        {
           "en": "RenoDX DLSS controller",
           "zh": "RenoDX DLSS 控制器"
         },
@@ -401,6 +393,50 @@
         {
           "en": "Bilinear",
           "zh": "双线"
+        },
+        {
+          "en": "Bad optional access",
+          "zh": "可选访问失败"
+        },
+        {
+          "en": "NGX parameter acquisition",
+          "zh": "NGX 参数获取"
+        },
+        {
+          "en": "ReShade proxy",
+          "zh": "ReShade 代理"
+        },
+        {
+          "en": "Unknown exception",
+          "zh": "未知异常"
+        },
+        {
+          "en": "NR Signal Encoding",
+          "zh": "NR 信号编码"
+        },
+        {
+          "en": "Never",
+          "zh": "否"
+        },
+        {
+          "en": "Optional",
+          "zh": "可选"
+        },
+        {
+          "en": "Required",
+          "zh": "必需"
+        },
+        {
+          "en": "Encoding",
+          "zh": "编码"
+        },
+        {
+          "en": "Color input",
+          "zh": "颜色"
+        },
+        {
+          "en": "Neural Rendering Debug",
+          "zh": "神经渲染调试"
         }
       ]
     },

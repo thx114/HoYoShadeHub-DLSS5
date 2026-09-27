@@ -1593,13 +1593,14 @@ string bridgeWithDll = Path.Combine(root, "bridge-module-2");
 Directory.CreateDirectory(bridgeWithDll);
 File.WriteAllText(Path.Combine(bridgeWithDll, OptiScalerRuntime.FsrBridgeDllName), "fake");
 Check(OptiScalerRuntime.HasFsrBridge(bridgeWithDll), "DLL 在就算有桥（ini 只是覆盖项，桥自带代码默认值）");
-Console.WriteLine("-- 插件汉化（白名单原地替换 + 备份 / 还原）--");
+Console.WriteLine("-- 插件汉化（整条覆盖式原地替换 + 备份 / 还原）--");
 AddonI18nDocument builtinTable = AddonLocalizer.LoadBuiltin();
 Check(builtinTable.Tables.Count >= 3, $"内置翻译表至少 3 个插件族，实际 {builtinTable.Tables.Count}");
 AddonI18nTable? dlssTable = AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss5-super-anus(1.0.8.18).addon64");
 Check(dlssTable?.Slug == "renodx-dlss5", $"renodx-dlss5-super-anus 选到 renodx-dlss5 那张表（实际 {dlssTable?.Slug}）");
 Check(AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss(9.17.12).addon64")?.Slug == "renodx-dlss", "renodx-dlss 不会错选到 dlss5 那张表");
 Check(AddonLocalizer.SelectTable(builtinTable.Tables, "some-other-thing.addon64") is null, "别的插件没有表就不汉化");
+Check(AddonLocalizer.AlgorithmVersion >= 2, $"补丁算法有版本号，旧补丁过的文件才知道要还原重打（实际 v{AddonLocalizer.AlgorithmVersion}）");
 
 // 造一个「假 DLL」：尾部放几条 NUL 结尾的英文，加上一条超长中文的对照
 string fakeDll = Path.Combine(root, "fake-addon.addon64");
@@ -1609,7 +1610,7 @@ string backupDir = Path.Combine(root, ".hysx", AddonLocalizer.BackupFolderName);
 
 AddonI18nTable testTable = AddonLocalizer.LoadBuiltin().Tables.First(t => t.Slug == "renodx-dlss");
 AddonLocalizeResult localize = AddonLocalizer.Apply(fakeDll, testTable, backupDir);
-// 注意：Reset(5 字节) 放不下「重置」(6 字节) → 会被算进「放不下跳过」，这正是打法 A 的边界
+// 注意：Reset(5 字节) 放不下「重置」(6 字节) → 会被算进「放不下跳过」，这正是原地替换的边界
 Check(localize.Applied >= 2, $"Off 和 Ultra Performance 被替换了，实际 {localize.Applied} 条：{localize.Message}");
 Check(localize.SkippedTooLong >= 1, $"中文放不下的被跳过并计数（实际 {localize.SkippedTooLong} 条）");
 Check(localize.BackupPath is not null && File.Exists(localize.BackupPath!), "动手前备份了原文件");
@@ -1648,26 +1649,27 @@ List<(int Position, int Size)> upsImmediates = [.. AddonLocalizer.EnumerateImmed
 Check(upsImmediates.Count == 1 && upsImmediates[0].Position == 2 && upsImmediates[0].Size == 8,
     $"认得出 mov rax, imm64 里的字符串立即数（实际 {upsImmediates.Count} 个）");
 Check(AddonLocalizer.HasCodeImmediate(codeBytes, upsSource, upsImmediates), "立即数确实等于 Upscaled");
-Check(AddonLocalizer.PatchCodeImmediates(codeBytes, upsSource, upsTarget, upsImmediates) == 1, "立即数被替换");
+Check(AddonLocalizer.PatchCodeImmediates(codeBytes, upsSource, upsTarget, upsImmediates) == 1, "整条都在这一个立即数里 → 换掉");
 Check(System.Text.Encoding.UTF8.GetString(codeBytes, 2, 8) == "放大" + new string(' ', 2),
     $"立即数换成「放大」并补空格（实际 '{System.Text.Encoding.UTF8.GetString(codeBytes, 2, 8)}'）");
 Check(codeBytes[10] == 0x48 && codeBytes[11] == 0x89, "立即数后面的指令字节没被动");
 
-// 长串的尾巴也是立即数：头从 .rdata 读、尾是 mov rsi, "Strength"（这就是「中文头 + 英文尾」的来源）
-byte[] tailBytes =
+// ★ 新算法的核心：一条英文的每个字节都要被立即数盖住，否则**整条不写**。
+// 老版本「能写多少写多少」，于是出现「中文头 + 英文尾」——用户截图里的「结构强度 sity」「缩ling」。
+byte[] tailOnly =
 [
     0x48, 0xBE, (byte)'S', (byte)'t', (byte)'r', (byte)'e', (byte)'n', (byte)'g', (byte)'t', (byte)'h',
     0x48, 0x89, 0x70, 0x1E,
 ];
 byte[] skinSource = System.Text.Encoding.UTF8.GetBytes("Skin Structure Strength");
 byte[] skinTarget = System.Text.Encoding.UTF8.GetBytes("皮肤结构强度");
-List<(int Position, int Size)> tailImmediates = [.. AddonLocalizer.EnumerateImmediates(tailBytes, [(0, tailBytes.Length)])];
-AddonLocalizer.PatchCodeImmediates(tailBytes, skinSource, skinTarget, tailImmediates);
-Check(System.Text.Encoding.UTF8.GetString(tailBytes, 2, 8) == "度" + new string(' ', 5),
-    $"尾巴立即数换成目标的对应段（实际 '{System.Text.Encoding.UTF8.GetString(tailBytes, 2, 8)}'）");
+List<(int Position, int Size)> tailImmediates = [.. AddonLocalizer.EnumerateImmediates(tailOnly, [(0, tailOnly.Length)])];
+Check(AddonLocalizer.PatchCodeImmediates(tailOnly, skinSource, skinTarget, tailImmediates) == 0,
+    "只有尾巴、没有头（盖不满）→ 一个字节都不写");
+Check(System.Text.Encoding.UTF8.GetString(tailOnly, 2, 8) == "Strength",
+    $"英文原样留着（实际 '{System.Text.Encoding.UTF8.GetString(tailOnly, 2, 8)}'）");
 
-// 尾巴立即数带补零（mov rdx, "Mode\0\0\0\0"）：只换到串尾那几个字节，补零不能动。
-// 注意尾巴匹配现在要求「前面 96 字节内已经有这条串改过的段」，所以这里带上头一段一起测。
+// 头 + 尾凑齐（12 字节全覆盖）→ 两段都换成目标串的对应段
 byte[] paddedBytes =
 [
     0x48, 0xB8, (byte)'O', (byte)'p', (byte)'t', (byte)'i', (byte)'o', (byte)'n', (byte)'s', (byte)' ',
@@ -1676,7 +1678,8 @@ byte[] paddedBytes =
 byte[] optSource = System.Text.Encoding.UTF8.GetBytes("Options Mode");
 byte[] optTarget = System.Text.Encoding.UTF8.GetBytes("选项模式");
 List<(int Position, int Size)> paddedImmediates = [.. AddonLocalizer.EnumerateImmediates(paddedBytes, [(0, paddedBytes.Length)])];
-AddonLocalizer.PatchCodeImmediates(paddedBytes, optSource, optTarget, paddedImmediates);
+Check(AddonLocalizer.PatchCodeImmediates(paddedBytes, optSource, optTarget, paddedImmediates) == 2,
+    "头 8 字节 + 尾 4 字节凑齐了 → 两段都换");
 bool paddedHead = true;
 bool paddedTail = true;
 for (int k = 0; k < 8; k++)
@@ -1696,14 +1699,14 @@ for (int k = 0; k < 4; k++)
 }
 
 Check(paddedHead, "头一段立即数换成目标的 [0..8)");
-Check(paddedTail, $"带补零的尾巴立即数换成目标的 [8..12)（实际 '{System.Text.Encoding.UTF8.GetString(paddedBytes, 12, 8)}'）");
+Check(paddedTail, $"尾巴立即数换成目标的 [8..12)（实际 '{System.Text.Encoding.UTF8.GetString(paddedBytes, 12, 8)}'）");
 Check(paddedBytes[16] == 0 && paddedBytes[19] == 0, "补零（NUL 结尾）没被动");
 
-// 没有「根」的尾巴匹配要拒绝：孤零零一个 "Mode" 常量不该被当成 Options Mode 的尾巴
+// 孤立一个 "Mode" 常量：它是 Options Mode 的尾巴，但盖不满 → 不许动
 byte[] lonelyBytes = [0x48, 0xBA, (byte)'M', (byte)'o', (byte)'d', (byte)'e', 0x00, 0x00, 0x00, 0x00];
 List<(int Position, int Size)> lonelyImmediates = [.. AddonLocalizer.EnumerateImmediates(lonelyBytes, [(0, lonelyBytes.Length)])];
 int lonely = AddonLocalizer.PatchCodeImmediates(lonelyBytes, optSource, optTarget, lonelyImmediates);
-Check(lonely == 0, $"没有根的尾巴匹配要拒绝（实际改了 {lonely} 处）");
+Check(lonely == 0, $"盖不满的尾巴匹配要拒绝（实际改了 {lonely} 处）");
 
 // 真实指令：《Pass Count》的尾巴是 mov word ptr [rdx+0x88], "nt"
 byte[] wordStore = [0x66, 0xC7, 0x82, 0x88, 0x00, 0x00, 0x00, (byte)'n', (byte)'t'];
@@ -1717,7 +1720,7 @@ List<(int Position, int Size)> dwordImmediates = [.. AddonLocalizer.EnumerateImm
 Check(dwordImmediates.Count == 1 && dwordImmediates[0].Position == 6 && dwordImmediates[0].Size == 4,
     $"认得出 C7 81 disp32 imm32（实际 {dwordImmediates.Count} 个）");
 
-// 端到端：把真文件里《Pass Count》那 26 个字节原样搬过来，看头一段和尾巴都换掉没有
+// 端到端：把真文件里《Pass Count》那 26 个字节原样搬过来，头 8 字节 + imm16 尾巴要一起换掉
 byte[] passReal =
 [
     0x48, 0xB8, (byte)'P', (byte)'a', (byte)'s', (byte)'s', (byte)' ', (byte)'C', (byte)'o', (byte)'u',
@@ -1731,44 +1734,58 @@ int passChanged = AddonLocalizer.PatchCodeImmediates(passReal, passCountSource, 
 Check(passChanged == 2, $"头一段 + 尾巴都要换（实际 {passChanged} 处，共 {passRealImmediates.Count} 个立即数）");
 Check(passReal[24] == passCountTarget[8] && passReal[25] == 0x20,
     $"imm16 尾巴换成目标的 [8..10)（实际 {passReal[24]:X2} {passReal[25]:X2}）");
+Check(System.Text.Encoding.UTF8.GetString(passReal, 2, 8) == "通道" + System.Text.Encoding.UTF8.GetString(passCountTarget, 6, 2),
+    "头一段换掉「Pass Cou」且没串位");
 
-// 尾巴一个字节一个字节 store（C6 45 xx）：只认紧接着已改段的那种，且要能连着往下走
+// 重叠片段（真实文件里的 "Scaling " + "g Domain" = "Scaling Domain"）：盖满就写，重叠处写的是同一批字节
+byte[] overlapBytes =
+[
+    0x48, 0xB8, (byte)'S', (byte)'c', (byte)'a', (byte)'l', (byte)'i', (byte)'n', (byte)'g', (byte)' ',
+    0x48, 0xB8, (byte)'g', (byte)' ', (byte)'D', (byte)'o', (byte)'m', (byte)'a', (byte)'i', (byte)'n',
+];
+byte[] scalingSource = System.Text.Encoding.UTF8.GetBytes("Scaling Domain");
+byte[] scalingTarget = System.Text.Encoding.UTF8.GetBytes("缩放空间");
+List<(int Position, int Size)> overlapImmediates = [.. AddonLocalizer.EnumerateImmediates(overlapBytes, [(0, overlapBytes.Length)])];
+int overlapChanged = AddonLocalizer.PatchCodeImmediates(overlapBytes, scalingSource, scalingTarget, overlapImmediates);
+Check(overlapChanged == 2, $"两段都要换（实际 {overlapChanged} 处）");
+// 运行时会拼成 [段1 8 字节][段2 从偏移 6 起 8 字节]，重叠的 2 字节写的是同一批字节
+string assembled = System.Text.Encoding.UTF8.GetString(overlapBytes, 2, 6) + System.Text.Encoding.UTF8.GetString(overlapBytes, 12, 8);
+Check(assembled.TrimEnd(' ') == "缩放空间",
+    $"两段拼起来正好是「缩放空间」（实际 '{assembled}'）");
+
+// 单字节 store 链不算覆盖（一个字节的匹配太容易认到别的串）：整条不写
 byte[] byteStoreBytes =
 [
     0x48, 0xB8, (byte)'P', (byte)'a', (byte)'s', (byte)'s', (byte)' ', (byte)'C', (byte)'o', (byte)'u',
     0xC6, 0x45, 0x10, (byte)'n',
     0xC6, 0x45, 0x12, (byte)'t',
 ];
-byte[] passSource = System.Text.Encoding.UTF8.GetBytes("Pass Count");
-byte[] passTarget = System.Text.Encoding.UTF8.GetBytes("通道数");
 List<(int Position, int Size)> byteStoreImmediates = [.. AddonLocalizer.EnumerateImmediates(byteStoreBytes, [(0, byteStoreBytes.Length)])];
-AddonLocalizer.PatchCodeImmediates(byteStoreBytes, passSource, passTarget, byteStoreImmediates);
-
-// 单字节 store 链是故意不做的：只看「字节值对不对得上」会认到别的串的 store，偏移错一位就把
-// 中文切成半个 UTF-8（界面上显示「?握采」那种怪字）。所以这里断言：那两个单字节 store 不许被动。
+AddonLocalizer.PatchCodeImmediates(byteStoreBytes, passCountSource, passCountTarget, byteStoreImmediates);
 Check(byteStoreBytes[13] == (byte)'n' && byteStoreBytes[17] == (byte)'t',
     $"单字节 store 不许乱动（实际 {byteStoreBytes[13]} {byteStoreBytes[17]}）");
 
-// 单字节尾巴：靠**位移**精确接上（mov [rsi+0x80], rax 之后的 mov byte [rsi+0x88], 'u'）
+// 《Use Exposure Value》实测就是「8 字节头 + 单字节 store」，盖不满 → 整条保持英文。
+// 老版本硬写会得到「使用曝光值 ue」这种尾巴（用户截图里的怪字之一）。
 byte[] dispBytes =
 [
     0x48, 0xB8, (byte)'U', (byte)'s', (byte)'e', (byte)' ', (byte)'E', (byte)'x', (byte)'p', (byte)'o',
     0x48, 0x89, 0x86, 0x80, 0x00, 0x00, 0x00,
-    0xC6, 0x86, 0x88, 0x00, 0x00, 0x00, (byte)'s',   // "Use Expo|sure..." 的第 9 个字符
+    0xC6, 0x86, 0x88, 0x00, 0x00, 0x00, (byte)'s',
 ];
 byte[] useSource = System.Text.Encoding.UTF8.GetBytes("Use Exposure Value");
 byte[] useTarget = System.Text.Encoding.UTF8.GetBytes("使用曝光值");
 List<(int Position, int Size, int Disp, bool HasDisp)> dispImmediates = [(2, 8, 0x80, true), (23, 1, 0x88, true)];
 int dispPatched = AddonLocalizer.PatchCodeImmediatesWithDisp(dispBytes, useSource, useTarget, dispImmediates);
-Check(dispPatched == 2, $"头一段 + 单字节尾巴都要换（实际 {dispPatched} 处）");
-Check(dispBytes[23] == useTarget[8], $"单字节尾巴按位移接上（实际 0x{dispBytes[23]:X2}，期望 0x{useTarget[8]:X2}）");
+Check(dispPatched == 0, $"单字节尾巴凑不满 → 整条不写（实际改了 {dispPatched} 处）");
+Check(dispBytes[23] == (byte)'s' && System.Text.Encoding.UTF8.GetString(dispBytes, 2, 8) == "Use Expo",
+    "英文原样留着（宁可留英文，也不写半个中文）");
 
-// 回归：'ter Mask' 只能被别的串匹配到 3 个字节（"Upsample Filter" 的 "ter"）时不许动它 ——
-// 之前就是这么把「角色遮罩」写成了「角色＋9C＋空格＋Mask」。
+// 回归：'ter Mask' 单独一个立即数（它是 "Character Mask" 的第 6..14 字节）盖不满 → 不许动
 byte[] mixBytes = [0x48, 0xB8, (byte)'t', (byte)'e', (byte)'r', (byte)' ', (byte)'M', (byte)'a', (byte)'s', (byte)'k'];
 List<(int Position, int Size)> mixImmediates = [.. AddonLocalizer.EnumerateImmediates(mixBytes, [(0, mixBytes.Length)])];
 int weak = AddonLocalizer.PatchCodeImmediates(mixBytes, System.Text.Encoding.UTF8.GetBytes("Upsample Filter"), System.Text.Encoding.UTF8.GetBytes("上采样滤镜"), mixImmediates);
-Check(weak == 0, $"少于 4 字节的尾巴匹配要被拒绝（实际改了 {weak} 处）");
+Check(weak == 0, $"只盖住中间一段的匹配要被拒绝（实际改了 {weak} 处）");
 
 // 两段重叠的立即数合起来要正好是「角色遮罩」
 byte[] twoChunk =
@@ -1781,7 +1798,7 @@ byte[] skinMaskSource = System.Text.Encoding.UTF8.GetBytes("Character Mask");
 byte[] skinMaskTarget = System.Text.Encoding.UTF8.GetBytes("角色遮罩");
 List<(int Position, int Size)> twoChunkImmediates = [.. AddonLocalizer.EnumerateImmediates(twoChunk, [(0, twoChunk.Length)])];
 Check(twoChunkImmediates.Count == 2, $"两段立即数都要认得出来（实际 {twoChunkImmediates.Count} 个）");
-AddonLocalizer.PatchCodeImmediates(twoChunk, skinMaskSource, skinMaskTarget, twoChunkImmediates);
+Check(AddonLocalizer.PatchCodeImmediates(twoChunk, skinMaskSource, skinMaskTarget, twoChunkImmediates) == 2, "两段都换");
 bool chunksOk = true;
 for (int k = 0; k < 8; k++)
 {
@@ -1797,6 +1814,47 @@ for (int k = 0; k < 8; k++)
 }
 
 Check(chunksOk, $"两段重叠的立即数合起来正好是「角色遮罩」（实际 '{System.Text.Encoding.UTF8.GetString(twoChunk, 2, 8)}' + '{System.Text.Encoding.UTF8.GetString(twoChunk, 20, 8)}'）");
+
+// 位移闸（真实调用永远开着）：片段必须带 store 位移、且「位移 - 偏移」一致才敢写
+byte[] dispChain =
+[
+    0x48, 0xB8, (byte)'P', (byte)'a', (byte)'s', (byte)'s', (byte)' ', (byte)'C', (byte)'o', (byte)'u',
+    0x48, 0x89, 0x82, 0x80, 0x00, 0x00, 0x00,
+    0x66, 0xC7, 0x82, 0x88, 0x00, 0x00, 0x00, (byte)'n', (byte)'t',
+];
+List<(int Position, int Size, int Disp, bool HasDisp)> dispChainImmediates = [(2, 8, 0x80, true), (24, 2, 0x88, true)];
+Check(AddonLocalizer.PatchCodeImmediatesWithDisp(dispChain, passCountSource, passCountTarget, dispChainImmediates) == 2,
+    "位移连续（0x80/0x88 对应偏移 0/8，差 0）→ 两段都换");
+
+byte[] dispBroken =
+[
+    0x48, 0xB8, (byte)'O', (byte)'p', (byte)'t', (byte)'i', (byte)'o', (byte)'n', (byte)'s', (byte)' ',
+    0x48, 0xBA, (byte)'M', (byte)'o', (byte)'d', (byte)'e', 0x00, 0x00, 0x00, 0x00,
+];
+// 实测真文件里《Options Mode》的尾巴位移是 -129（另一个缓冲/局部量）：写下去就是「中文头 + 英文尾」
+List<(int Position, int Size, int Disp, bool HasDisp)> dispBrokenImmediates = [(2, 8, 0x80, true), (12, 8, 0x80 + 8 - 129, true)];
+Check(AddonLocalizer.PatchCodeImmediatesWithDisp(dispBroken, optSource, optTarget, dispBrokenImmediates) == 0,
+    "位移对不上（其实不是同一个缓冲）→ 整条不写");
+Check(dispBroken[9] == (byte)' ' && dispBroken[12] == (byte)'M' && dispBroken[15] == (byte)'e', "英文原样留着，一个字节没动");
+
+// 片段超出串尾的那几个字节必须是补零：不是补零就说明它其实是别的串/别的常量（实测有 "Of" + "ff..." 的假链）
+byte[] nonNulTail =
+[
+    0x48, 0xB8, (byte)'O', (byte)'f', (byte)'f', (byte)'?', (byte)'?', (byte)'?', (byte)'?', (byte)'?',
+];
+byte[] offSource = System.Text.Encoding.UTF8.GetBytes("Off");
+byte[] offTarget = System.Text.Encoding.UTF8.GetBytes("关");
+List<(int Position, int Size)> nonNulImmediates = [.. AddonLocalizer.EnumerateImmediates(nonNulTail, [(0, nonNulTail.Length)])];
+Check(AddonLocalizer.PatchCodeImmediates(nonNulTail, offSource, offTarget, nonNulImmediates) == 0,
+    "片段后面不是补零（其实是别的常量）→ 不许写");
+
+byte[] nulTail =
+[
+    0x48, 0xB8, (byte)'O', (byte)'f', (byte)'f', 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+List<(int Position, int Size)> nulImmediates = [.. AddonLocalizer.EnumerateImmediates(nulTail, [(0, nulTail.Length)])];
+Check(AddonLocalizer.PatchCodeImmediates(nulTail, offSource, offTarget, nulImmediates) == 1, "补零结尾的整条立即数能换");
+Check(nulTail[2] == offTarget[0] && nulTail[4] == offTarget[2] && nulTail[5] == 0x00, "换成「关」且补零没被动（NUL 仍是 NUL）");
 
 Console.WriteLine("-- 下载器的纯逻辑（不联网）--");
 string[] assets = ["OptiScaler-NR-v0.8.3.zip", "OptiScaler-NR-v0.8.3-rtx40-mfg.zip", "OptiScaler-NR-v0.8.3-SHA256SUMS.txt", "NeuRotic-Patch.zip"];
@@ -2222,6 +2280,8 @@ Check(RtxHdrCoexistence.Evaluate(null, null) == RtxHdrVerdict.UnknownToggleWitho
     "两边都读不到 → 不报问题（绝不猜一个值吓人）");
 Check(RtxHdrCoexistence.Evaluate(true, false) != RtxHdrVerdict.EnabledWithSystemHdr,
     "失效判定不会被当成「生效」");
+
+
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
 return _failed == 0 ? 0 : 1;

@@ -237,6 +237,31 @@ public sealed partial class AboutSetting : PageBase
         }
     }
 
+    /// <summary>实验性功能：把插件还原成备份里的原版（备份是第一次汉化前留的，不会再被覆盖）</summary>
+    private async void Button_RestoreAllAddons_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsLocalizingAddons)
+        {
+            return;
+        }
+
+        IsLocalizingAddons = true;
+        AddonLocalizeText = "正在还原插件…";
+
+        try
+        {
+            AddonLocalizeText = await Features.Plugins.AddonLocalizationJob.RestoreAllAsync();
+        }
+        catch (Exception ex)
+        {
+            AddonLocalizeText = "还原失败：" + ex.Message;
+        }
+        finally
+        {
+            IsLocalizingAddons = false;
+        }
+    }
+
     /// <summary>刷新 GitHub 仓库里的版本列表（含「当前 / 比当前新 / 比当前旧」标注）</summary>
     [RelayCommand]
     private async Task RefreshGithubVersionsAsync()
