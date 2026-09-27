@@ -1593,6 +1593,49 @@ string bridgeWithDll = Path.Combine(root, "bridge-module-2");
 Directory.CreateDirectory(bridgeWithDll);
 File.WriteAllText(Path.Combine(bridgeWithDll, OptiScalerRuntime.FsrBridgeDllName), "fake");
 Check(OptiScalerRuntime.HasFsrBridge(bridgeWithDll), "DLL 在就算有桥（ini 只是覆盖项，桥自带代码默认值）");
+
+// 桥的 autoload 清单：跟着「启用OptiScaler」走 —— 开了写回去、关了撤走（先留一份备份）
+string autoloadRoot = Path.Combine(root, "bridge-autoload");
+string autoloadBridge = Path.Combine(autoloadRoot, "payload", "Bridge");
+string autoloadOpti = Path.Combine(autoloadRoot, "payload", "OptiScaler");
+Directory.CreateDirectory(autoloadBridge);
+Directory.CreateDirectory(autoloadOpti);
+string autoloadDll = Path.Combine(autoloadOpti, "OptiScaler.dll");
+File.WriteAllText(autoloadDll, "fake");
+string autoloadFile = Path.Combine(autoloadBridge, OptiScalerRuntime.FsrBridgeAutoloadName);
+Check(OptiScalerRuntime.ReadFsrBridgeAutoload(autoloadBridge) is null, "一开始桥目录里没有 autoload 清单");
+
+string? autoloadRelative = OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, autoloadDll);
+Check(autoloadRelative is not null && !Path.IsPathRooted(autoloadRelative),
+    $"同一个包里的 OptiScaler 写相对路径（实际 {autoloadRelative}）");
+Check(autoloadRelative == Path.Combine("..", "OptiScaler", "OptiScaler.dll"),
+    "相对路径形如 ..\\OptiScaler\\OptiScaler.dll，整包拷给别人还能用");
+byte[] autoloadBytes = File.ReadAllBytes(autoloadFile);
+Check(!(autoloadBytes.Length >= 3 && autoloadBytes[0] == 0xEF && autoloadBytes[1] == 0xBB && autoloadBytes[2] == 0xBF),
+    "清单不带 BOM（免得读的人把 BOM 当成路径的第一个字符）");
+
+string? autoloadFar = OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, Path.Combine(root, "far-away", "OptiScaler.dll"));
+Check(autoloadFar is not null && Path.IsPathRooted(autoloadFar), "爬到两层以上才退回绝对路径（那种布局本来就搬不走）");
+
+OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, autoloadDll);
+Check(OptiScalerRuntime.RemoveFsrBridgeAutoload(autoloadBridge, out string? autoloadBackup)
+      && autoloadBackup is not null && File.Exists(autoloadBackup),
+    "关掉 OptiScaler 时撤走清单，并留了一份备份");
+Check(!File.Exists(autoloadFile), "清单本体已经不在桥目录里（桥下次启动不会再把它拉回来）");
+Check(!OptiScalerRuntime.RemoveFsrBridgeAutoload(autoloadBridge, out _), "再撤一次没东西可撤，返回 false");
+
+File.WriteAllText(autoloadBackup!, "user-own-copy");
+OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, autoloadDll);
+OptiScalerRuntime.RemoveFsrBridgeAutoload(autoloadBridge, out _);
+Check(File.ReadAllText(autoloadBackup!) == "user-own-copy", "已经有一份备份就不再覆盖（用户自己放的东西留着）");
+
+Check(OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, autoloadDll) is not null
+      && OptiScalerRuntime.ReadFsrBridgeAutoload(autoloadBridge)?.Trim() == Path.Combine("..", "OptiScaler", "OptiScaler.dll"),
+    "重新打开 OptiScaler 又写回去（关了再开能回到原样）");
+Check(OptiScalerRuntime.WriteFsrBridgeAutoload(Path.Combine(root, "no-such-dir-xyz"), autoloadDll) is null,
+    "目录不存在时返回 null（不炸，启动器会走外部注入兜底）");
+Check(!OptiScalerRuntime.RemoveFsrBridgeAutoload(null, out _), "目录传空也不炸");
+
 Console.WriteLine("-- 插件汉化（整条覆盖式原地替换 + 备份 / 还原）--");
 AddonI18nDocument builtinTable = AddonLocalizer.LoadBuiltin();
 Check(builtinTable.Tables.Count >= 3, $"内置翻译表至少 3 个插件族，实际 {builtinTable.Tables.Count}");

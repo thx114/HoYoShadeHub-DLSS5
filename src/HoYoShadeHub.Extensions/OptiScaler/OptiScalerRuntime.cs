@@ -416,6 +416,128 @@ Fsr2TranslationMode=2
         }
     }
 
+    /// <summary>
+    /// 桥的「随桥加载」清单：与桥 DLL 同目录的 <c>Dx11FsrBridge.autoload.txt</c>。
+    /// 原神链路上 mhyprot 会拒绝外部注入 OptiScaler，改由桥在进程内把它 LoadLibraryW 起来，
+    /// 加载目标写在这个文件里。
+    ///
+    /// <para>
+    /// 它是**跟着本次启动的开关走**的文件：启动器每次启动游戏时，勾了 OptiScaler 就写回去、
+    /// 没勾就把上次留下的撤走（见 <see cref="RemoveFsrBridgeAutoload"/>）。里面的路径只对
+    /// 当前这台机器有效，整包拷给别人时要让它重新生成。
+    /// </para>
+    /// </summary>
+    public const string FsrBridgeAutoloadName = "Dx11FsrBridge.autoload.txt";
+
+    /// <summary>撤走 autoload 清单时留的备份后缀（只留第一份，避免盖掉用户自己放的东西）</summary>
+    public const string FsrBridgeAutoloadBackupSuffix = ".hysx-backup";
+
+    /// <summary>读桥的 autoload 清单（没有 / 读不到就返回 null）</summary>
+    public static string? ReadFsrBridgeAutoload(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string path = Path.Combine(directory, FsrBridgeAutoloadName);
+            return File.Exists(path) ? File.ReadAllText(path) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 写桥的 autoload 清单，返回真正写进去的那一行（失败返回 null）。
+    ///
+    /// <para>
+    /// 路径优先写「相对桥 DLL 目录」的形式：一键包那种 <c>payloadBridge</c> 与
+    /// <c>payloadOptiScaler</c> 并排的布局，整包拷到别人机器上还能用；只有跨盘、或者要往上爬
+    /// 两层以上才退回绝对路径（那种布局本来也没法整包搬）。文件故意不写 BOM，免得读的人把
+    /// 第一个字符吃成 <c>﻿</c>。
+    /// </para>
+    /// </summary>
+    public static string? WriteFsrBridgeAutoload(string? directory, string? dllPath)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(dllPath)
+            || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        string target = dllPath;
+        try
+        {
+            string relative = Path.GetRelativePath(directory, dllPath);
+            if (!Path.IsPathRooted(relative)
+                && !relative.StartsWith(@"..\..\", StringComparison.Ordinal))
+            {
+                target = relative;
+            }
+        }
+        catch
+        {
+            target = dllPath;
+        }
+
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, FsrBridgeAutoloadName),
+                target + Environment.NewLine,
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            return target;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 撤走桥的 autoload 清单（关掉 OptiScaler 时用）：原文件先备份成
+    /// <c>&lt;名字&gt;.hysx-backup</c>（已经有备份就不动它），再删掉本体。
+    /// 这样桥下次启动不会还把 OptiScaler 拉回来，重新勾上又会由
+    /// <see cref="WriteFsrBridgeAutoload"/> 写回去。
+    /// </summary>
+    /// <returns>true 表示这次真的移走了一份</returns>
+    public static bool RemoveFsrBridgeAutoload(string? directory, out string? backupPath)
+    {
+        backupPath = null;
+
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return false;
+        }
+
+        string path = Path.Combine(directory, FsrBridgeAutoloadName);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            string backup = path + FsrBridgeAutoloadBackupSuffix;
+            if (!File.Exists(backup))
+            {
+                File.Copy(path, backup);
+            }
+
+            backupPath = backup;
+            File.Delete(path);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // ───────────────────────── Streamline ─────────────────────────
 
     #region Upscaler replacements (needed for FSR-only games)

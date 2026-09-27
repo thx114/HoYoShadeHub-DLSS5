@@ -1,4 +1,4 @@
-﻿# 原神 DLSS5 方案（CXP-2024 配方）
+# 原神 DLSS5 方案（CXP-2024 配方）
 
 > 目标：让原神（DX11、只有 FSR2、无原生 DLSS）跑上 DLSS5 神经渲染 + 帧生成。
 
@@ -161,6 +161,19 @@ HoYoShade 用的是它自己的 `inject.exe`，**只注入 `ReShade64.dll`**。�
 3. 用 CXP 自己的启动器（绕过 HoYoShade）：会丢掉 Hub 的集成，且 CXP 的注入顺序 / 配置路径跟 Hub 不一致。
 
 **加载顺序（重要）**：ReShade, 桥, OptiScaler。ReShade 要先在，NR addon 才有宿主；桥在 OptiScaler 之前，OptiScaler 的 `GetProcAddress` 才垫得到。
+
+**本 fork 现状**：桥 + OptiScaler 都按上面的顺序注入（模块列表里的桥排在前，且桥有 `WaitForReady`，
+等它写完 `active pid=` 才注下一项）。1.3.8.1 时遇到过「原神里 OptiScaler 外部注入被拒（拒绝访问）」，
+于是加了条旁路：往桥 DLL 同目录写 `Dx11FsrBridge.autoload.txt`，让桥自己把 OptiScaler 拉进进程。
+这份清单现在由启动器**双向管理**：勾了「启用OptiScaler」写回去，没勾就撤走（原文件先备份成
+`*.hysx-backup`）；路径优先写「相对桥 DLL 目录」的形式，整包拷给别人还能用。
+
+> ⚠️ 待验证：三份桥 DLL（CXP `release/configs/` 486,400 B、上游一键包 v2.0.0 的 603,648 B、本机
+> `games\test` 的 520,192 B）里都搜不到 `autoload` 字符串（ASCII / UTF-16 都搜过），上游
+> `Dx11FsrBridge/Dx11FsrBridge.cpp`（715 KB）里也没有，上游 `OPTISCALER_COMPATIBILITY.md` 明确写
+> 「Bridge 不 import / link / locate / call `OptiScaler.dll`，加载顺序由外部 loader 负责」。也就是说
+> 这份清单**很可能没有读它的人** —— 而「清单写成功就不走外部注入」这一条会让 opt 根本没被加载。
+> 实机确认「没加载」之后，这条路应改回「等桥 ready → 外部按序注 OptiScaler」，清单只留作旁路。
 
 **下一步要查**：
 

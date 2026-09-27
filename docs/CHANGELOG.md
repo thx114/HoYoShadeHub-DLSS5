@@ -3,6 +3,21 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · 原神桥的 OptiScaler autoload 清单改成双向管理
+
+- **改：桥目录里那份 `Dx11FsrBridge.autoload.txt`（让桥在进程内把 OptiScaler 拉起来，绕开 mhyprot 拒外部注入）
+  以前「只写不删」** —— 关掉「启用OptiScaler」之后文件还在，桥下次启动照样把 opt 拉回进程，
+  表现就是「明明没启用 opt，桥却自带 opt」。现在启动器每次启动游戏都按这个开关走：勾了写回去、
+  没勾撤走（原文件先备份成 `*.hysx-backup`，已经有备份就不覆盖，免得盖掉用户自己放的东西）。
+- **改：清单里的路径优先写「相对桥 DLL 目录」**（同包布局写成 `..\OptiScaler\OptiScaler.dll`），
+  整包拷给别人还能用；跨盘 / 往上爬两层以上才退回绝对路径。清单不写 BOM。
+- **记一笔待验证**：三份桥 DLL（CXP 的 486,400 B、上游一键包 v2.0.0 的 603,648 B、本机 `games\test` 的
+  520,192 B）里都搜不到 `autoload` 字符串（ASCII / UTF-16 都搜了），上游 `Dx11FsrBridge.cpp` 里也没有，
+  上游 `OPTISCALER_COMPATIBILITY.md` 与本仓 `docs/GENSHIN-DLSS5.md` §6 写的都是「由外部 loader 按固定顺序
+  先注桥、再注 OptiScaler，桥自己不 locate / load OptiScaler」。这份清单**目前很可能没有读它的人**，
+  而「写了清单就不走外部注入」的分支会让 opt 根本没被加载 —— 详见 §6 的待验证注记。
+- 新增 12 条自测（相对 / 绝对路径选择、不写 BOM、撤走时备份且不覆盖已有备份、关了再开能写回去）。
+
 ## 1.3.8.5 · 插件汉化重做（整条覆盖式替换 + 随时可还原）
 
 - **修：汉化后界面出现「半个中文 + 英文尾巴」**（`结构强度 sity`、`缩ling`、`上采?镜`、`漫反射白 (niits)`…）。

@@ -2475,6 +2475,24 @@ public sealed partial class GameLauncherPage : PageBase
             }
         }
 
+        // ①' 桥在场、这次却没要用 OptiScaler：把上次留下的 autoload 清单撤走。
+        //     否则桥启动时仍会照它把 OptiScaler 拉回进程里 —— 表现就是「明明关掉了 opt 还自带 opt」。
+        //     撤走时先备份一份（只留第一份），重新勾上 opt 会在下面 ② 里写回去。
+        InjectDllSpec? bridgeSpecForCleanup = specs.FirstOrDefault(s =>
+            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+        bool optiScalerWanted = UseOptiScaler
+                                && CurrentGameId is { } wantedOptiGame
+                                && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(wantedOptiGame));
+        if (bridgeSpecForCleanup is not null
+            && !optiScalerWanted
+            && OptiScalerRuntime.RemoveFsrBridgeAutoload(
+                Path.GetDirectoryName(bridgeSpecForCleanup.Path), out string? autoloadBackup))
+        {
+            _logger.LogInformation(
+                "已撤走 FSR Bridge 的 OptiScaler autoload 清单（本次没启用 OptiScaler）：备份 {Backup}",
+                autoloadBackup);
+        }
+
         // ② OptiScaler：启动选项勾了「启用OptiScaler」+「全局插件 → OptiScaler」的总开关开着
         //    + 这个游戏在「OptiScaler」页选过构建，三者都满足才注入
         if (UseOptiScaler && CurrentGameId is { } optiGameId)
@@ -2529,19 +2547,18 @@ public sealed partial class GameLauncherPage : PageBase
                     string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
                 if (bridgeSpec is not null)
                 {
-                    string sidecar = Path.Combine(
-                        Path.GetDirectoryName(bridgeSpec.Path) ?? string.Empty,
-                        "Dx11FsrBridge.autoload.txt");
-                    try
+                    string? bridgeDirectory = Path.GetDirectoryName(bridgeSpec.Path);
+                    string? autoloadTarget = OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiScaler);
+                    if (autoloadTarget is not null)
                     {
-                        File.WriteAllText(sidecar, optiScaler + Environment.NewLine, System.Text.Encoding.UTF8);
                         _logger.LogInformation(
-                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：sidecar={Sidecar} -> {OptiScaler}",
-                            sidecar, optiScaler);
+                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：{File} => {Target}",
+                            OptiScalerRuntime.FsrBridgeAutoloadName, autoloadTarget);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        _logger.LogWarning(ex, "写 FSR Bridge autoload sidecar 失败，回退外部注入：{Sidecar}", sidecar);
+                        _logger.LogWarning(
+                            "写 FSR Bridge autoload 清单失败，回退外部注入：{Directory}", bridgeDirectory);
                         specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
                             DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
                     }
