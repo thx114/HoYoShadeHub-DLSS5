@@ -2627,10 +2627,16 @@ Reposition 也移除了（其余 5 个面板本来就没挂）。
 **这次揪出来的隐藏 bug（重要）**：`Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}"`
 以 VM 为准 —— `IsExpanded=false` 的瞬间绑定就把元素 Collapsed 了，之后 167ms 的收起动画
 其实播在一个不可见元素上（之前插件页也只有展开动画真正可见）。修法：动画开始先
-`panel.Visibility = Visibility.Visible`（本地值盖过 OneWay 绑定的当前值），播完
-`panel.ClearValue(FrameworkElement.VisibilityProperty)` 把 Visibility 还给绑定，绑定会立即
-重推正确的终态（展开=Visible / 收起=Collapsed）。这个知识对所有「绑定驱动 Visible/Collapsed +
-想要过渡动画」的场景通用。
+`panel.Visibility = Visibility.Visible`（本地值盖过 OneWay 绑定的当前值），收尾时**显式写成
+绑定想要的终态**。
+
+⚠️ **事故记录（2026-09-28）**：第一版收尾用了 `ClearValue(VisibilityProperty)` 想「还给绑定」，
+结果 **x:Bind OneWay 在 ClearValue 后不会重推值**，属性回落到默认值 `Visible` —— 收起动画播完
+面板又变可见，全部卡片关不上（用户当场抓到）。教训：`{x:Bind}` 编译成「源变化时 SetValue」的代码，
+ClearValue 只清本地值、**不会触发重推**；要么显式 SetValue 终态，要么靠下一次源变化推。
+另外连点展开 / 收起时，被取代的那轮动画的 `Completed` 仍会落地，会用旧终态盖掉新状态 ——
+现在每块面板记一个代次（`ConditionalWeakTable` + Generation），新一轮开始就把旧的作废。
+这个知识对所有「绑定驱动 Visible/Collapsed + 想要过渡动画」的场景通用。
 
 - 验证：x64 Release **0 错误**；扩展自测 **PASS 579 / FAIL 0**。
 - 文件：`Features/ViewHost/MotionAnimations.cs`（+PlayAreaExpand/PlayItemAreaExpand/FindDescendantByName）、

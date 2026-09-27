@@ -191,10 +191,22 @@ public static class MotionAnimations
     /// 收起 167ms + accelerate。系统关掉「动画效果」时直接落终态。
     /// </para>
     /// <param name="expanding">展开还是收起。注意绑定的 Visibility 会**立即**翻转
-    /// （OneWay 绑定以 VM 为准），所以这里用本地值把面板顶回 Visible 再播动画，播完
-    /// <c>ClearValue</c> 交还给绑定 —— 不然收起动画播在 Collapsed 元素上，根本看不见。</param>
+    /// （OneWay 绑定以 VM 为准），所以动画期间用本地值把面板顶回 Visible，收尾时显式写成
+    /// 绑定想要的终态（不能 ClearValue：x:Bind 不会重推，属性会回落成默认 Visible 导致关不上）。
+    /// 不然收起动画播在 Collapsed 元素上，根本看不见。</param>
+    /// <summary>每张面板的展开动画代次：新一轮开始就把旧的作废，别让它播完再落旧终态（连点会闪 / 关不上）。</summary>
+    private sealed class AreaExpandState
+    {
+        public int Generation;
+    }
+
+    private static readonly ConditionalWeakTable<FrameworkElement, AreaExpandState> AreaExpandStates = new();
+
     public static void PlayAreaExpand(FrameworkElement panel, bool expanding)
     {
+        AreaExpandState state = AreaExpandStates.GetOrCreateValue(panel);
+        int generation = ++state.Generation;
+
         // 收起时绑定已经把它 Collapsed 了；展开时绑定刚把它 Visible。统一用本地值顶住：
         // 收起要再变回 Visible 才能播「收拢」的过程。
         panel.Visibility = Visibility.Visible;
@@ -203,6 +215,8 @@ public static class MotionAnimations
         double width = (panel.Parent as FrameworkElement)?.ActualWidth ?? panel.ActualWidth;
         if (width <= 0)
         {
+            // 量不到就不播了，但别留下「本地 Visible 顶掉收起的终态」
+            panel.Visibility = expanding ? Visibility.Visible : Visibility.Collapsed;
             return;
         }
 
@@ -210,25 +224,20 @@ public static class MotionAnimations
         panel.Height = double.NaN;
         panel.Measure(new Windows.Foundation.Size(width, double.PositiveInfinity));
         double target = panel.DesiredSize.Height;
-        if (target <= 0)
-        {
-            // 内容本来就是空的：没什么可播的，直接落终态
-            Finish();
-            return;
-        }
-
-        double from = expanding ? 0 : Math.Max(panel.ActualHeight, target);
 
         // XAML 默认**不裁剪**子元素：收起动画中途内容会溢到下面那张卡片上。
         // 挂一个 inset clip（四个 inset 都是 0 = 按自身边界裁），边界跟着动画里的 Height 走，不用单独动画。
         Visual visual = ElementCompositionPreview.GetElementVisual(panel);
         visual.Clip ??= visual.Compositor.CreateInsetClip();
 
-        if (!AnimationsEnabled())
+        if (target <= 0 || !AnimationsEnabled())
         {
+            // 内容空的 / 系统关了动画效果：没什么可播的，直接落终态
             Finish();
             return;
         }
+
+        double from = expanding ? 0 : Math.Max(panel.ActualHeight, target);
 
         Duration duration = MotionDuration(expanding ? "MotionDurationNormal" : "MotionDurationFast", expanding ? 250 : 167);
         EasingFunctionBase ease = MotionEase(expanding ? "MotionEaseEnter" : "MotionEaseExit", expanding ? EasingMode.EaseOut : EasingMode.EaseIn);
@@ -263,10 +272,18 @@ public static class MotionAnimations
 
         void Finish()
         {
-            // 交回给布局：Height 恢复 Auto、Opacity 复位、Visibility 还给绑定（它会落到正确的终态）
+            if (state.Generation != generation)
+            {
+                // 已经被新一轮展开 / 收起取代：旧动画的收尾别再落地（会把新状态盖掉）
+                return;
+            }
+
             panel.Height = double.NaN;
             panel.Opacity = 1;
-            panel.ClearValue(FrameworkElement.VisibilityProperty);
+            // 显式写终态，不用 ClearValue —— x:Bind OneWay 在 ClearValue 后**不会**重推，
+            // 属性会回落到默认值 Visible，收起就失效（卡片关不上的 bug）。
+            // 下次 IsExpanded 变化时绑定会 SetValue 覆盖这个本地值，互不冲突。
+            panel.Visibility = expanding ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
