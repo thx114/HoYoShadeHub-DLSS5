@@ -76,6 +76,13 @@
                   ItemsSource="{x:Bind ScreenshotViewSource.View, FallbackValue={x:Null}}"
                   SelectionChanged="GridView_Images_SelectionChanged"
                   SelectionMode="None">
+        <!--  GridView 会虚拟化：容器是复用出来的，挂 Entrance 会让「滚动进入视野」的图反复淡入，
+              所以这里只留 Reposition（增删 / 换序时挪位），不放 Entrance。  -->
+        <GridView.ItemContainerTransitions>
+            <TransitionCollection>
+                <RepositionThemeTransition />
+            </TransitionCollection>
+        </GridView.ItemContainerTransitions>
             <GridView.GroupStyle>
                 <GroupStyle>
                     <GroupStyle.HeaderContainerStyle>

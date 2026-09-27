@@ -176,6 +176,19 @@
 
                         <!--  已装的扩展包：全局开关 + 点开改版本（切到别的 tag 就是装那个版本）  -->
                         <ItemsControl x:Name="InstalledPluginList" ItemsSource="{x:Bind InstalledItems}">
+                            <!--  ItemsControl 没有 ItemContainerTransitions，入场/挪位挂在面板的孩子上  -->
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel>
+                                        <StackPanel.ChildrenTransitions>
+                                            <TransitionCollection>
+                                                <EntranceThemeTransition FromVerticalOffset="20" />
+                                                <RepositionThemeTransition />
+                                            </TransitionCollection>
+                                        </StackPanel.ChildrenTransitions>
+                                    </StackPanel>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="local:PluginItemViewModel">
                                     <Border Style="{StaticResource CatalogCurrentCardStyle}">

@@ -173,7 +173,15 @@
                 </NavigationViewItem>
             </NavigationView.FooterMenuItems>
 
-            <Frame Name="MainView_Frame" Margin="0,48,0,0" />
+            <Frame Name="MainView_Frame" Margin="0,48,0,0">
+                <!--  页面切换动效：NavigationThemeTransition 就是 Fluent 的「新页面淡入 + 由下往上 20px」，
+                      用平台自带那份，省得自己拼曲线（曲线出处见 /Features/ViewHost/Motion.xaml 的注释）。  -->
+                <Frame.ContentTransitions>
+                    <TransitionCollection>
+                        <NavigationThemeTransition />
+                    </TransitionCollection>
+                </Frame.ContentTransitions>
+            </Frame>
 
         </NavigationView>
 

@@ -35,6 +35,18 @@
               和 OptiScaler 页保持一套写法；模板内容一字未动）  -->
         <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
             <ItemsControl x:Name="ListView_Modules">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel>
+                        <StackPanel.ChildrenTransitions>
+                            <TransitionCollection>
+                                <EntranceThemeTransition FromVerticalOffset="20" />
+                                <RepositionThemeTransition />
+                            </TransitionCollection>
+                        </StackPanel.ChildrenTransitions>
+                    </StackPanel>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="local:ModuleChoiceItem">
                     <Border Margin="0,0,0,6"

@@ -2448,3 +2448,55 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
   `Games/GamePluginService.cs`、`Features/Plugins/GamePluginPage.xaml(.cs)`、
   `HoYoShadeHub.Extensions.Tests/Program.cs`。
 
+
+### 44 动效：曲线去网上找，照 Fluent 官方的来
+
+用户要求：「给那些展开收回加动画，给启动器现在大部分没动画的都加上，最佳实现（去网上找曲线）」。
+
+**曲线和时长的出处（唯一来源，别自己拍）**：[Timing and easing · Microsoft Learn](https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing)
+
+| 项 | 值 | 出处里的名字 |
+| --- | --- | --- |
+| 常规时长 | 250ms | `ControlNormalAnimationDuration` |
+| 快速时长 | 167ms | `ControlFastAnimationDuration` |
+| 极快时长 | 83ms | `ControlFasterAnimationDuration` |
+| 入场曲线（decelerate） | `cubic-bezier(0, 0, 0, 1)` | Easing in Fluent motion |
+| 出场曲线（accelerate） | `cubic-bezier(1, 0, 1, 1)` | 同上 |
+
+文档另外两条规矩也照做了：**出场比入场快**（167 vs 250）；能交给平台的动效就交给平台
+（`EntranceThemeTransition` / `RepositionThemeTransition` / `NavigationThemeTransition` 都是 Fluent 的原生实现，
+比自己拼 Storyboard 更稳）。
+
+- 新增 `Features/ViewHost/Motion.xaml`（并被 `App.xaml` 合并）：三档 `Duration` + 三条曲线。
+  XAML 的 `EasingFunction` 只能挑内置形状、写不了任意贝塞尔，所以曲线用三次幂逼近：
+  把 `(x1,y1)=(0,0)`、`(x2,y2)=(0,1)` 代进三次贝塞尔推出入场那条 `y(x) = 3x^(2/3) - 2x`，
+  而 `PowerEase Power=3 EaseOut` 是 `y = 1-(1-x)^3`，两者在 x∈[0,1] 上最大差 ≈ 0.03（x=0.25 附近）。
+  真要逐帧完全一致就得用 Composition 的 `CubicBezierEasingFunction`，但它动不了布局高度。
+- 页面切换：`MainView.xaml` 的 `MainView_Frame` 加 `<Frame.ContentTransitions><NavigationThemeTransition /></Frame.ContentTransitions>`。
+  全应用所有页面都在这个 Frame 里导航，所以一处生效。
+- 插件卡片展开 / 收起（`GamePluginPage.xaml.cs` 的 `AnimateDedicatedConfig`）：
+  - 动的是配置区 `Height` + `Opacity`。**`Height` 属于依赖动画，必须显式 `EnableDependentAnimation = true`**，
+    否则 Storyboard 会被静默跳过（不报错、也不动）。
+  - 目标高度：先 `Height = NaN` + `Measure(width, ∞)` 取 `DesiredSize.Height`；
+    宽度要问**父级**——收起状态的元素是 `Collapsed`，自己 `ActualWidth` 是 0。
+  - 面板这次是 `x:Name="AddonDedicatedConfig"`，从 `AddonList.ContainerFromItem(item)` 拿到容器后，
+    在可视化树里按名字找（DataTemplate 里的 `x:Name` 在树上是找得到的）。
+  - **XAML 默认不裁剪子元素**：收起动画中途内容会溢到下面那张卡片上。给面板挂
+    `ElementCompositionPreview.GetElementVisual(panel).Clip = compositor.CreateInsetClip()`（四个 inset 都是 0），
+    裁剪边界跟着动画里的 `Height` 走，所以裁剪本身不用再做动画。
+  - 报「动画效果」开关：`new Windows.UI.ViewManagement.UISettings().AnimationsEnabled` 为 false 时直接落终态。
+- 列表项：插件卡片列表给 `ListView.ItemContainerTransitions` 加 `EntranceThemeTransition`（20px 位移 + 淡入）。
+  **这里故意不放 `RepositionThemeTransition`** —— 卡片展开是我自己逐帧改高度，兄弟卡位置每帧都在动，
+  再叠一层「追位置」的过渡会拖出橡皮筋效果。其它几处（`GlobalPluginPage` / `ModulesPage` / `OptiScalerPage` 的
+  `ItemsControl`，`GameSelector` 的 `ItemsWrapGrid` 和「已装游戏」`StackPanel`）是**瞬时**的布局变化，
+  所以两个都放：入场 + 挪位。`ItemsControl` 没有 `ItemContainerTransitions`，得自己写
+  `ItemsPanelTemplate` 里的 `StackPanel.ChildrenTransitions`。
+- 截图页 `GridView` 只放 `RepositionThemeTransition`：它虚拟化、容器复用，挂入场会让滚动进视野的图反复淡入。
+- 没动的：`GameSelector` 里已有的 `Expander`（平台控件，展开本身不带我们自己的动画——它的内容显隐走
+  `Visibility`，要动就得整体重写模板，暂时不做）；按钮 / 导航项的悬停按下本来就是 WinUI 主题动效。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**；已 publish 到 `D:\APPS\HoYoShadeHub\app-1.3.8.5`。
+- 文件：`Features/ViewHost/Motion.xaml`（新）、`App.xaml`、`Features/ViewHost/MainView.xaml`、
+  `Features/Plugins/GamePluginPage.xaml(.cs)`、`Features/Plugins/GlobalPluginPage.xaml`、
+  `Features/Modules/ModulesPage.xaml`、`Features/OptiScaler/OptiScalerPage.xaml`、
+  `Features/Screenshot/ScreenshotPage.xaml`、`Features/GameSelector/GameSelector.xaml`。
+

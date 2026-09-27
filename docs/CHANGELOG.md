@@ -3,6 +3,21 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · 补一批动效（曲线照抄 Fluent 官方文档）
+
+- **新：插件卡片的展开 / 收起是真动画了** —— 配置区高度 250ms 展开（入场曲线）、167ms 收起（出场曲线），
+  同时淡入淡出；中途用 composition 的 inset clip 裁剪，内容不会溢到下面那张卡片上；
+  系统里关掉「动画效果」（无障碍 / 省电）时直接落终态。
+- **新：页面切换有过渡了** —— 主容器那个 Frame 挂上平台的 `NavigationThemeTransition`
+  （新页面淡入 + 由下往上 20px），左边导航点哪个页面都有。
+- **新：列表项入场 / 挪位动效** —— 插件卡片列表、全局插件页、模块页、OptiScaler 页、顶部游戏栏、已装游戏列表
+  都补上了（淡入 + 20px 位移、增删换序时挪位）。截图页的 GridView 只留挪位不放入场：
+  那个列表会虚拟化、容器复用，挂入场会让滚动进视野的图反复淡入。
+- **曲线 / 时长全部来自微软官方文档**（[Timing and easing](https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing)）：
+  三档标准时长 250 / 167 / 83ms，Fluent 两条基线曲线 入场 `cubic-bezier(0, 0, 0, 1)`、
+  出场 `cubic-bezier(1, 0, 1, 1)`；统一放在 `Features/ViewHost/Motion.xaml`，附了逼近误差的推导。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**；已部署到本机 `app-1.3.8.5`。
+
 ## 未发版 · 插件卡片的「专属配置」展开区（feed 延迟 / HookPoint / LoadFromDllMain）
 
 - **新：插件卡片右下角多了展开 / 缩回按钮**（和左边「版本」下拉同一行、贴最右）。收起时就是原来的样子

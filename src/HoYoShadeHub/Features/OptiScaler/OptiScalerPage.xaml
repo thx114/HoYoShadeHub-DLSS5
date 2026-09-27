@@ -64,6 +64,18 @@
         <!--  ItemsControl 没有内置滚动，所以用 ScrollViewer 包住（工具栏/标题固定，只有列表滚）  -->
         <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
             <ItemsControl x:Name="OptiScalerSourceList">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel>
+                        <StackPanel.ChildrenTransitions>
+                            <TransitionCollection>
+                                <EntranceThemeTransition FromVerticalOffset="20" />
+                                <RepositionThemeTransition />
+                            </TransitionCollection>
+                        </StackPanel.ChildrenTransitions>
+                    </StackPanel>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="local:OptiScalerBuildItemViewModel">
                     <Border Margin="0,0,0,6"

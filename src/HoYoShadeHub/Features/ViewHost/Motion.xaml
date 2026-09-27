@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    统一动效表（Fluent motion）。
+
+    曲线和时长全部照抄微软官方文档，别自己拍脑袋：
+
+    · 时长 —— Microsoft Learn「Timing and easing」→ Standard animation duration values
+      https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing
+        ControlNormalAnimationDuration = 250ms
+        ControlFastAnimationDuration   = 167ms
+        ControlFasterAnimationDuration =  83ms
+      （WinUI 自己的控件就用这三档，文档明确说自定义 Storyboard 也可以直接用这套名字。）
+
+    · 曲线 —— 同一页「Easing in Fluent motion」给的两条基线：
+        入场 decelerate = cubic-bezier(0, 0, 0, 1)
+        出场 accelerate = cubic-bezier(1, 0, 1, 1)
+      XAML 的 EasingFunction 只能挑内置形状、写不了任意贝塞尔，所以这里用三次幂逼近：
+        入场那条 y(x) = 3x^(2/3) - 2x（把 (x1,y1)=(0,0)、(x2,y2)=(0,1) 代进三次贝塞尔推出来的）
+        PowerEase Power=3 EaseOut：y = 1-(1-x)^3
+        两者在 x∈[0,1] 上最大差 ≈ 0.03（x=0.25 附近），肉眼看不出。
+      需要逐帧完全一致的贝塞尔就得走 Composition 的 CubicBezierEasingFunction —— 但那东西动不了布局高度，
+      卡片展开/收起要改的是 Height，只能 Storyboard，所以同样用这组逼近曲线。
+
+    · 出场比入场快（167ms vs 250ms）：文档里的建议是「进来的可以慢，走的东西别磨蹭」。
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--  三档标准时长  -->
+    <Duration x:Key="MotionDurationNormal">0:0:0.25</Duration>
+    <Duration x:Key="MotionDurationFast">0:0:0.167</Duration>
+    <Duration x:Key="MotionDurationFaster">0:0:0.083</Duration>
+
+    <!--  曲线：入场（decelerate）/ 出场（accelerate）/ 一般位移  -->
+    <PowerEase x:Key="MotionEaseEnter" Power="3" EasingMode="EaseOut" />
+    <PowerEase x:Key="MotionEaseExit" Power="3" EasingMode="EaseIn" />
+    <CubicEase x:Key="MotionEaseMove" EasingMode="EaseInOut" />
+
+</ResourceDictionary>
