@@ -2381,6 +2381,39 @@ Check(dllStore.Archive("dlssnr", "  ", [nrdllPath]) == 0, "版本为空不归档
 Check(dllStore.InstalledVersions("dlssnr").Count == 1, "归档版本列表：1 个");
 Check(dllStore.DeleteVersion("dlssnr", "310.8.0") && !dllStore.Has("dlssnr", "310.8.0"), "删掉 dll 归档版本");
 
+// 「盘上这份是哪个变体」：Lecram 的 PE 是 310.8.3.0，数字段对不上清单里的 310.8.0，
+// 只靠版本号会认成 310.8.0（用户反馈：下的明明是 Lecram，识别成 50 系）
+{
+    DllFamily nrFamily = DllComponentCatalog.FamilyOf("dlssnr")!;
+    var lecramOnDisk = new InstalledDll("nvngx_dlssnr.dll", 123456, "310.8.3.0");
+
+    Check(DllVariantResolver.Identify(null, nrFamily, lecramOnDisk, "310.8.Lecram", 123456).Variant == "310.8.Lecram",
+        "记账 + 字节数一致 → 认得出是 Lecram（不会因为 PE 是 310.8.3.0 回退成 310.8.0）");
+    Check(!DllVariantResolver.Identify(null, nrFamily, lecramOnDisk, "310.8.Lecram", 999).Known,
+        "字节数变了、数字段又对不上 → 老实说认不出来");
+    var officialOnDisk = new InstalledDll("nvngx_dlssnr.dll", 55555, "310.8.0.0");
+    Check(DllVariantResolver.Identify(null, nrFamily, officialOnDisk, "310.8.0", 999).Variant == "310.8.0",
+        "字节数变了但数字段对得上 → 继续信记账");
+    Check(!DllVariantResolver.Identify(null, nrFamily, lecramOnDisk, "310.8.0", 999).Known,
+        "记账说 310.8.0、盘上 PE 却是 310.8.3.0（对不上）→ 不信记账，老实说认不出来");
+    Check(!DllVariantResolver.Identify(null, nrFamily, lecramOnDisk, null, 0).Known,
+        "没记账 → 认不出来（不再瞎猜成 310.8.0）");
+    Check(DllVariantResolver.Identify(null, nrFamily, null, "310.8.0", 1).Variant is null,
+        "没装 → 没有变体");
+
+    // 没记账、但归档里有同名同大小的 → 反查得出（现有 Lecram 用户走这条就能修好）
+    string probeCache = Path.Combine(root, "dllcache-probe");
+    var probeStore = new DllVersionStore(probeCache);
+    string probeStage = Path.Combine(root, "dllstage-probe");
+    Directory.CreateDirectory(probeStage);
+    string lecramPath = Path.Combine(probeStage, "nvngx_dlssnr.dll");
+    File.WriteAllText(lecramPath, new string('x', 777));
+    Check(probeStore.Archive("dlssnr", "310.8.Lecram", [lecramPath]) == 1, "探针：归档 Lecram");
+    var onDisk = new InstalledDll("nvngx_dlssnr.dll", 777, "310.8.3.0");
+    Check(DllVariantResolver.Identify(probeStore, nrFamily, onDisk, null, 0).Variant == "310.8.Lecram",
+        "没记账、但归档里有同名同大小 → 认得出是 Lecram");
+}
+
 Console.WriteLine("== 30. 插件自己登记加载方式的检测（第 7 条） ==");
 Check(AddonSelfRegistrationDetector.Detect(System.Text.Encoding.ASCII.GetBytes("xx LoadFromDllMain yy")),
     "ASCII 的 LoadFromDllMain 认成自登记");

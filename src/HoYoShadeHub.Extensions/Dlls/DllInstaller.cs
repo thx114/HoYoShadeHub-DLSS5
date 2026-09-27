@@ -90,6 +90,10 @@ public static class DllInstaller
         return hit.Version;
     }
 
+    /// <summary>盘上这一类 dll 那一份的字节数（找不到就是 0）——装完记账用</summary>
+    public static long GetInstalledSize(IEnumerable<InstalledDll> installed, DllFamily family)
+        => installed.FirstOrDefault(d => Matches(d.FileName, family))?.Size ?? 0;
+
     public static bool Matches(string fileName, DllFamily family) => family.Id switch
     {
         "streamline" => fileName.StartsWith("sl.", StringComparison.OrdinalIgnoreCase)
@@ -138,6 +142,18 @@ public static class DllInstaller
                     if (File.Exists(target))
                     {
                         overwritten.Add(name);
+                    }
+
+                    // 先把旧文件删掉再解压：ExtractToFile 是**原地覆盖**（同一个 inode），
+                    // 而归档里那份是硬链接 —— 原地写会把归档里的旧版本一起写坏，
+                    // 大小还跟着变成一样，之后就没法靠「同名同大小」反查是哪一版了。
+                    try
+                    {
+                        File.Delete(target);
+                    }
+                    catch
+                    {
+                        // 删不掉（比如游戏正开着）就退回原来的覆盖路径
                     }
 
                     entry.ExtractToFile(target, overwrite: true);

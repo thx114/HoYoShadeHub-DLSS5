@@ -123,7 +123,7 @@
                 </Grid.RowDefinitions>
 
                 <ScrollViewer Grid.Row="0" Grid.RowSpan="2">
-                    <ItemsControl ItemsSource="{x:Bind Families}">
+                    <ItemsControl x:Name="ItemsControl_Families" ItemsSource="{x:Bind Families}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="local:DllFamilyViewModel">
                                 <Border Margin="0,0,0,8"

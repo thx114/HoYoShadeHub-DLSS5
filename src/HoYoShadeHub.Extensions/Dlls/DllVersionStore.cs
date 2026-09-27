@@ -123,6 +123,28 @@ public sealed class DllVersionStore
     public List<string> InstalledVersions(string familyId)
         => [.. ListVersions(familyId).Select(v => v.Version)];
 
+    /// <summary>归档里某个文件的字节数（没有就是 -1）——用来反查「盘上这份对应哪一版」</summary>
+    public long FileSize(string familyId, string version, string fileName)
+    {
+        string dir = DirectoryFor(familyId, version);
+        if (dir.Length == 0 || string.IsNullOrWhiteSpace(fileName))
+        {
+            return -1;
+        }
+
+        try
+        {
+            var info = new FileInfo(Path.Combine(dir, fileName));
+            return info.Exists ? info.Length : -1;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+
+
     /// <summary>只删这一版（其余版本与共享目录都不动）</summary>
     public bool DeleteVersion(string familyId, string version)
     {

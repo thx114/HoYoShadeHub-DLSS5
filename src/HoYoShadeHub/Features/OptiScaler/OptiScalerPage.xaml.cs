@@ -3,6 +3,7 @@ using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
+using HoYoShadeHub.Features.ViewHost;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -208,6 +209,9 @@ public sealed partial class OptiScalerPage : PageBase
     public OptiScalerPage()
     {
         InitializeComponent();
+
+        // 源列表错峰入场（和顶部游戏栏同一套 500ms + 45ms）
+        Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(OptiScalerSourceList));
         OptiScalerSourceList.ItemsSource = _items;
     }
 

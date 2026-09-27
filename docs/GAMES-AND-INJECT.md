@@ -2543,3 +2543,55 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
 - 文件：`Features/ViewHost/MotionAnimations.cs`（新）、`Features/GameSelector/GameSelector.xaml(.cs)`、
   `Features/Plugins/GamePluginPage.xaml(.cs)`。
 
+
+### 46 dlssnr 变体识别修复：下的 Lecram 显示成 50 系
+
+用户反馈：「下的明明是那个 L 什么的（Lecram），识别是 50 系的」。
+
+**根因链**：
+- RHI 清单里 `dlssnr` 有多个同代变体：`310.8.0`（官方，50 系常用）、`310.8.0-RTX40`、
+  `310.8.SF` / `310.8.SF-v2`（ShortFuse）、`310.8.Lecram`（RenoDX 组修改版，40 系实测 +5~10%）。
+- **PE 版本号里没有变体信息**，而且 Lecram 那份的 PE 是 `310.8.3.0` —— 和清单版本号
+  `310.8.Lecram` 连数字段都对不上（NV 官方 310.8.0 的 PE 是 `310.8.0.0`）。
+- 旧判据是「装的时候记一笔变体（AppConfig `dll_variant_<family>`）+ `DllVersion.SameNumbers`
+  对数字段」。Lecram 上数字段比对必然失败 → 记账被丢弃 → 界面回退到
+  「清单里没备注的那条」（`FirstOrDefault(Note 为空)`）= `310.8.0`，它的备注写着「50 系一般用」——
+  用户看到的就是「识别成 50 系」。
+- 附带的第二个错：「已安装版本」列表的「使用中」角标也用 SameNumbers → 同数字段的归档会被一起标。
+
+**修复（`HoYoShadeHub.Extensions/Dlls/DllVariantResolver.cs`，新）**，判据优先级：
+1. **记账 + 字节数一致**：装的时候连字节数一起记（`dll_variant_size_<family>`），盘上这份大小没变 → 就是它。
+   PE 版本号会骗人，字节数不会（除非撞上极小概率的同大小不同内容）。
+2. **归档反查**：`<CacheRoot>\dlls\dlssnr\<version>\` 里有装的时候留的副本，同名同大小 → 是那一份。
+   现有用户不用重装 —— 这条就能把他们的 Lecram 认回来。
+3. **记账 + 数字段对得上**：字节数变了（用户自己换过文件）但数字段还吻合 → 继续信记账。
+4. 都不满足 → **老实说「变体认不出来」**（界面提示「从这儿装一次就认得出了」），不再瞎猜成 310.8.0。
+
+**顺手修的硬链接写穿 bug**：`DllInstaller` 原来用 `ZipArchiveEntry.ExtractToFile(target, overwrite: true)`，
+这是 **FileMode.Create 原地覆盖**（同一个 inode）；而归档里那份是硬链接 —— 原地写会把归档里的
+「旧版本副本」一起写坏，大小还变得一样，之后就没法靠「同名同大小」反查了。现在解压前先 `File.Delete(target)`
+（删不掉就退回原覆盖路径），归档才是真副本。
+
+「使用中」角标改为只认准了的那一版（`IsSame`，不再用 SameNumbers）。
+
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 579 / FAIL 0**（新增 7 条 resolver 用例）。
+- 文件：`Extensions/Dlls/DllVariantResolver.cs`（新）、`Extensions/Dlls/DllVersionStore.cs`（+FileSize）、
+  `Extensions/Dlls/DllInstaller.cs`（删旧再解压 + GetInstalledSize）、`HoYoShadeHub/AppConfig.cs`（+size 记账）、
+  `Features/Plugins/DllConfigPage.xaml(.cs)`。
+
+### 47 动效第三轮：所有页面的列表统一错峰入场
+
+用户要求「整理启动器所有页面」，授权按实现者想法来。这轮把 §45 那套错峰入场（500ms + 45ms 一档，
+淡入 + 上移 18px + 0.96→1，全走 `MotionAnimations.PlayListEntrance`）铺到剩下所有页面的列表：
+
+- **全局插件页**（`InstalledPluginList`）、**模块页**（`ListView_Modules`）、**OptiScaler 页**
+  （`OptiScalerSourceList`）、**截图页**（`GridView_Images`）、**DLL 配置页**（`ItemsControl_Families`）。
+- 截图页 GridView 特殊一点：虚拟化会复用容器，所以只在 `Loaded` 时对**当时已实现的容器**播一遍；
+  滚动进来的新容器没有动画 —— 这正是 Composition 错峰和平台 EntranceThemeTransition 的区别
+  （后者会跟着容器复用反复淡入，当初为此把它删了）。
+- 这五处原有的平台 `EntranceThemeTransition` 同步移除（两个入场叠一起会打架），
+  `RepositionThemeTransition` 全保留。至此启动器里所有列表的入场/挪位语义一致：
+  **入场 = 500ms 错峰，挪位 = 平台 Reposition，页面切换 = NavigationThemeTransition**。
+- 验证：x64 Release **0 错误**；扩展自测 PASS。
+- 文件：`GlobalPluginPage.xaml(.cs)`、`ModulesPage.xaml(.cs)`、`OptiScalerPage.xaml(.cs)`、
+  `ScreenshotPage.xaml(.cs)`、`DllConfigPage.xaml(.cs)`。\n

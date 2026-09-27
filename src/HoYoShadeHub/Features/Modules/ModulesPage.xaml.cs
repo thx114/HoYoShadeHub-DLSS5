@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
+using HoYoShadeHub.Features.ViewHost;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -120,6 +121,9 @@ public sealed partial class ModulesPage : PageBase
     public ModulesPage()
     {
         InitializeComponent();
+
+        // 模块列表错峰入场（和顶部游戏栏同一套 500ms + 45ms）
+        Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(ListView_Modules));
         ListView_Modules.ItemsSource = _items;
     }
 

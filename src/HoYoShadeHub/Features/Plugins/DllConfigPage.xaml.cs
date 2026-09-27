@@ -4,6 +4,7 @@ using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
+using HoYoShadeHub.Features.ViewHost;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -45,6 +46,9 @@ public sealed partial class DllConfigPage : PageBase
     public DllConfigPage()
     {
         InitializeComponent();
+
+        // 组件族列表错峰入场（和其它页面同一套 500ms + 45ms）
+        Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(ItemsControl_Families));
     }
 
     public ObservableCollection<InstalledDllViewModel> Installed { get; } = [];
@@ -161,11 +165,15 @@ public sealed partial class DllConfigPage : PageBase
                 continue;
             }
 
+            // 盘上这一份是哪个变体：记账 + 字节数 / 归档同名同大小 / 数字段（见 DllVariantResolver 的注释）
+            var store = new DllVersionStore(AppConfig.CacheRoot);
             var vm = new DllFamilyViewModel(
                 family,
                 components,
                 Installed.Select(i => i.Dll).ToList(),
-                AppConfig.GetInstalledDllVariant(family.Id));
+                AppConfig.GetInstalledDllVariant(family.Id),
+                AppConfig.GetInstalledDllVariantSize(family.Id),
+                store);
             if (selected.TryGetValue(family.Id, out string? previous) && vm.Versions.Contains(previous))
             {
                 vm.SelectedVersion = previous;
@@ -174,14 +182,14 @@ public sealed partial class DllConfigPage : PageBase
             // 需求6：把归档里这一类 dll 装过的版本铺出来（每行一个删除）
             try
             {
-                var store = new DllVersionStore(AppConfig.CacheRoot);
                 vm.SetInstalledVersions(store.ListVersions(family.Id)
                     .Select(stored => new InstalledDllVersionRow(
                         family.Id,
                         stored.Version,
                         stored.Version,
-                        isCurrent: DllVersion.IsSame(stored.Version, vm.CurrentVersion)
-                                   || DllVersion.SameNumbers(stored.Version, vm.CurrentVersion))));
+                        // 「使用中」只认准了的那一版：以前这里用 SameNumbers，同数字段的会被一起标上
+                        // （装了 Lecram 结果 310.8.0 那行也显示「使用中」）
+                        isCurrent: DllVersion.IsSame(stored.Version, vm.CurrentVersion))));
             }
             catch
             {
@@ -309,8 +317,17 @@ public sealed partial class DllConfigPage : PageBase
             {
                 _logger.LogInformation("DLL installed: {Family} {Version} -> {Files}", component.Family, component.Version, string.Join(",", result.Installed));
 
-                // 记下装的是哪个变体：PE 版本号里没有 SF / SF-v2 这种信息，不记就分不出来
+                // 记下装的是哪个变体：PE 版本号里没有 SF / SF-v2 / Lecram 这种信息，不记就分不出来
                 AppConfig.SetInstalledDllVariant(component.Family, component.Version);
+
+                // 连字节数一起记：Lecram 那份的 PE 是 310.8.3.0，和清单里的 310.8.Lecram 数字段都对不上，
+                // 只靠版本号会回退成 310.8.0（用户反馈：下的明明是 Lecram，识别成 50 系）
+                if (family is not null)
+                {
+                    AppConfig.SetInstalledDllVariantSize(
+                        family.Id,
+                        DllInstaller.GetInstalledSize(DllInstaller.Scan(_host.AddonsPath), family));
+                }
 
                 // 需求6：顺带把这一版归档到 <CacheRoot>\dlls\<family>\<version>\（硬链接优先，跨盘复制）。
                 // 归档失败绝不能让安装失败 —— DllVersionStore 的方法都不抛。
@@ -496,7 +513,9 @@ public partial class DllFamilyViewModel : ObservableObject
         DllFamily family,
         IReadOnlyList<DllComponent> components,
         IReadOnlyList<InstalledDll> installed,
-        string? recordedVariant = null)
+        string? recordedVariant = null,
+        long recordedSize = 0,
+        DllVersionStore? store = null)
     {
         Family = family;
         _components = components;
@@ -509,25 +528,29 @@ public partial class DllFamilyViewModel : ObservableObject
         // 版本列表：带上备注（RTX40 / SF 这种）
         Versions = [.. components.Select(DisplayOf)];
 
-        string? currentVersion = DllInstaller.GetInstalledVersion(installed, family);
+        // 盘上这一份是哪个变体：记账 + 字节数 / 归档同名同大小 / 数字段兜底（见 DllVariantResolver 的注释）。
+        // 以前只用 SameNumbers：Lecram 的 PE 是 310.8.3.0，数字段对不上就回退成 310.8.0（「识别成 50 系」）。
+        DllVariantProbe probe = DllVariantResolver.Identify(
+            store,
+            family,
+            InstalledDlls(installed, family).FirstOrDefault(),
+            recordedVariant,
+            recordedSize);
 
-        // PE 版本分不出变体（SF / SF-v2 / RTX40）——装的时候记过账就用记账那份
-        if (!string.IsNullOrWhiteSpace(recordedVariant)
-            && DllVersion.SameNumbers(recordedVariant, currentVersion))
-        {
-            currentVersion = recordedVariant;
-        }
-
-        CurrentVersion = currentVersion;
+        CurrentVersion = probe.Variant ?? DllInstaller.GetInstalledVersion(installed, family);
 
         bool hasAny = InstalledDlls(installed, family).Any();
-        InstalledText = hasAny
-            ? (string.IsNullOrWhiteSpace(currentVersion) ? "已装（读不出版本）" : $"已装：{DllVersion.Normalize(currentVersion)}")
-            : "还没装";
+        InstalledText = !hasAny
+            ? "还没装"
+            : probe.Known
+                ? $"已装：{probe.Display}"
+                : string.IsNullOrWhiteSpace(probe.Display)
+                    ? "已装（读不出版本）"
+                    : $"已装：{probe.Display}（变体认不出来；从这儿装一次就认得出了）";
 
         // 默认选：装了就选对得上的那个；没装就选「清单里本来就有」的那条
         // （我硬编码补进来的 RTX40 / SF 变体带 Note，不抢默认位）
-        DllComponent? match = components.FirstOrDefault(c => DllVersion.IsSame(c.Version, currentVersion))
+        DllComponent? match = components.FirstOrDefault(c => DllVersion.IsSame(c.Version, CurrentVersion))
                               ?? components.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Note))
                               ?? components[0];
         SelectedVersion = DisplayOf(match);

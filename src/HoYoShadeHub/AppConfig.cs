@@ -1339,6 +1339,23 @@ public static class AppConfig
 
 
 
+    /// <summary>
+    /// 记账那一份的**字节数**。
+    /// PE 版本号认不出变体（Lecram 的 PE 是 310.8.3.0，对不上清单里的 310.8.Lecram），
+    /// 字节数能额外挡住「用户自己把文件换掉了」—— 一致才敢信记账。
+    /// </summary>
+    public static long GetInstalledDllVariantSize(string familyId)
+    {
+        return GetValue<long>(0, $"dll_variant_size_{familyId}");
+    }
+
+    public static void SetInstalledDllVariantSize(string familyId, long size)
+    {
+        SetValue(size, $"dll_variant_size_{familyId}");
+    }
+
+
+
     /// <summary>额外注入的 DLL（OptiScaler / DLSS Enabler 那套），每个游戏记一个路径</summary>
     public static string? GetExtraInjectDll(GameBiz biz)
     {

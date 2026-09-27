@@ -8,6 +8,7 @@ using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Modules;
+using HoYoShadeHub.Features.ViewHost;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
@@ -80,6 +81,9 @@ public sealed partial class GlobalPluginPage : PageBase
     public GlobalPluginPage()
     {
         InitializeComponent();
+
+        // 列表错峰入场（500ms + 45ms 一档，和顶部游戏栏同一套；只在每次进页面时播一次）
+        Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(InstalledPluginList));
     }
 
     /// <summary>全部扩展条目（过滤前的）</summary>

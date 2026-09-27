@@ -180,9 +180,10 @@
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <StackPanel>
+                                        <!--  入场交给 MotionAnimations.PlayListEntrance（500ms 慢档 + 45ms 错峰），
+                                              这里只留挪位；两个一起放会互相打架。  -->
                                         <StackPanel.ChildrenTransitions>
                                             <TransitionCollection>
-                                                <EntranceThemeTransition FromVerticalOffset="20" />
                                                 <RepositionThemeTransition />
                                             </TransitionCollection>
                                         </StackPanel.ChildrenTransitions>

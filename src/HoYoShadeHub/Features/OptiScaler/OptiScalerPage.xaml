@@ -67,9 +67,9 @@
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                     <StackPanel>
+                        <!--  入场交给 MotionAnimations.PlayListEntrance，这里只留挪位  -->
                         <StackPanel.ChildrenTransitions>
                             <TransitionCollection>
-                                <EntranceThemeTransition FromVerticalOffset="20" />
                                 <RepositionThemeTransition />
                             </TransitionCollection>
                         </StackPanel.ChildrenTransitions>

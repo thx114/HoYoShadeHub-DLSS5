@@ -10,6 +10,7 @@ using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
+using HoYoShadeHub.Features.ViewHost;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -40,6 +41,10 @@ public sealed partial class ScreenshotPage : PageBase
     public ScreenshotPage()
     {
         this.InitializeComponent();
+
+        // 截图网格错峰入场；GridView 虚拟化会复用容器，只播首屏已实现容器的，
+        // 滚动进来的新容器没有动画（也不会反复淡入 —— Composition 错峰和平台 Entrance 的区别）
+        Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(GridView_Images));
     }
 
 
