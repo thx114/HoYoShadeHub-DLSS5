@@ -2440,7 +2440,10 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
   从耗时就能判断编译器有没有真的跑到）。
   另一个细节：`XmlDocument` 序列化会把**整份文件**的多行元素压成一行属性，所以 DOM 只当诊断手段；
   这次是用一个「行 >140 字符才按属性拆行」的小脚本把版式补回来的。
-- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**（本项 +30 条）。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**（本项 +30 条）；
+  已按 `build-local.ps1 -Portable` 的口径 publish 到本机正在用的那份 `D:\APPS\HoYoShadeHub\app-1.3.8.5`
+  （对外版本号仍 1.3.8.5，部署后 `resources.pri` 与构建产物逐字节一致、部署 dll 里能搜到 `NRHookPoint` /
+  `dlss5-feed.cfg` 等新字面量）。
 - 文件：`HoYoShadeHub.Extensions/ReShade/Dlss5FeedConfig.cs`（新）、`ReShade/ReShadeProfile.cs`、
   `Games/GamePluginService.cs`、`Features/Plugins/GamePluginPage.xaml(.cs)`、
   `HoYoShadeHub.Extensions.Tests/Program.cs`。
