@@ -985,6 +985,12 @@ StartExtraDllInjection → InjectExtraDllsAsync（一个进程只等一次，两
 
 **结论**：以后再看到 MSB3073 静默失败，先怀疑「XAML 引用了代码里没有的东西」，别去怀疑编译器和包。
 
+**2026-09-28 又踩到一次**：这次 XAML 一个符号都没引用错，真错误是**结构**问题 —— 配置区被写成了
+`<Border>` 的第二个子元素（`Border.Child` 只能有一个）。同一个静默 exit 1，`output.json` 都不生成。
+复用下来的排查办法：把 .xaml 读进 XML DOM，**按元素一块块删**（删整个配置区 → 编过；只删其中一个子块 →
+还是崩；最后只剩「Border 多了一个子元素」这一条差异），每一步跑一次真实增量构建。
+细节：DOM 序列化会把**整份文件**的多行元素压成一行属性，别拿 DOM 的输出直接当最终稿（见 §43）。
+
 另一个相关坑：**被 XAML 用到的模型类型不能带 C# 的 required** —— WinUI 生成的 XamlTypeInfo.g.cs 会 new 它，
 带 required 就报 CS9035: 必须在对象初始值设定项或属性构造函数中设置所需的成员。用带默认值的 init 属性。
 
@@ -2384,3 +2390,58 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
 - 文件：`HoYoShadeHub.Extensions/ReShade/ReShadeProfile.cs`、
   `HoYoShadeHub.Extensions/Games/GamePluginService.cs`、
   `Features/Plugins/GamePluginPage.xaml(.cs)`、`HoYoShadeHub.Extensions.Tests/Program.cs`。
+
+### 43 插件卡片的「专属配置」展开区（用户 6 条要求）
+
+用户 6 条：① feed 的 `create_delay` / `warmup_rebuild` 做成可调并放进卡片；② HookPoint 分别进 DLSS / DLSS5 卡片；
+③ 卡片右下角加扩展 / 缩回按钮（「目前的卡片就是缩回状态」，展开后更大、显示专属配置；按钮要和「版本」下拉同一行、贴最右）；
+④ `LoadFromDllMain` 属于专属配置、移进展开区；⑤ 移了之后「开启开关记得复原」；⑥ RenoDX DLSS 少了 `LoadFromDllMain`。
+
+- 版式：卡片 `Border` 里原来是「左列内容 + 右列开关」的单层 `Grid`。现在 `Grid` 有**两行**：
+  第 0 行照旧（左列内容 / 右列开关，右下角放展开按钮），第 1 行是配置区
+  （`Grid.Row="1" Grid.ColumnSpan="2"`，`Visibility` 绑 `ExpandedVisibility`）。
+  **别**把配置区写成 `Border` 的第二个子元素 —— 见文末那个坑。
+  - 展开按钮实际是**两个按钮**（朝下 `E70D` / 朝上 `E70E` 各一个静态 `FontIcon`，靠各自的 `Visibility` 切换）：
+    这条 SDK 的 XamlCompiler 对「按钮**内容**里挂 x:Bind」会崩（`FontIcon.Glyph`、`TextBlock.Text` 都试过），
+    静态字形 + 按钮级绑定最稳。点击用 `Tag="{x:Bind}"` 把 VM 递出来，handler 只做
+    `item.IsExpanded = !item.IsExpanded`。
+- 数据侧（都在 Extensions，可自测）：
+  - 新增 `ReShade/Dlss5FeedConfig.cs`：读写 addon 目录那份 `dlss5-feed.cfg` 的 `create_delay` /
+    `warmup_rebuild`（出厂 60 / 180，夹到 0..3600）。复用 `IniDocument`（只认键值行），其余键、注释、顺序
+    原样保留、**不写 BOM**；cfg 不存在时给出厂默认值（`FileExists=false`），写一次才落盘。
+  - `ReShadeProfile` 加 `Dlss5HookPointKey="NRHookPoint"` + `GetDlss5HookPoint/SetDlss5HookPoint/RemoveDlss5HookPoint`
+    （段 `[RenoDX.DLSS5]`）。和 DLSS 版同口径：0 也写 0、不删键。
+  - `GamePluginService`：`CanEditDlss5HookPoint()`（装了 `renodx-dlss5.*` 才让改）、`GetDlss5HookPoint()`、
+    `SetDlss5HookPoint()`；`NeedsLoadFromDllMain()` = 原来的 DLSS5 类 **+ `renodx-dlss*`**
+    （`AddonFileInfo.IsHookPointCapable`），`SyncDlss5LoadFromDllMain` 的「补上 / 摘掉」与
+    `SetAddonEnabled` 的自动补写都换用它；`IsLoadFromDllMain(fileName)` 给页面回读卡片状态。
+  ⑥ 为什么以前「RenoDX DLSS 里没有这个勾」：`renodx-dlss.addon64` 的二进制里有 `LoadFromDllMain` 字样，
+  `AddonSelfRegistrationDetector` 判成「插件自己会登记」→ 老规则整条隐掉（见 §8.4.6）。现在这一族不看这个判据；
+  别的插件照旧（`dlss5-feed` 带 `WritePrivateProfileString`、`renodx-mfgunlock` 带 `LoadFromDllMain` → 仍不显示）。
+- UI 侧（`Features/Plugins/GamePluginPage.xaml(.cs)`）：
+  - VM 新增：`IsExpanded`（默认 false = 收起）、`ExpandedVisibility`、`ExpandButtonVisibility` /
+    `CollapseButtonVisibility`、`ConfigToggleVisibility`（有专属配置才显示按钮）、`IsFeed` / `IsRenoDxDlss5Main` /
+    `IsRenoDxDlssFamily`、`HookPoint`（TwoWay）、`FeedCreateDelay` / `FeedWarmupRebuild`（TwoWay，`double`）、
+    `FeedConfigPath`、`HookPointKeyHint`，以及 `ConfigureDedicatedConfig` / `RefreshHookPoint` /
+    `RefreshFeedConfig` / `RefreshLoadFromDllMain`（都走 `_suppress`，程序填值不触发写盘回调）。
+  - 页面：`OnAddonHookPointChanged`（按卡片类型选 `SetHookPoint` / `SetDlss5HookPoint`；成功后
+    `UpdateHookPointUi()` 让右边那份同步，失败拨回来）、`OnAddonFeedConfigChanged`（两个值一起写、一起回读，
+    `NaN` 拨回）、`Button_ExpandAddon_Click`。
+  - ⑤：`OnAddonEnabledChanged` 成功后补一句 `item.RefreshLoadFromDllMain(_plugins.IsLoadFromDllMain(item.FileName))`
+    —— 启用时服务会自动把条目补进 ini，卡片上那个勾得跟着变（禁用时同理被摘掉）。
+  - HookPoint 的两个键各写各的：DLSS 版 `[RENODX-DLSS] DirectNeuralRenderingHookPoint`（连带 HookStage）、
+    DLSS5 版 `[RenoDX.DLSS5] NRHookPoint`；卡片和右边「插件配置」是同一个键，所以两边互相同步
+    （`UpdateHookPointUi` 顺手把两份卡片也刷一遍，游戏里插件自己改键后回到启动器也对得上）。数字 0~4 对应哪
+    个阶段仍然只能在游戏里 ReShade 覆盖层的 Hook Method 看，所以两个下拉照搬 off/1/2/3/4，不做别名。
+- **坑（跟 §9.6 同源，值得单独记）**：配置区最初被我写成 `<Border>` 的第二个子元素（`Border.Child` 只能一个），
+  XamlCompiler 直接**静默 exit 1**（MSB3073，无 stdout、无 message、连 `output.json` 都不生成）。
+  二分过程：删整个配置区 → 编过；只删 feed / hook / checkbox 任一块 → 还是崩；把右列换回原样 → 还是崩；
+  最后只剩「`Border` 多了一个子元素」这一条差异。每一步都跑真实增量构建（约 5~10 s 崩 / 50~70 s 过，
+  从耗时就能判断编译器有没有真的跑到）。
+  另一个细节：`XmlDocument` 序列化会把**整份文件**的多行元素压成一行属性，所以 DOM 只当诊断手段；
+  这次是用一个「行 >140 字符才按属性拆行」的小脚本把版式补回来的。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**（本项 +30 条）。
+- 文件：`HoYoShadeHub.Extensions/ReShade/Dlss5FeedConfig.cs`（新）、`ReShade/ReShadeProfile.cs`、
+  `Games/GamePluginService.cs`、`Features/Plugins/GamePluginPage.xaml(.cs)`、
+  `HoYoShadeHub.Extensions.Tests/Program.cs`。
+

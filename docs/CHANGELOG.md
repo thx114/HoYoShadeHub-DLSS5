@@ -3,6 +3,29 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · 插件卡片的「专属配置」展开区（feed 延迟 / HookPoint / LoadFromDllMain）
+
+- **新：插件卡片右下角多了展开 / 缩回按钮**（和左边「版本」下拉同一行、贴最右）。收起时就是原来的样子
+  （默认收起），展开后显示**这个插件自己的**配置；没有专属配置的插件不显示这个按钮。
+- **新：DLSS5 Feed 的 `create_delay` / `warmup_rebuild` 做成可调** —— 写 addon 目录里那份 `dlss5-feed.cfg`，
+  只改这两个键，其余键 / 注释 / 顺序一个字节不动，也不写 BOM。它们就是日志里
+  「holding the feature (re)build for N frames」和「预热重建」的帧数：调小接管更快，0 = 不等。
+- **新：HookPoint 分别长进两个插件卡片里** —— RenoDX DLSS 写 `[RENODX-DLSS] DirectNeuralRenderingHookPoint`
+  （连带 HookStage），RenoDX DLSS5 写 `[RenoDX.DLSS5] NRHookPoint`：**不是同一个键、也不是同一段**。
+  卡片里改和右边「插件配置」里改是同一个键，改完两边自动同步（焦点回到启动器时也按盘上的值对齐）。
+- **改：`LoadFromDllMain` 从卡片右上角搬进展开区**（它属于专属配置）。
+- **修：开启开关之后，卡片上的 `LoadFromDllMain` 会跟着盘上的真实状态走** —— 启用插件时服务会把条目自动
+  补进 ini，但卡片显示的勾还停在旧值（展开后看到的是假的）。
+- **修：RenoDX DLSS 卡片里少了 `LoadFromDllMain`** —— 它的二进制里带着 `LoadFromDllMain` 字样，被老规则
+  判成「插件自己会登记加载方式」而整条隐掉；现在 `renodx-dlss*` 这一族一律显示，启用 / 禁用时的自动补写
+  与「脏数据清理」也跟着放宽到这一族（以前会被当脏数据摘掉）。
+- **记一笔血泪坑**：配置区最初被写成 `<Border>` 的第二个子元素（`Border.Child` 只能一个），
+  XamlCompiler **静默 exit 1（MSB3073，没有 stdout / 没有 message）**。这次是拿 XML DOM 逐块删元素、
+  每步跑一次真实增量构建二分出来的（详见 GAMES-AND-INJECT §9.6 / §43）。现在配置区是卡片 Grid 的第 2 行
+  （`Grid.Row="1" Grid.ColumnSpan="2"`）。
+- 新增 30 条自测（cfg 往返 / 保序 / 不写 BOM / 缺键补写 / 超范围夹取、DLSS5 HookPoint 读写、
+  `renodx-dlss` 进 LoadFromDllMain 且不被同步规则摘掉）。全套 **PASS 571 / FAIL 0**。
+
 ## 未发版 · 原神桥的 OptiScaler autoload 清单改成双向管理
 
 - **改：桥目录里那份 `Dx11FsrBridge.autoload.txt`（让桥在进程内把 OptiScaler 拉起来，绕开 mhyprot 拒外部注入）

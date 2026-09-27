@@ -1092,6 +1092,69 @@ string autoIni = File.ReadAllText(Path.Combine(Path.GetDirectoryName(autoExe)!, 
 Check(autoIni.Contains("DX11Source=native"), "启用时自动补写 DX11Source=native（进游戏插件不再弹提示）");
 Check(serviceAuto.GetAddons().First(a => a.Slug == "renodx-dlss5").LoadFromDllMain, "DLSS5 家族顺带进 LoadFromDllMain（原有规则不回退）");
 
+Console.WriteLine("-- DLSS5 Feed 的 cfg（create_delay / warmup_rebuild 做成可调）--");
+string feedDir = Path.Combine(root, "feed-cfg");
+Directory.CreateDirectory(feedDir);
+Check(Dlss5FeedConfig.Load(null) is null, "没有插件目录时不构造（界面上那条就不显示）");
+Check(Dlss5FeedConfig.Load(feedDir) is { FileExists: false, CreateDelay: 60, WarmupRebuild: 180 },
+    "cfg 不存在时用出厂默认 60 / 180");
+
+string feedCfgPath = Path.Combine(feedDir, Dlss5FeedConfig.FileName);
+File.WriteAllText(feedCfgPath, "; DLSS5 Feed\r\nenabled=1\r\nmode=2\r\ncreate_delay=60\r\nwarmup_rebuild=180\r\ngpu_timeout_ms=2000\r\n\r\n");
+Dlss5FeedConfig? feedCfg = Dlss5FeedConfig.Load(feedDir);
+Check(feedCfg is { FileExists: true, CreateDelay: 60, WarmupRebuild: 180 },
+    $"读回出厂值（实际 {feedCfg?.CreateDelay}/{feedCfg?.WarmupRebuild}）");
+Check(feedCfg!.Save(0, 12), "把两个键改成 0 / 12");
+string feedText = File.ReadAllText(feedCfgPath);
+Check(feedText.Contains("create_delay=0") && feedText.Contains("warmup_rebuild=12"), "两个键都落到盘上");
+Check(feedText.Contains("; DLSS5 Feed") && feedText.Contains("enabled=1") && feedText.Contains("gpu_timeout_ms=2000"),
+    "注释和别的键一个不丢（只认键值行）");
+Check(feedText.IndexOf("mode=2", StringComparison.Ordinal) < feedText.IndexOf("create_delay=0", StringComparison.Ordinal),
+    "顺序没被重排（mode 仍在 create_delay 前）");
+Check(!File.ReadAllBytes(feedCfgPath).Take(3).SequenceEqual(new byte[] { 0xEF, 0xBB, 0xBF }), "不写 BOM（addon 按窄字符读）");
+Check(Dlss5FeedConfig.Load(feedDir) is { CreateDelay: 0, WarmupRebuild: 12 }, "重新读回来是新值");
+Check(feedCfg.Save(99_999, -5), "超范围也照写（内部夹住）");
+Check(feedCfg.CreateDelay == Dlss5FeedConfig.MaxFrames && feedCfg.WarmupRebuild == 0, "夹到 0..3600");
+Check(Dlss5FeedConfig.ResolvePath(feedDir) == feedCfgPath, "ResolvePath 拼的就是那份 cfg");
+
+File.WriteAllText(feedCfgPath, "enabled=1\r\nmode=2\r\n");
+Check(Dlss5FeedConfig.Load(feedDir) is { CreateDelay: 60, WarmupRebuild: 180 }, "键缺失时读出来还是默认值");
+Check(feedCfg.Save(7, 8), "缺键也能写");
+string feedText2 = File.ReadAllText(feedCfgPath);
+Check(feedText2.Contains("create_delay=7") && feedText2.Contains("warmup_rebuild=8"), "缺的键补到根节末尾");
+Check(feedText2.Contains("enabled=1") && feedText2.Contains("mode=2"), "原有的键还在");
+
+Console.WriteLine("-- RenoDX DLSS5 的 hook 点（NRHookPoint）+ RenoDX DLSS 也能进 LoadFromDllMain --");
+string dlss5Exe = Path.Combine(root, "dlss5-hook", "YuanShen.exe");
+Directory.CreateDirectory(Path.GetDirectoryName(dlss5Exe)!);
+File.WriteAllText(dlss5Exe, "fake");
+string dlss5Addons = Path.Combine(root, "dlss5-hook-addons");
+Directory.CreateDirectory(dlss5Addons);
+File.WriteAllText(Path.Combine(dlss5Addons, "renodx-dlss5.addon64"), "x");
+File.WriteAllText(Path.Combine(dlss5Addons, "renodx-dlss.addon64"), "x");
+File.WriteAllText(Path.Combine(Path.GetDirectoryName(dlss5Exe)!, "ReShade.ini"),
+    "[ADDON]\r\nAddonPath=" + dlss5Addons + "\\\r\nDisabledAddons=\r\n\r\n[RenoDX.DLSS5]\r\nConfigVersion=7\r\n\r\n[RENODX-DLSS]\r\nDirectNeuralRenderingHookPoint=0\r\n");
+AddCustomResult dlss5HookEntry = discovery.AddCustom(dlss5Exe);
+var serviceDlss5Hook = new GamePluginService(dlss5HookEntry.Entry!, null, null);
+Check(serviceDlss5Hook.CanEditDlss5HookPoint(), "装了 renodx-dlss5 → 允许改 NRHookPoint");
+Check(serviceDlss5Hook.GetDlss5HookPoint() == 0, "键不存在时读出来是 0（和 DLSS 那个同口径）");
+Check(serviceDlss5Hook.SetDlss5HookPoint(2), "写 NRHookPoint = 2");
+Check(serviceDlss5Hook.GetDlss5HookPoint() == 2, "读回来还是 2");
+string dlss5HookIni = File.ReadAllText(Path.Combine(Path.GetDirectoryName(dlss5Exe)!, "ReShade.ini"));
+Check(dlss5HookIni.Contains("NRHookPoint=2"), "写在 [RenoDX.DLSS5] 段里");
+Check(dlss5HookIni.Contains("ConfigVersion=7") && dlss5HookIni.Contains("DirectNeuralRenderingHookPoint=0"),
+    "同段/别的段的其他键一个不动");
+Check(!GamePluginService.IsRenoDxDlss5Addon("renodx-dlss.addon64"), "renodx-dlss 不是 DLSS5 主插件（各写各的键）");
+
+Check(serviceDlss5Hook.NeedsLoadFromDllMain("renodx-dlss.addon64"), "RenoDX DLSS 属于「该从 DllMain 加载」那一族（用户第 6 条）");
+Check(serviceDlss5Hook.SetAddonEnabled("renodx-dlss.addon64", true), "启用 RenoDX DLSS");
+Check(serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "启用时自动进了 LoadFromDllMain（开启开关要复原）");
+int dlss5Synced = serviceDlss5Hook.SyncDlss5LoadFromDllMain();
+Check(serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "同步规则不会把 RenoDX DLSS 摘掉（以前会被当脏数据清掉）");
+Check(dlss5Synced == 1, $"顺带把没勾的 DLSS5 插件补上（实际补了 {dlss5Synced} 个）");
+Check(serviceDlss5Hook.SetLoadFromDllMain("renodx-dlss.addon64", false), "用户也能手动取消这个勾");
+Check(!serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "取消后读回来是没勾的");
+
 Console.WriteLine("-- 没有 ReShade.ini 的游戏 --");
 var serviceNone = new GamePluginService(bare.Entry!, ShadeHostLocator.FromUserDataFolder(userDataFolder)!);
 Check(!serviceNone.HasReShadeIni, "没有 ini → HasReShadeIni 为假（界面走空状态）");

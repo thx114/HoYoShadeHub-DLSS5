@@ -559,6 +559,30 @@ public sealed class ReShadeProfile
 
     #endregion
 
+    #region NRHookPoint（RenoDX DLSS5）
+
+    /// <summary>
+    /// RenoDX DLSS5（<c>renodx-dlss5.addon64</c>，段 <c>[RenoDX.DLSS5]</c>）的 hook 点键名。
+    /// 它跟 DLSS 版的 <c>DirectNeuralRenderingHookPoint</c> **不是同一个键、也不是同一段**
+    /// （Super Anus 那版走 DLSS 那套键，见 <see cref="HookPointCapableSlugs"/>）。
+    /// </summary>
+    public const string Dlss5HookPointKey = "NRHookPoint";
+
+    /// <summary>[RenoDX.DLSS5] NRHookPoint；键不存在返回 null</summary>
+    public int? GetDlss5HookPoint()
+    {
+        string? raw = _ini.GetValue(Dlss5Section, Dlss5HookPointKey);
+        return int.TryParse(raw?.Trim(), out int value) ? value : null;
+    }
+
+    /// <summary>写 DLSS5 的 hook 点。和 DLSS 那版一样：0 也写成 0（不删键）</summary>
+    public void SetDlss5HookPoint(int value) =>
+        _ini.SetValue(Dlss5Section, Dlss5HookPointKey, value.ToString());
+
+    public void RemoveDlss5HookPoint() => _ini.RemoveKey(Dlss5Section, Dlss5HookPointKey);
+
+    #endregion
+
     #region DX11Source（RenoDX DLSS5 呈现模式）
 
     /// <summary>DX11Source 的原始值；键不存在返回 null</summary>

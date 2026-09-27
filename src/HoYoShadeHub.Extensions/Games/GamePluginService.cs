@@ -397,10 +397,27 @@ public sealed class GamePluginService
     }
 
     /// <summary>
-    /// 把 LoadFromDllMain 对齐「只有 DLSS5 插件才该在里面」这条规则：
+    /// 「该从 DllMain 加载」的这一族：DLSS5 类 <b>+</b> RenoDX DLSS（<c>renodx-dlss*</c>）。
+    ///
+    /// <para>
+    /// 原来是「只有 DLSS5 类」，结果 <c>renodx-dlss.addon64</c> 卡片的那个勾整条消失、
+    /// 启用时也不会自动加进去（用户报的第 6 条）。DLSS 版同样要在 DllMain 阶段就在，
+    /// 所以两族都算；<see cref="AddonFileInfo.IsHookPointCapable"/> 正好就是
+    /// <c>renodx-dlss*</c> 这一族。
+    /// </para>
+    /// </summary>
+    public bool NeedsLoadFromDllMain(string addonFileName)
+        => IsDlss5Addon(addonFileName)
+           || (AddonFileInfo.Parse(addonFileName)?.IsHookPointCapable ?? false);
+
+    /// <summary>这个 addon 现在是不是挂在该游戏的 <c>LoadFromDllMain</c> 上</summary>
+    public bool IsLoadFromDllMain(string addonFileName) => Profile?.IsLoadFromDllMain(addonFileName) == true;
+
+    /// <summary>
+    /// 把 LoadFromDllMain 对齐「DLSS5 类 + RenoDX DLSS 才该在里面」这条规则：
     /// <list type="bullet">
-    /// <item>开着但没勾的 DLSS5 插件 —— 补上（用户要求：DLSS5 插件启用就默认从 DllMain 加载）</item>
-    /// <item>不是 DLSS5 却已经在里面的 —— 摘掉（老版本留下的脏数据）</item>
+    /// <item>开着但没勾的 DLSS5 / RenoDX DLSS 插件 —— 补上（用户要求：这类插件启用就默认从 DllMain 加载）</item>
+    /// <item>这两族之外的却已经在里面的 —— 摘掉（老版本留下的脏数据）</item>
     /// </list>
     /// </summary>
     /// <returns>补了几个</returns>
@@ -416,11 +433,11 @@ public sealed class GamePluginService
 
         foreach (AddonFileInfo file in AddonFileInfo.ScanDirectory(AddonDirectory ?? string.Empty))
         {
-            bool isDlss5 = IsDlss5Addon(file.FileName);
+            bool wanted = NeedsLoadFromDllMain(file.FileName);
             bool inList = Profile.IsLoadFromDllMain(file.FileName);
 
-            // 非 DLSS5 却挂在 LoadFromDllMain 上 —— 清掉
-            if (!isDlss5)
+            // 既不是 DLSS5、也不是 RenoDX DLSS 却挂在 LoadFromDllMain 上 —— 清掉
+            if (!wanted)
             {
                 if (inList)
                 {
@@ -575,7 +592,7 @@ public sealed class GamePluginService
         {
             Profile.EnableAddon(addonFileName);
 
-            if (IsDlss5Addon(addonFileName))
+            if (NeedsLoadFromDllMain(addonFileName))
             {
                 Profile.AddLoadFromDllMain(addonFileName);
             }
@@ -771,6 +788,26 @@ public sealed class GamePluginService
         }
 
         Profile.SetHookPoint(value);
+        Profile.Save();
+        return true;
+    }
+
+    /// <summary>[RenoDX.DLSS5] NRHookPoint 能不能改：装了 renodx-dlss5 主插件才行</summary>
+    public bool CanEditDlss5HookPoint(IEnumerable<GameAddonState>? addons = null) =>
+        (addons ?? GetAddons()).Any(a => IsRenoDxDlss5Addon(a.File.FileName));
+
+    /// <summary>键不存在也返回 0（= off），和 DLSS 那个 hook 点同口径</summary>
+    public int GetDlss5HookPoint() => Profile?.GetDlss5HookPoint() ?? 0;
+
+    /// <summary>写 [RenoDX.DLSS5] NRHookPoint；0 = off（写 0，不删键）</summary>
+    public bool SetDlss5HookPoint(int value)
+    {
+        if (Profile is null || !CanEditDlss5HookPoint())
+        {
+            return false;
+        }
+
+        Profile.SetDlss5HookPoint(Math.Clamp(value, 0, 4));
         Profile.Save();
         return true;
     }

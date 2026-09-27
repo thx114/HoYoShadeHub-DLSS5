@@ -261,13 +261,24 @@ public sealed partial class GamePluginPage : PageBase
         var versionStore = new AddonVersionStore(AppConfig.CacheRoot);
         var tagsByExtension = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
+        // 需求1：DLSS5 Feed 的 create_delay / warmup_rebuild 就在 addon 目录那份 cfg 里，
+        // 所有卡片读同一份（只有 Feed 那张卡片会显示这两个输入框）
+        Dlss5FeedConfig? feedConfig = Dlss5FeedConfig.Load(_plugins.AddonDirectory);
+
         foreach (GameAddonState state in _plugins.GetAddons())
         {
             var item = new AddonItemViewModel(state, OnAddonEnabledChanged, OnLoadFromDllMainChanged)
             {
                 VersionDispatchQueue = DispatcherQueue,
+                HookPointChanged = OnAddonHookPointChanged,
+                FeedConfigChanged = OnAddonFeedConfigChanged,
             };
             ApplyAddonVersionChoice(item, versionStore, tagsByExtension);
+            item.ConfigureDedicatedConfig(
+                item.IsRenoDxDlss5Main ? _plugins.GetDlss5HookPoint() : _plugins.GetHookPoint(),
+                feedConfig?.CreateDelay ?? Dlss5FeedConfig.DefaultCreateDelay,
+                feedConfig?.WarmupRebuild ?? Dlss5FeedConfig.DefaultWarmupRebuild,
+                feedConfig?.Path);
             Addons.Add(item);
         }
 
@@ -604,6 +615,10 @@ public sealed partial class GamePluginPage : PageBase
                                     $"（只影响这个游戏，写在 {_plugins.ReShadeIniPath}）";
             WarnIfGameRunning();
 
+            // 需求5：开关一动，LoadFromDllMain 会被服务里那条规则自动补上 / 摘掉 ——
+            // 卡片上那个勾要跟着盘上的真实状态走，不能停在旧值（展开后看到的才是真的）
+            item.RefreshLoadFromDllMain(_plugins.IsLoadFromDllMain(item.FileName));
+
             // DLSS5 Feed：预设里的效果开关跟着一起改（共享预设，切游戏会再同步）
             if (GamePluginService.IsDlss5FeedAddon(item.FileName))
             {
@@ -650,15 +665,93 @@ public sealed partial class GamePluginPage : PageBase
         }
     }
 
+    /// <summary>需求3：卡片右下角那个展开 / 缩回按钮（专属配置）</summary>
+    private void Button_ExpandAddon_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: AddonItemViewModel item })
+        {
+            item.IsExpanded = !item.IsExpanded;
+        }
+    }
+
+    /// <summary>
+    /// 卡片里的 HookPoint：RenoDX DLSS 写 <c>[RENODX-DLSS] DirectNeuralRenderingHookPoint</c>，
+    /// RenoDX DLSS5 写 <c>[RenoDX.DLSS5] NRHookPoint</c>（需求2：两个插件各写各的键）。
+    /// </summary>
+    private void OnAddonHookPointChanged(AddonItemViewModel item, int value)
+    {
+        if (_plugins is null)
+        {
+            return;
+        }
+
+        bool ok = item.IsRenoDxDlss5Main ? _plugins.SetDlss5HookPoint(value) : _plugins.SetHookPoint(value);
+        if (!ok)
+        {
+            TextBlock_Status.Text = "Hook Point 写不进去 —— 要么没有 ReShade.ini，要么对应的那个插件没装。";
+            item.RefreshHookPoint(item.IsRenoDxDlss5Main ? _plugins.GetDlss5HookPoint() : _plugins.GetHookPoint());
+            return;
+        }
+
+        TextBlock_Status.Text = value == 0
+            ? $"「{item.Name}」的 HookPoint 已设为 off（盘上写 0，不是删键）。"
+            : $"「{item.Name}」的 HookPoint 已设为 {value}。";
+        WarnIfGameRunning();
+
+        // 右边「插件配置」里那份跟着同步（同一个键，两个入口不能打架）
+        UpdateHookPointUi();
+    }
+
+    /// <summary>
+    /// 卡片里的 DLSS5 Feed 延迟（需求1）：写 addon 目录里那份 <c>dlss5-feed.cfg</c>。
+    /// 两个键一起写、一起回读，输入框被清空（NaN）就拨回去。
+    /// </summary>
+    private void OnAddonFeedConfigChanged(AddonItemViewModel item)
+    {
+        if (_plugins is null)
+        {
+            return;
+        }
+
+        Dlss5FeedConfig? config = Dlss5FeedConfig.Load(_plugins.AddonDirectory);
+        if (config is null)
+        {
+            TextBlock_Status.Text = "找不到 DLSS5 Feed 的插件目录，写不了 dlss5-feed.cfg。";
+            return;
+        }
+
+        if (double.IsNaN(item.FeedCreateDelay) || double.IsNaN(item.FeedWarmupRebuild))
+        {
+            item.RefreshFeedConfig(config.CreateDelay, config.WarmupRebuild);
+            TextBlock_Status.Text = "DLSS5 Feed 的帧数不能留空（0 = 不等，立刻创建）。";
+            return;
+        }
+
+        bool ok = config.Save((int)Math.Round(item.FeedCreateDelay), (int)Math.Round(item.FeedWarmupRebuild));
+        item.RefreshFeedConfig(config.CreateDelay, config.WarmupRebuild);
+        TextBlock_Status.Text = ok
+            ? $"DLSS5 Feed：create_delay={config.CreateDelay}、warmup_rebuild={config.WarmupRebuild}（重启游戏才生效）。"
+            : "写 dlss5-feed.cfg 失败 —— 文件可能被占用或只读。";
+    }
+
     private void UpdateHookPointUi()
     {
         bool canEdit = _plugins is { HasReShadeIni: true } && _plugins.CanEditHookPoint();
+        int dlssHookPoint = Math.Clamp(_plugins?.GetHookPoint() ?? 0, 0, 4);
+        int dlss5HookPoint = Math.Clamp(_plugins?.GetDlss5HookPoint() ?? 0, 0, 4);
 
         _isApplying = true;
         try
         {
             ComboBox_HookPoint.IsEnabled = canEdit;
-            ComboBox_HookPoint.SelectedIndex = Math.Clamp(_plugins?.GetHookPoint() ?? 0, 0, 4);
+            ComboBox_HookPoint.SelectedIndex = dlssHookPoint;
+
+            // 需求2：卡片里那两份 HookPoint（DLSS / DLSS5）跟着一起对齐 ——
+            // 游戏里插件自己会改这两个键，焦点回到启动器时得跟上
+            foreach (AddonItemViewModel card in Addons)
+            {
+                card.RefreshHookPoint(card.IsRenoDxDlss5Main ? dlss5HookPoint : dlssHookPoint);
+            }
 
             bool forceOff = CurrentGameId is { } gameId && AppConfig.GetForceHookOffOnLaunch(gameId.GameBiz);
             CheckBox_ForceHookOff.IsChecked = forceOff;
@@ -1103,6 +1196,10 @@ public partial class AddonItemViewModel : ObservableObject
         CanToggle = state.CanToggle;
         IsDlss5 = state.IsDlss5;
         SelfRegistersInIni = state.SelfRegistersInIni;
+        Slug = state.Slug;
+        IsFeed = GamePluginService.IsDlss5FeedAddon(state.FileName);
+        IsRenoDxDlss5Main = GamePluginService.IsRenoDxDlss5Addon(state.FileName);
+        IsRenoDxDlssFamily = state.Slug?.StartsWith("renodx-dlss", StringComparison.OrdinalIgnoreCase) == true;
 
         // 缺 dll 的标记（红 = 缺必需，黄 = 缺建议）
         DllSeverity = state.DllStatus.Severity;
@@ -1152,15 +1249,196 @@ public partial class AddonItemViewModel : ObservableObject
 
     public Visibility GloballyDisabledVisibility => CanToggle ? Visibility.Collapsed : Visibility.Visible;
 
+    /// <summary>扩展目录里的 slug（认不出来就是 null）</summary>
+    public string? Slug { get; }
+
+    /// <summary>DLSS5 Feed（<c>dlss5-feed.addon64</c>）：专属配置是 cfg 里那两个延迟</summary>
+    public bool IsFeed { get; }
+
+    /// <summary>RenoDX DLSS5 主插件（<c>renodx-dlss5.addon64*</c>）：HookPoint 写 <c>[RenoDX.DLSS5] NRHookPoint</c></summary>
+    public bool IsRenoDxDlss5Main { get; }
+
+    /// <summary>renodx-dlss* 这一族（DLSS / DLSS5 / Super Anus）：卡片里有 HookPoint + LoadFromDllMain</summary>
+    public bool IsRenoDxDlssFamily { get; }
+
     /// <summary>
-    /// 「从 DllMain 加载」只在「DLSS5 那一类 + 插件自己不会往 ini 里登记加载方式」时显示
-    ///（别的插件、以及自己会登记的插件都整条消失，不是灰掉）。
+    /// 「从 DllMain 加载」显示条件：DLSS5 那一类 + 插件自己不会往 ini 里登记加载方式。
+    ///
+    /// <para>
+    /// 例外（用户要求第 6 条）：<c>renodx-dlss*</c> 这一族即使二进制里带着
+    /// <c>LoadFromDllMain</c> 字样（<c>AddonSelfRegistrationDetector</c> 会判成「自己会登记」）
+    /// 也要显示 —— 用户实测 RenoDX DLSS 卡片里这条整条不见了，得补回来。
+    /// </para>
     /// </summary>
     public Visibility LoadFromDllMainVisibility =>
-        IsDlss5 && !SelfRegistersInIni ? Visibility.Visible : Visibility.Collapsed;
+        (IsDlss5 || IsRenoDxDlssFamily) && (!SelfRegistersInIni || IsRenoDxDlssFamily)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
-    /// <summary>能改的时候才可点（关掉插件 / 非 DLSS5 / 自己会登记的都是灰的）</summary>
-    public bool CanEditLoadFromDllMain => CanToggle && Enabled && IsDlss5 && !SelfRegistersInIni;
+    /// <summary>能改的时候才可点（关掉插件 / 不相干的插件 / 自己会登记的都是灰的）</summary>
+    public bool CanEditLoadFromDllMain =>
+        CanToggle && Enabled
+        && (IsDlss5 || IsRenoDxDlssFamily)
+        && (!SelfRegistersInIni || IsRenoDxDlssFamily);
+
+    // ===================== 需求1~4：展开后的专属配置 =====================
+
+    /// <summary>卡片是展开还是缩回（默认缩回，也就是现在这个样子）</summary>
+    [ObservableProperty]
+    private bool isExpanded;
+
+    /// <summary>专属配置区显示与否</summary>
+    public Visibility ExpandedVisibility => IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>
+    /// 扩展按钮（收起状态时显示，箭头朝下）。和 <see cref="CollapseButtonVisibility"/> 合起来才是一个
+    /// 「展开 / 缩回」按钮 —— 因为按钮内容里挂 x:Bind 会让 XamlCompiler 崩，只能拆成两个静态字形的按钮。
+    /// </summary>
+    public Visibility ExpandButtonVisibility =>
+        ConfigToggleVisibility == Visibility.Visible && !IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>缩回按钮（展开状态时显示，箭头朝上）</summary>
+    public Visibility CollapseButtonVisibility =>
+        ConfigToggleVisibility == Visibility.Visible && IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>有专属配置才显示扩展按钮（免得点开是空的）</summary>
+    public Visibility ConfigToggleVisibility =>
+        (IsFeed && HasFeedConfig) || IsRenoDxDlssFamily || LoadFromDllMainVisibility == Visibility.Visible
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>addon 目录里那份 dlss5-feed.cfg 读到了没有</summary>
+    public bool HasFeedConfig { get; private set; }
+
+    public Visibility FeedConfigVisibility =>
+        IsFeed && HasFeedConfig ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>renodx-dlss* 这一族都显示 HookPoint（DLSS 和 DLSS5 各写各的键）</summary>
+    public Visibility HookPointConfigVisibility =>
+        IsRenoDxDlssFamily ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>这个数字写到哪个键上（DLSS 和 DLSS5 不是同一个键，也不是同一段）</summary>
+    public string HookPointKeyHint => IsRenoDxDlss5Main
+        ? "[RenoDX.DLSS5] NRHookPoint"
+        : "[RENODX-DLSS] DirectNeuralRenderingHookPoint";
+
+    /// <summary>cfg 的完整路径（展开时显示出来，方便自己去改）</summary>
+    public string FeedConfigPath { get; private set; } = string.Empty;
+
+    [ObservableProperty]
+    private int hookPoint;
+
+    [ObservableProperty]
+    private double feedCreateDelay;
+
+    [ObservableProperty]
+    private double feedWarmupRebuild;
+
+    /// <summary>用户改了 HookPoint（页面写盘；写失败页面会调 <see cref="RefreshHookPoint"/> 拨回来）</summary>
+    internal Action<AddonItemViewModel, int>? HookPointChanged { get; set; }
+
+    /// <summary>用户改了 Feed 的延迟（页面读这两个属性一起写，失败一起拨回来）</summary>
+    internal Action<AddonItemViewModel>? FeedConfigChanged { get; set; }
+
+    /// <summary>程序填专属配置的初值（不算用户改的）</summary>
+    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath)
+    {
+        _suppress = true;
+        try
+        {
+            HookPoint = Math.Clamp(hookPoint, 0, 4);
+            FeedCreateDelay = feedCreateDelay;
+            FeedWarmupRebuild = feedWarmupRebuild;
+            FeedConfigPath = feedConfigPath ?? string.Empty;
+            HasFeedConfig = !string.IsNullOrWhiteSpace(feedConfigPath);
+        }
+        finally
+        {
+            _suppress = false;
+        }
+
+        OnPropertyChanged(nameof(FeedConfigVisibility));
+        OnPropertyChanged(nameof(ConfigToggleVisibility));
+        OnPropertyChanged(nameof(ExpandButtonVisibility));
+        OnPropertyChanged(nameof(CollapseButtonVisibility));
+    }
+
+    /// <summary>跟盘上对齐 HookPoint（游戏里插件自己也会改这个键）</summary>
+    public void RefreshHookPoint(int value)
+    {
+        _suppress = true;
+        try
+        {
+            HookPoint = Math.Clamp(value, 0, 4);
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    /// <summary>跟盘上对齐 Feed 的两个延迟</summary>
+    public void RefreshFeedConfig(double createDelay, double warmupRebuild)
+    {
+        _suppress = true;
+        try
+        {
+            FeedCreateDelay = createDelay;
+            FeedWarmupRebuild = warmupRebuild;
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    /// <summary>
+    /// 从 ini 重读 <c>LoadFromDllMain</c>：需求5 —— 开关一动，服务里那条规则会把条目
+    /// 自动补上 / 摘掉，卡片上这个勾得跟着盘上的真实状态走。
+    /// </summary>
+    public void RefreshLoadFromDllMain(bool value)
+    {
+        _suppress = true;
+        try
+        {
+            LoadFromDllMain = value;
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    partial void OnIsExpandedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ExpandedVisibility));
+        OnPropertyChanged(nameof(ExpandButtonVisibility));
+        OnPropertyChanged(nameof(CollapseButtonVisibility));
+    }
+
+    partial void OnHookPointChanged(int value)
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        HookPointChanged?.Invoke(this, value);
+    }
+
+    partial void OnFeedCreateDelayChanged(double value) => NotifyFeedConfigChanged();
+
+    partial void OnFeedWarmupRebuildChanged(double value) => NotifyFeedConfigChanged();
+
+    private void NotifyFeedConfigChanged()
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        FeedConfigChanged?.Invoke(this);
+    }
 
     /// <summary>0 = 没问题，1 = 缺建议（黄），2 = 缺必需（红）</summary>
     public int DllSeverity { get; }
