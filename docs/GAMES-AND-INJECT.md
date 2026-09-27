@@ -2322,6 +2322,9 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
     「禁用呈现模式」——再打开插件页会被补回，想彻底关请先禁用插件；
   - 状态栏文案修正：写键成功的提示原来还写着旧段名 `[RENODX-DLSS]`，改成 `[RenoDX.DLSS5]`。
 - 验证追加：扩展自测新增启用自动补写 / 主插件判定（super-anus、renodx-dlss、null 均排除）等用例。
+- 收尾（用户确认）：**手动勾选框移除** —— 自动补写后它成了假开关（「关」在下一次刷新页面就被补回），
+  取值完全跟随「主插件是否启用」；要 `off` / `foreign` 直接手改 ini 或禁用插件。
+  自动补写两条路径保留：启用动作（`SetAddonEnabled`）+ 每游戏插件页刷新兜底（`UpdateHookPointUi`）。
 - 验证：x64 Release 构建 0 错误；扩展自测 PASS 497 / FAIL 0（本项 +16 条）。
 - 文件：`HoYoShadeHub.Extensions/ReShade/ReShadeProfile.cs`、
   `HoYoShadeHub.Extensions/Games/GamePluginService.cs`、

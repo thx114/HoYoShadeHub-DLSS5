@@ -257,13 +257,6 @@
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
 
-                        <!--  DX11Source=native：RenoDX DLSS5 的「呈现模式」需要（可开关）  -->
-                        <CheckBox x:Name="CheckBox_Dx11SourceNative"
-                                  Checked="CheckBox_Dx11SourceNative_Changed"
-                                  Content="DX11Source=native（呈现模式）"
-                                  ToolTipService.ToolTip="RenoDX DLSS5 的「呈现模式」需要它：勾上就往这个游戏的 ReShade.ini 写 [RENODX-DLSS] DX11Source=native；取消 = 删掉这个键，跟随插件默认。"
-                                  Unchecked="CheckBox_Dx11SourceNative_Changed" />
-
                         <MenuFlyoutSeparator Margin="0,4,0,0" />
 
                         <!--  注入时机：HoYoShade / ReShade 注入那一步的等待时间（按游戏）  -->

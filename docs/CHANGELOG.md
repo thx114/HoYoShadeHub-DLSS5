@@ -31,11 +31,11 @@
 - **新：兼容检测第 21 项「NVIDIA 面板是否替换了此游戏的帧生成模型」。** 检测到已被 NV 面板覆盖帧生成
   模型时提示：多倍帧生成可能出现闪烁和黑屏，建议先到 NVIDIA App 关掉这游戏的「DLSS 覆盖 → 帧生成」。
 
-- **新：插件配置栏加「DX11Source=native（呈现模式）」开关 + 自动补写。** 每游戏插件页的「插件配置」多一个勾选框：
-  勾上就往这个游戏的 `ReShade.ini` 写 `[RenoDX.DLSS5] DX11Source=native`（RenoDX DLSS5 启用呈现模式需要），
-  取消 = 删掉这个键、跟随插件默认；前提和 HookPoint 一样（装了 renodx-dlss* 插件）。
-  另外**启用 RenoDX DLSS5 时自动补写**这个键（用户反馈：不勾的话进游戏插件一直弹
-  「set DX11Source=native」提示）；每游戏插件页刷新时对「已启用但键缺失」的旧安装也自动补一次。
+- **新：RenoDX DLSS5 启用即自动补写 `[RenoDX.DLSS5] DX11Source=native`（呈现模式）。** 用户反馈：不自动的话，
+  进游戏插件一直弹「set DX11Source=native」提示。现在启用主插件（`renodx-dlss5.addon64`，super-anus /
+  renodx-dlss 不算）就自动写键；每游戏插件页刷新时对「已启用但键缺失」的旧安装也补一次。
+  曾加过的手动勾选框**移除**（自动补写后它成了假开关——关掉刷新就回来）；想取 `off` / `foreign`
+  直接手改 ini 或禁用插件。
 
 ## 1.3.8 · 上游同步 + 鸣潮 DX12 + 启动器全面体检 + 版本迁移加固 + 关闭游戏按钮
 
