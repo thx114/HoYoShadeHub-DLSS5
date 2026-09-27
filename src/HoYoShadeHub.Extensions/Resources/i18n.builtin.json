@@ -91,15 +91,15 @@
         },
         {
           "en": "Model A",
-          "zh": "模型A"
+          "zh": "模型A", "guard": true
         },
         {
           "en": "Model B",
-          "zh": "模型B"
+          "zh": "模型B", "guard": true
         },
         {
           "en": "Model C",
-          "zh": "模型C"
+          "zh": "模型C", "guard": true
         },
         {
           "en": "Character Mask",
@@ -304,15 +304,15 @@
         },
         {
           "en": "Model A",
-          "zh": "模型A"
+          "zh": "模型A", "guard": true
         },
         {
           "en": "Model B",
-          "zh": "模型B"
+          "zh": "模型B", "guard": true
         },
         {
           "en": "Model C",
-          "zh": "模型C"
+          "zh": "模型C", "guard": true
         },
         {
           "en": "Character Mask",

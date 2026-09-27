@@ -9,6 +9,13 @@ public sealed class AddonI18nEntry
 {
     [JsonPropertyName("en")] public string En { get; set; } = string.Empty;
     [JsonPropertyName("zh")] public string Zh { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 只当「共享常量」判据、**不翻译**这一条。实测 <c>Model A/B/C</c> 的常量（<c>"Mode"</c>、<c>"el A"</c>）
+    /// 跟没法翻译的 <c>Model</c> 标签（5 字节装不下「模型」）共用同一份立即数：翻它们，
+    /// 标签那行就变成「?式l」。所以这几条留在表里、标 guard，用来挡住别的串把这份常量当尾巴写。
+    /// </summary>
+    [JsonPropertyName("guard")] public bool Guard { get; set; }
 }
 
 /// <summary>一个插件族的翻译表（slug 用前缀匹配文件名，见 <see cref="AddonLocalizer.SelectTable"/>）</summary>
@@ -63,7 +70,7 @@ public static class AddonLocalizer
     /// 补丁算法版本。改动替换规则时必须 +1 —— 记账文件里记的版本比它小，就说明磁盘上那份是旧算法
     /// 打过的（可能已经被写坏），要先从备份还原、再按新算法重打（见 AddonLocalizationJob）。
     /// </summary>
-    public const int AlgorithmVersion = 3;
+    public const int AlgorithmVersion = 4;
 
     public const string BackupFolderName = "i18n-backup";
 
@@ -219,7 +226,7 @@ public static class AddonLocalizer
             AddonI18nEntry entry = table.Entries[index];
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (string.IsNullOrWhiteSpace(entry.En) || string.IsNullOrWhiteSpace(entry.Zh))
+            if (string.IsNullOrWhiteSpace(entry.En) || string.IsNullOrWhiteSpace(entry.Zh) || entry.Guard)
             {
                 continue;
             }
@@ -346,7 +353,7 @@ public static class AddonLocalizer
         for (int index = 0; index < entries.Count; index++)
         {
             AddonI18nEntry entry = entries[index];
-            if (string.IsNullOrWhiteSpace(entry.En) || string.IsNullOrWhiteSpace(entry.Zh))
+            if (string.IsNullOrWhiteSpace(entry.En) || string.IsNullOrWhiteSpace(entry.Zh) || entry.Guard)
             {
                 continue;
             }
@@ -398,6 +405,17 @@ public static class AddonLocalizer
         //
         // 所以：只要这条串的头已经汉化（整条链命中，或者文件里有 NUL 结尾的完整字面量），
         // 就把所有「盖到串尾」的片段按**目标串同一套偏移**写掉（目标串已经结束就补空格，NUL 不动）。
+        // 所有条目的英文（不管中文放不放得下）——「共享常量」判据要用：一个片段如果正好是**别的条目**
+        // 英文的开头，就可能是那一条的头部写入，不能拿它当尾巴写（实测 "Mode" 是 "Model A/B/C" 的头）
+        List<byte[]> allSources = [];
+        foreach (AddonI18nEntry entry in entries)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.En))
+            {
+                allSources.Add(Encoding.UTF8.GetBytes(entry.En));
+            }
+        }
+
         foreach ((int index, byte[] source, byte[] target) in candidates)
         {
             if (patched[index] == 0 && FindLiteral(bytes, source).Count == 0)
@@ -405,28 +423,43 @@ public static class AddonLocalizer
                 continue;
             }
 
-            PatchTailPieces(bytes, source, target, immediates, assigned, requireDisp, ref patched[index]);
+            PatchTailPieces(bytes, source, target, immediates, allSources, assigned, requireDisp, ref patched[index]);
         }
 
         return patched;
     }
 
     /// <summary>
-    /// 把「运行时覆盖写尾巴」的那些片段按目标串的偏移写掉（见 <see cref="PatchCodeImmediatesAll"/> 第二轮）。
+    /// 把「运行时覆盖写尾巴」的片段按目标串的偏移写掉（见 <see cref="PatchCodeImmediatesAll"/> 第二轮）。
     /// 只认盖到串尾的片段：<c>窗口 + 长度 &gt;= 英文长度</c>；比英文长出来的字节必须是补零。
+    ///
+    /// <para>
+    /// 为什么要全写：同一个短常量在别的函数里还有副本，我们分不出哪一份是这条串运行时真正写的那条。
+    /// 实测 <c>Local Tone Intensity</c> 与 <c>Structure Intensity</c> 共用同一份 <c>"sity"</c>，
+    /// 只要漏写一份，界面上就还是「结构强度 sity」；而两条串的映射在对方那份上正好都落在补空格区，
+    /// 后写的那条把前一条盖成空格 —— 所以「全写」反而稳。
+    /// </para>
+    ///
+    /// <para>
+    /// 但有一类片段**必须放过**：它同时是**别的条目**英文的开头。实测 <c>"Mode"</c> 在文件里有 6 份，
+    /// 其中 3 份是 <c>Model A/B/C</c> 的**头**，写成中文界面立刻变「????A」「?式l」
+    /// （见 <see cref="IsSharedConstant"/>）。已经归了别人的片段（<paramref name="assigned"/>）也跳过。
+    /// </para>
     /// </summary>
     private static void PatchTailPieces(
         byte[] bytes,
         byte[] source,
         byte[] target,
         List<(int Position, int Size, int Disp, bool HasDisp)> immediates,
+        IReadOnlyList<byte[]> allSources,
         HashSet<int> assigned,
         bool requireDisp,
         ref int written)
     {
         foreach ((int position, int size, int disp, bool hasDisp) in immediates)
         {
-            if (size < 2 || (requireDisp && !hasDisp) || assigned.Contains(position))
+            if (size < 2 || (requireDisp && !hasDisp) || assigned.Contains(position)
+                || IsSharedConstant(bytes, position, size, source, allSources))
             {
                 continue;
             }
@@ -455,6 +488,12 @@ public static class AddonLocalizer
                     continue;
                 }
 
+                // 这一段要是**别的条目**的尾巴（实测 "sity" 同时是 Structure Intensity 和
+                // Local Tone Intensity 的尾巴），两边的映射会在同一份常量上打架：Local Tone 要把「度」的
+                // 字节写进去，Structure 那边就变成半个 UTF-8 → 界面「结构强度 ??」。
+                // 所以这种共用片段一律补空格（两边的补位区都是空格，只有这种写法两边都不坏）。
+                bool sharedSuffix = IsSharedSuffix(source, window, length, allSources);
+
                 for (int k = 0; k < size; k++)
                 {
                     int offset = window + k;
@@ -464,7 +503,7 @@ public static class AddonLocalizer
                         break;
                     }
 
-                    bytes[position + k] = offset < target.Length ? target[offset] : (byte)0x20;
+                    bytes[position + k] = !sharedSuffix && offset < target.Length ? target[offset] : (byte)0x20;
                 }
 
                 assigned.Add(position);
@@ -472,6 +511,106 @@ public static class AddonLocalizer
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// 这段英文（<c>窗口</c> 起 <c>长度</c> 个字节）是不是**别的条目**英文的结尾 —— 是的话这份常量两边共用，
+    /// 尾巴这一趟只能补空格（见 <see cref="PatchTailPieces"/>）。
+    /// </summary>
+    private static bool IsSharedSuffix(byte[] source, int window, int length, IReadOnlyList<byte[]> allSources)
+    {
+        foreach (byte[] other in allSources)
+        {
+            if (other.Length < length)
+            {
+                continue;
+            }
+
+            // 跳过同一条（内容一致）
+            if (other.Length == source.Length)
+            {
+                bool identical = true;
+                for (int k = 0; k < source.Length; k++)
+                {
+                    if (other[k] != source[k])
+                    {
+                        identical = false;
+                        break;
+                    }
+                }
+
+                if (identical)
+                {
+                    continue;
+                }
+            }
+
+            bool endsWith = true;
+            for (int k = 0; k < length; k++)
+            {
+                if (other[other.Length - length + k] != source[window + k])
+                {
+                    endsWith = false;
+                    break;
+                }
+            }
+
+            if (endsWith)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 这个片段是不是「**别的条目**英文的开头」：那样它更可能是那一条的头部写入，而不是这条的尾巴。
+    /// 实测 <c>"Mode"</c> 既是 <c>Options Mode</c> 的尾巴、又是 <c>Model A/B/C</c> 的头，写下去就把
+    /// Model 那几行写成「????A」。片段取到 NUL 为止，长度 1 的不做这个判断（实测只见过 4 字节这种）。
+    /// </summary>
+    private static bool IsSharedConstant(
+        byte[] bytes,
+        int position,
+        int size,
+        byte[] source,
+        IReadOnlyList<byte[]> allSources)
+    {
+        int length = 0;
+        while (length < size && bytes[position + length] != 0x00)
+        {
+            length++;
+        }
+
+        if (length < 2)
+        {
+            return false;
+        }
+
+        foreach (byte[] other in allSources)
+        {
+            if (ReferenceEquals(other, source) || other.Length < length)
+            {
+                continue;
+            }
+
+            bool same = true;
+            for (int k = 0; k < length; k++)
+            {
+                if (other[k] != bytes[position + k])
+                {
+                    same = false;
+                    break;
+                }
+            }
+
+            if (same)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -542,48 +681,89 @@ public static class AddonLocalizer
             return null;
         }
 
-        // 覆盖率判定：偏移小的先接，必须从 0 起首尾相接（允许重叠）盖满整条
-        pieces.Sort((a, b) => a.Window != b.Window ? a.Window.CompareTo(b.Window) : b.Size.CompareTo(a.Size));
-        List<(int Position, int Size, int Window, int Disp, bool HasDisp)> chain = [];
-        int covered = 0;
-        int baseline = int.MinValue;
-
-        foreach ((int position, int size, int window, int disp, bool hasDisp) in pieces)
+        // 链必须从 0 起，所以先看「谁盖住了第 0 个字节」：每个这样的片段代表一种**缓冲基线**
+        // （disp - 窗口 = 这条指令里缓冲相对它基址寄存器的偏移）。
+        //
+        // 同一个短常量在别的函数里还有副本、基线各不相同 —— 实测 "Mode" 在文件里有 6 份
+        // （基线 -1 / 128 / 120 / 2096 / 2128 / 2160）。老写法「抓到第一个片段就把它的基线定死，
+        // 一遇到不一致就直接 return null」，于是 Options Mode 明明头（基线 128）尾（基线 128）都在，
+        // 却因为先撞上基线 -1 那份 "Mode" 被判成「位移不连续 → 整条不写」。改成**逐个基线试**：
+        // 基线 128 那一组能盖满 → 就是它。
+        List<int> baselines = [];
+        foreach ((_, _, int window, int disp, bool hasDisp) in pieces)
         {
-            if (window > covered)
+            if (window == 0 && hasDisp && !baselines.Contains(disp))
             {
-                continue;
-            }
-
-            int end = Math.Min(window + size, source.Length);
-            if (end <= covered)
-            {
-                continue;
-            }
-
-            // 位移必须跟已有的片段落在同一个缓冲上（没带位移的片段不参与这个判断）
-            if (hasDisp)
-            {
-                if (baseline == int.MinValue)
-                {
-                    baseline = disp - window;
-                }
-                else if (disp - window != baseline)
-                {
-                    return null;
-                }
-            }
-
-            chain.Add((position, size, window, disp, hasDisp));
-            covered = end;
-            if (covered >= source.Length)
-            {
-                break;
+                baselines.Add(disp);
             }
         }
 
+        foreach (int baseline in baselines)
+        {
+            if (SweepChain(pieces, source.Length, baseline) is { } chain)
+            {
+                return chain;
+            }
+        }
+
+        // 自测里 requireDisp:false 的合成指令（mov rax, imm64 后面没有 store）拿不到位移，
+        // 这时只能按「能盖满就好」拼一次；线上永远 requireDisp:true，走不到这里。
+        return requireDisp ? null : SweepChain(pieces, source.Length, baseline: null);
+    }
+
+    /// <summary>
+    /// 在候选片段里贪心地把整条串盖满：每步挑「起点 ≤ 已覆盖、终点最远」的那一段
+    /// （区间覆盖问题的最优贪心），并且必须落在同一条缓冲上（<c>disp - 窗口</c> 相等；
+    /// 没带位移的片段不参与这个判断）。盖不满返回 null。
+    /// </summary>
+    private static List<(int Position, int Size, int Window, int Disp, bool HasDisp)>? SweepChain(
+        List<(int Position, int Size, int Window, int Disp, bool HasDisp)> pieces,
+        int length,
+        int? baseline)
+    {
+        List<(int Position, int Size, int Window, int Disp, bool HasDisp)> chain = [];
+        HashSet<int> used = [];
+        int covered = 0;
+
+        while (covered < length)
+        {
+            bool found = false;
+            int bestEnd = covered;
+            (int Position, int Size, int Window, int Disp, bool HasDisp) best = default;
+
+            foreach ((int position, int size, int window, int disp, bool hasDisp) in pieces)
+            {
+                if (window > covered || used.Contains(position))
+                {
+                    continue;
+                }
+
+                if (baseline is int want && hasDisp && disp - window != want)
+                {
+                    continue;
+                }
+
+                int end = window + Math.Min(size, length - window);
+                if (end > bestEnd)
+                {
+                    bestEnd = end;
+                    best = (position, size, window, disp, hasDisp);
+                    found = true;
+                }
+            }
+
+            if (!found)
+            {
+                return null;
+            }
+
+            chain.Add(best);
+            used.Add(best.Position);
+            covered = bestEnd;
+        }
+
         // 盖不满就整条不写：宁可留英文，也不能留半个中文字
-        return covered >= source.Length && chain.Count > 0 ? chain : null;
+        return chain.Count > 0 ? chain : null;
     }
 
     /// <summary>
@@ -666,6 +846,21 @@ public static class AddonLocalizer
         }
 
         return PatchCodeImmediatesAll(bytes, [entry], rich, requireDisp: false)[0];
+    }
+
+    /// <summary>自测入口：整张表跑一趟（用来测「共享常量 / 共享后缀 / guard」这些**跨条目**的规矩）</summary>
+    public static int PatchCodeImmediatesForTest(
+        byte[] bytes,
+        IReadOnlyList<AddonI18nEntry> entries,
+        List<(int Position, int Size, int Disp, bool HasDisp)> immediates)
+    {
+        int sum = 0;
+        foreach (int hit in PatchCodeImmediatesAll(bytes, entries, immediates, requireDisp: true))
+        {
+            sum += hit;
+        }
+
+        return sum;
     }
 
     /// <summary>测试用入口：带位移的立即数（用来测单字节尾巴那一步）</summary>

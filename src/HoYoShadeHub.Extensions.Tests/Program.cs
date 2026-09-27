@@ -1885,6 +1885,54 @@ List<(int Position, int Size)> presetImmediates = [.. AddonLocalizer.EnumerateIm
 Check(AddonLocalizer.PatchCodeImmediates(presetChain, presetSource, presetTarget, presetImmediates) == 2,
     "头 8 字节 + 1 字节尾巴（带 NUL）也凑满 → 两段都换");
 Check(presetChain[17] == presetTarget[8] && presetChain[18] == 0x00, "1 字节尾巴换成目标的最后一字节，NUL 没被动");
+
+// ★ 基线分组：同一个短常量在别的函数里还有副本、基线各不相同（实测 "Mode" 有 6 份）。
+//   老写法抓到窗口 8 那两份里地址靠前的那份（基线 0 != 128）就判「位移不连续 → 整条不写」，
+//   Options Mode 在界面上一直是英文就栽在这儿；现在按「盖住第 0 字节的片段」的基线逐个试。
+byte[] optChainBuf = new byte[64];
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Options "), 0, optChainBuf, 0, 8);
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Mode"), 0, optChainBuf, 16, 4);   // 诱饵：基线 0
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Mode"), 0, optChainBuf, 32, 4);   // 同一条缓冲：基线 128
+byte[] optTargetBytes = System.Text.Encoding.UTF8.GetBytes("选项模式");
+int optChainHits = AddonLocalizer.PatchCodeImmediatesForTest(
+    optChainBuf,
+    [new AddonI18nEntry { En = "Options Mode", Zh = "选项模式" }],
+    [(16, 4, 8, true), (0, 8, 128, true), (32, 4, 136, true)]);
+Check(optChainHits >= 2, $"基线不同的一堆副本里还是能挑出正确那条链（实际 {optChainHits} 段）");
+Check(optChainBuf.Take(8).SequenceEqual(optTargetBytes.Take(8)), "链头换成目标的 [0..8)");
+Check(optChainBuf.Skip(32).Take(4).SequenceEqual(optTargetBytes.Skip(8).Take(4)), "真尾巴（基线 128）换成目标的 [8..12)");
+
+// ★ 共享常量：「Mode」同时是 Model A/B/C 的头，写成中文界面就是「????A」「?式l」。
+//   guard 条目（只当判据、不翻译）也要参与这个判断。
+byte[] guardBuf = new byte[64];
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Options "), 0, guardBuf, 0, 8);
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Mode"), 0, guardBuf, 16, 4);   // Options Mode 的真尾巴
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Mode"), 0, guardBuf, 32, 4);   // Model A 的头（基线 2096）
+AddonLocalizer.PatchCodeImmediatesForTest(
+    guardBuf,
+    [
+        new AddonI18nEntry { En = "Options Mode", Zh = "选项模式" },
+        new AddonI18nEntry { En = "Model A", Zh = "模型A", Guard = true },
+    ],
+    [(0, 8, 128, true), (16, 4, 136, true), (32, 4, 2104, true)]);
+Check(System.Text.Encoding.UTF8.GetString(guardBuf, 32, 4) == "Mode",
+    "共享常量：Model A 的头不能被当成 Options Mode 的尾巴写掉");
+
+// ★ 共享后缀："sity" 同时是 Structure Intensity 和 Local Tone Intensity 的尾巴。
+//   两边的映射会在这同一份常量上打架（一边要写「度」的字节），所以这种片段一律补空格。
+byte[] sharedBuf = new byte[128];
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("sity"), 0, sharedBuf, 8, 4);
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Structure Intensity"), 0, sharedBuf, 40, 19);
+Array.Copy(System.Text.Encoding.UTF8.GetBytes("Local Tone Intensity"), 0, sharedBuf, 70, 20);
+AddonLocalizer.PatchCodeImmediatesForTest(
+    sharedBuf,
+    [
+        new AddonI18nEntry { En = "Structure Intensity", Zh = "结构强度" },
+        new AddonI18nEntry { En = "Local Tone Intensity", Zh = "局部色调强度" },
+    ],
+    [(8, 4, 15, true)]);
+Check(sharedBuf[8] == 0x20 && sharedBuf[9] == 0x20 && sharedBuf[10] == 0x20 && sharedBuf[11] == 0x20,
+    $"共享后缀：两边共用的尾巴一律补空格（实际 {sharedBuf[8]:X2} {sharedBuf[9]:X2} {sharedBuf[10]:X2} {sharedBuf[11]:X2}）");
 Console.WriteLine("-- 下载器的纯逻辑（不联网）--");
 string[] assets = ["OptiScaler-NR-v0.8.3.zip", "OptiScaler-NR-v0.8.3-rtx40-mfg.zip", "OptiScaler-NR-v0.8.3-SHA256SUMS.txt", "NeuRotic-Patch.zip"];
 Check(OptiScalerDownloader.IsUsableAsset(assets[0]) && !OptiScalerDownloader.IsUsableAsset(assets[2]),
