@@ -148,6 +148,15 @@ try {
     # 不打包 config.ini：解压覆盖旧客户端时需保留用户已有配置。
     Remove-Item (Join-Path $outDir "config.ini") -Force -ErrorAction SilentlyContinue
 
+    # 清掉同一输出目录里历史版本的 app-*：否则它们会被一起塞进 zip（实测每发一版 zip 就大出 175MB，
+    # 1.3.8.5 那个包因此涨到 877MB，而 1.3.8.1 只有 180MB）。
+    Get-ChildItem -Path $outDir -Directory -Filter "app-*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne "app-$Version" } |
+        ForEach-Object {
+            Write-Host "==> 清掉历史目录 $($_.Name)" -ForegroundColor DarkGray
+            Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
     $zipDir = Join-Path $repoRoot "build/release"
     New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
     $zip = Join-Path $zipDir "HoYoShadeHub_Portable_${Version}_$Architecture.zip"

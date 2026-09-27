@@ -39,6 +39,8 @@
   `Model A/B/C` / `Model` 那些共享常量**一个字节没动**，`Structure Intensity` 那份补空格、`Local Tone Intensity`
   那份写自己的「度」，`Skin Structure Strength` 的 `"Strength"` 覆盖写换成「度 + 空格」。
   `renodx-dlss5` 另有 14 条命中（它自带语言设置，本来不该补丁）。新增 5 条自测（基线分组、共享常量、尾巴归属）。
+- **修：打包脚本会把输出目录里历史版本的 `app-*` 一起压进 zip。** 每发一版包就大出约 175MB
+  （1.3.8.5 那个包因此涨到 877MB，1.3.8.1 只有 180MB）；现在打包前先把别的 `app-*` 清掉。
 - **补充词条**：`Quality`→`质量`、`Balanced`→`均衡`、`Performance`→`性能`（DLSS Mode 那几个下拉值，之前只有
   `Ultra Quality`/`Ultra Performance` 是中文）；`Local Tone Intensity` 的译文从 `局部色调强度` 缩成 `局部色调`
   （短于那条运行时覆盖写的起点，无论共享常量归谁都不会坏）。实测 59 条命中 / 改动 1123 字节。
