@@ -43,6 +43,9 @@ public sealed record AddonLocalizeResult(int Applied, int SkippedTooLong, int Mi
 /// <item>代码立即数拼出来的短标签（<c>mov rax, "Upscaled"</c>）—— 一条串的所有片段都凑齐了才写；
 /// 少一段就整条不写（半截中文 + 英文尾巴 = 界面上的「缩ling」「结构强度 sity」怪字，
 /// 见 <see cref="PatchCodeImmediatesAll"/>）。</item>
+/// <item>运行时**覆盖写的尾巴**：有些标签的头是字面量（编译器用 SSE 16 字节拷贝搬过去），尾巴却是紧接着的
+/// 一条短立即数（<c>mov word [rbx+0x10], "y\0"</c>）—— 它会把我们补的空格盖回英文，界面就是
+/// 「总体强度 y」「结构强度 sity」。所以头汉化之后，盖到串尾的片段也要按同一套偏移写掉。</item>
 /// </list>
 /// 只有中文 UTF-8 字节数 ≤ 英文才换得动，放不下的跳过并汇报。
 /// </para>
@@ -60,7 +63,7 @@ public static class AddonLocalizer
     /// 补丁算法版本。改动替换规则时必须 +1 —— 记账文件里记的版本比它小，就说明磁盘上那份是旧算法
     /// 打过的（可能已经被写坏），要先从备份还原、再按新算法重打（见 AddonLocalizationJob）。
     /// </summary>
-    public const int AlgorithmVersion = 2;
+    public const int AlgorithmVersion = 3;
 
     public const string BackupFolderName = "i18n-backup";
 
@@ -385,7 +388,90 @@ public static class AddonLocalizer
             }
         }
 
+        // 第二轮：运行时**覆盖写**的尾巴。
+        //
+        // 实测（用户截图 + 真文件对照）：有些标签的头是 .rdata 字面量（编译器用 16 字节 SSE 拷贝搬过去），
+        // 尾巴却是一条紧接着的短立即数——Overall Intensity 的 `mov word [rbx+0x10], "y\0"`、
+        // Structure Intensity 的 `mov dword [rbx+0xF], "sity"`、Skin Structure Strength 的
+        // `mov [rbx+0x1E], "Strength"`。它们运行时**又写一遍尾巴**，把字面量那份里我们补的空格盖回英文，
+        // 界面就是「总体强度 y」「结构强度 sity」「皮肤结构强Strength」。
+        //
+        // 所以：只要这条串的头已经汉化（整条链命中，或者文件里有 NUL 结尾的完整字面量），
+        // 就把所有「盖到串尾」的片段按**目标串同一套偏移**写掉（目标串已经结束就补空格，NUL 不动）。
+        foreach ((int index, byte[] source, byte[] target) in candidates)
+        {
+            if (patched[index] == 0 && FindLiteral(bytes, source).Count == 0)
+            {
+                continue;
+            }
+
+            PatchTailPieces(bytes, source, target, immediates, assigned, requireDisp, ref patched[index]);
+        }
+
         return patched;
+    }
+
+    /// <summary>
+    /// 把「运行时覆盖写尾巴」的那些片段按目标串的偏移写掉（见 <see cref="PatchCodeImmediatesAll"/> 第二轮）。
+    /// 只认盖到串尾的片段：<c>窗口 + 长度 &gt;= 英文长度</c>；比英文长出来的字节必须是补零。
+    /// </summary>
+    private static void PatchTailPieces(
+        byte[] bytes,
+        byte[] source,
+        byte[] target,
+        List<(int Position, int Size, int Disp, bool HasDisp)> immediates,
+        HashSet<int> assigned,
+        bool requireDisp,
+        ref int written)
+    {
+        foreach ((int position, int size, int disp, bool hasDisp) in immediates)
+        {
+            if (size < 2 || (requireDisp && !hasDisp) || assigned.Contains(position))
+            {
+                continue;
+            }
+
+            for (int window = 0; window < source.Length; window++)
+            {
+                // 只认「盖到串尾」的片段：它就是运行时那条覆盖写
+                if (window + size < source.Length)
+                {
+                    continue;
+                }
+
+                int length = Math.Min(size, source.Length - window);
+                if (length < 1 || !Matches(bytes, position, source, window, length))
+                {
+                    continue;
+                }
+
+                if (window + size > source.Length && !IsPadding(bytes, position + length, size - length))
+                {
+                    continue;
+                }
+
+                if (length < 2 && !IsPadding(bytes, position + length, size - length))
+                {
+                    continue;
+                }
+
+                for (int k = 0; k < size; k++)
+                {
+                    int offset = window + k;
+                    if (offset >= source.Length)
+                    {
+                        // 串尾那个 NUL 是终止符，不能动
+                        break;
+                    }
+
+                    bytes[position + k] = offset < target.Length ? target[offset] : (byte)0x20;
+                }
+
+                assigned.Add(position);
+                written++;
+                break;
+            }
+        }
     }
 
     /// <summary>
@@ -423,16 +509,26 @@ public static class AddonLocalizer
                 continue;
             }
 
-            for (int window = 0; window + 2 <= source.Length; window++)
+            for (int window = 0; window < source.Length; window++)
             {
                 int length = Math.Min(size, source.Length - window);
-                if (length < 2 || !Matches(bytes, position, source, window, length))
+                if (length < 1 || !Matches(bytes, position, source, window, length))
                 {
                     continue;
                 }
 
                 // 片段比这条串长 → 多出来的那几个字节必须是补零，否则它其实是别的串/别的常量
-                if (window + size > source.Length && !IsPadding(bytes, position + length, size - length))
+                bool overflowIsPad = window + size > source.Length
+                    && IsPadding(bytes, position + length, size - length);
+
+                if (window + size > source.Length && !overflowIsPad)
+                {
+                    continue;
+                }
+
+                // 只对上 1 个字节的片段，必须连 NUL 一起写进来（`mov word [x+0x10], "y\0"`）——
+                // 否则满文件的 `mov byte [..], 'a'` 都会被当成片段，链就拼出鬼来了
+                if (length < 2 && !overflowIsPad)
                 {
                     continue;
                 }

@@ -1856,6 +1856,35 @@ List<(int Position, int Size)> nulImmediates = [.. AddonLocalizer.EnumerateImmed
 Check(AddonLocalizer.PatchCodeImmediates(nulTail, offSource, offTarget, nulImmediates) == 1, "补零结尾的整条立即数能换");
 Check(nulTail[2] == offTarget[0] && nulTail[4] == offTarget[2] && nulTail[5] == 0x00, "换成「关」且补零没被动（NUL 仍是 NUL）");
 
+
+// ★ v3：运行时**覆盖写尾巴**。有些标签的头是 .rdata 字面量（编译器用 16 字节 SSE 拷贝搬过去），
+// 尾巴却是紧接着一条短立即数——实测 Overall Intensity 是 mov word [rbx+0x10], "y\0"，
+// Structure Intensity 是 mov dword [rbx+0xF], "sity"。运行时它们会再写一遍尾巴、把我们补的空格
+// 盖回英文，界面就是「总体强度 y」「结构强度 sity」。所以头汉化了，尾巴也必须按同一套偏移写掉。
+byte[] tailBytes2 = new byte[48];
+byte[] overallSource = System.Text.Encoding.UTF8.GetBytes("Overall Intensity");
+byte[] overallTarget = System.Text.Encoding.UTF8.GetBytes("总体强度");
+Array.Copy(overallSource, 0, tailBytes2, 0, overallSource.Length);
+byte[] tailStore = [0x66, 0xC7, 0x82, 0x10, 0x00, 0x00, 0x00, (byte)'y', 0x00];
+Array.Copy(tailStore, 0, tailBytes2, 38, tailStore.Length);
+int tailWrote = AddonLocalizer.PatchCodeImmediatesWithDisp(tailBytes2, overallSource, overallTarget, [(45, 2, 0x10, true)]);
+Check(tailWrote == 1, $"尾巴覆盖写要写掉那个立即数（实际 {tailWrote} 处）");
+Check(System.Text.Encoding.UTF8.GetString(tailBytes2, 0, 17) == "Overall Intensity",
+    "字面量那头归 Apply 处理（立即数这一趟不碰它）");
+Check(tailBytes2[45] == 0x20 && tailBytes2[46] == 0x00, $"尾巴那个 y 补成空格、NUL 不动（实际 {tailBytes2[45]:X2} {tailBytes2[46]:X2}）");
+
+// 1 字节 + NUL 的尾巴也算「盖满」：单独 mov byte [x+8], '1' 不行，mov word [x+8], "1\0" 行
+byte[] presetChain =
+[
+    0x48, 0xB8, (byte)'P', (byte)'r', (byte)'e', (byte)'s', (byte)'e', (byte)'t', (byte)' ', (byte)'#',
+    0x66, 0xC7, 0x82, 0x08, 0x00, 0x00, 0x00, (byte)'1', 0x00,
+];
+byte[] presetSource = System.Text.Encoding.UTF8.GetBytes("Preset #1");
+byte[] presetTarget = System.Text.Encoding.UTF8.GetBytes("预设 #1");
+List<(int Position, int Size)> presetImmediates = [.. AddonLocalizer.EnumerateImmediates(presetChain, [(0, presetChain.Length)])];
+Check(AddonLocalizer.PatchCodeImmediates(presetChain, presetSource, presetTarget, presetImmediates) == 2,
+    "头 8 字节 + 1 字节尾巴（带 NUL）也凑满 → 两段都换");
+Check(presetChain[17] == presetTarget[8] && presetChain[18] == 0x00, "1 字节尾巴换成目标的最后一字节，NUL 没被动");
 Console.WriteLine("-- 下载器的纯逻辑（不联网）--");
 string[] assets = ["OptiScaler-NR-v0.8.3.zip", "OptiScaler-NR-v0.8.3-rtx40-mfg.zip", "OptiScaler-NR-v0.8.3-SHA256SUMS.txt", "NeuRotic-Patch.zip"];
 Check(OptiScalerDownloader.IsUsableAsset(assets[0]) && !OptiScalerDownloader.IsUsableAsset(assets[2]),
