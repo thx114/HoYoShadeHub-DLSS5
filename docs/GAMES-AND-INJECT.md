@@ -2293,3 +2293,36 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
 - 验证：x64 Release 构建 0 错误；扩展自测 PASS 481 / FAIL 0。
 - 文件：`Features/Plugins/Dlss5CompatibilityCheck.cs`（UTF-16 源，pwsh 保编码改）、
   `Features/GameLauncher/GameLauncherPage.xaml.cs`、`HoYoShadeHub.Extensions/OptiScaler/OptiScalerRuntime.cs`。
+
+### 41 插件配置栏新增「DX11Source=native（呈现模式）」开关
+
+- 需求（原话）：「插件的配置栏新增 DX11Source=native 的修改，这是RenoDX DLSS5在启用呈现模式的需求，可开关」。
+- 落点：`[RenoDX.DLSS5]`（**renodx-dlss5.addon64 自己的配置段，名字带点**）—— 不是 `[RENODX-DLSS]`（那是旧插件 renodx-dlss.addon64 的段），也不是 `[ADDON]`。
+- 实现：
+  - `ReShadeProfile`：新增 `Dx11SourceKey="DX11Source"` / `Dx11SourceNative="native"`，以及
+    `GetDx11Source()` / `IsDx11SourceNative()` / `SetDx11SourceNative(bool)` —— 开 = 写 `native`，
+    关 = 删键（跟随插件默认）；顺手删掉老版本可能误写进 `[ADDON]` 的那份；
+  - `GamePluginService`：`CanEditDx11Source`（前提同 HookPoint：装了 `renodx-dlss*` 插件）、
+    `GetDx11Source` / `IsDx11SourceNative` / `SetDx11SourceNative`；
+  - `GamePluginPage`：配置栏「插件配置」加勾选框 `CheckBox_Dx11SourceNative`（文案
+    「DX11Source=native（呈现模式）」），启用态与 HookPoint 一起刷新；写失败时回滚勾选并提示。
+- 段名来源（已定案）：挖 `renodx-dlss5.addon64` 字符串得到权威答案 ——
+  「set DX11Source=native in [RenoDX.DLSS5] in ReShade.ini and restart the game.」。
+  合法取值：`native`（服务游戏自身 DLSS）/ `off`（DX11 下插件完全停用）/ `foreign`（只服务第三方工具，只读诊断值）；
+  删键 = 跟随游戏 DLSS（默认）。所以本开关：开 = 写 `native`，关 = 删键。
+- 踩过的坑：第一版写进了 `[RENODX-DLSS]`（旧插件的段）→ 游戏里 addon 照样提示要设 DX11Source，白改。
+  现在写对段，并顺手清掉误写进 `[RENODX-DLSS]` / `[ADDON]` 的历史残留。
+- 追加（用户反馈：不勾的话进游戏插件还是一直弹提示，不能指望用户记得勾）：
+  - **启用即补写**：`GamePluginService.SetAddonEnabled` 在启用 `renodx-dlss5.addon64` 主插件
+    （`IsRenoDxDlss5Addon`：文件名 `renodx-dlss5.addon64` / `renodx-dlss5(...).addon64`；
+    super-anus / renodx-dlss 不算）且 DX11Source 还不是 native 时，自动 `SetDx11SourceNative(true)`，
+    随启用那次 Save 一起落盘；
+  - **刷新即补写**：每游戏插件页 `UpdateHookPointUi` 对「主插件已启用但键缺失/不是 native」的
+    旧安装自动补一次，状态栏注明。语义：插件启用期间这个键就是它的硬性需求，勾选框现在的意义是
+    「禁用呈现模式」——再打开插件页会被补回，想彻底关请先禁用插件；
+  - 状态栏文案修正：写键成功的提示原来还写着旧段名 `[RENODX-DLSS]`，改成 `[RenoDX.DLSS5]`。
+- 验证追加：扩展自测新增启用自动补写 / 主插件判定（super-anus、renodx-dlss、null 均排除）等用例。
+- 验证：x64 Release 构建 0 错误；扩展自测 PASS 497 / FAIL 0（本项 +16 条）。
+- 文件：`HoYoShadeHub.Extensions/ReShade/ReShadeProfile.cs`、
+  `HoYoShadeHub.Extensions/Games/GamePluginService.cs`、
+  `Features/Plugins/GamePluginPage.xaml(.cs)`、`HoYoShadeHub.Extensions.Tests/Program.cs`。

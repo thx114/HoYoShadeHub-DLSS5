@@ -380,6 +380,23 @@ public sealed class GamePluginService
            || (AddonFileInfo.Parse(addonFileName)?.IsDlss5ByName ?? false);
 
     /// <summary>
+    /// 是不是 RenoDX DLSS5 主插件（<c>renodx-dlss5.addon64</c> / <c>renodx-dlss5(x.y.z).addon64</c>）。
+    /// 它启用「呈现模式」时硬性要求 ReShade.ini 里有 <c>[RenoDX.DLSS5] DX11Source=native</c>，
+    /// 缺了进游戏就一直弹提示 —— 所以启用时要自动补写（见 <see cref="SetAddonEnabled"/>）。
+    /// <c>renodx-dlss5-super-anus*</c> 是另一款实现（段名不同）不匹配；<c>renodx-dlss*</c>（DLSS 版）也不匹配。
+    /// </summary>
+    public static bool IsRenoDxDlss5Addon(string? addonFileName)
+    {
+        if (string.IsNullOrWhiteSpace(addonFileName))
+        {
+            return false;
+        }
+
+        return addonFileName.StartsWith("renodx-dlss5.", StringComparison.OrdinalIgnoreCase)
+               || addonFileName.StartsWith("renodx-dlss5(", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 把 LoadFromDllMain 对齐「只有 DLSS5 插件才该在里面」这条规则：
     /// <list type="bullet">
     /// <item>开着但没勾的 DLSS5 插件 —— 补上（用户要求：DLSS5 插件启用就默认从 DllMain 加载）</item>
@@ -435,8 +452,21 @@ public sealed class GamePluginService
     public bool CanEditHookPoint(IEnumerable<GameAddonState>? addons = null) =>
         (addons ?? GetAddons()).Any(a => a.IsHookPointCapable);
 
+    /// <summary>DX11Source 能不能改：前提和 hook 点一样（装了 renodx-dlss* 插件）</summary>
+    public bool CanEditDx11Source(IEnumerable<GameAddonState>? addons = null) => CanEditHookPoint(addons);
+
+    /// <summary>RenoDX DLSS5 主插件在这个游戏里是否处于启用状态</summary>
+    public bool IsRenoDxDlss5AddonEnabled(IEnumerable<GameAddonState>? addons = null) =>
+        (addons ?? GetAddons()).Any(a => a.Enabled && IsRenoDxDlss5Addon(a.File.FileName));
+
     /// <summary>键不存在也返回 0（= off）</summary>
     public int GetHookPoint() => Profile?.GetHookPoint() ?? 0;
+
+    /// <summary>这个游戏 ReShade.ini 里 [RENODX-DLSS] 的 DX11Source（null = 没写）</summary>
+    public string? GetDx11Source() => Profile?.GetDx11Source();
+
+    /// <summary>DX11Source 是否已经是 native（RenoDX DLSS5 呈现模式需要）</summary>
+    public bool IsDx11SourceNative() => Profile?.IsDx11SourceNative() ?? false;
 
 
     #region OptiScaler upscaler runtime (game directory)
@@ -553,6 +583,13 @@ public sealed class GamePluginService
             if (IsNeuralInterposer(addonFileName))
             {
                 EnsureInterposerDlls();
+            }
+
+            if (IsRenoDxDlss5Addon(addonFileName) && !Profile.IsDx11SourceNative())
+            {
+                // RenoDX DLSS5 的呈现模式硬性要求 [RenoDX.DLSS5] DX11Source=native，
+                // 缺了进游戏插件就一直弹提示 —— 启用时顺手补上（随下面那次 Save 一起落盘）
+                Profile.SetDx11SourceNative(true);
             }
         }
         else
@@ -734,6 +771,19 @@ public sealed class GamePluginService
         }
 
         Profile.SetHookPoint(value);
+        Profile.Save();
+        return true;
+    }
+
+    /// <summary>写 DX11Source：开 = native，关 = 删键（跟随插件默认）</summary>
+    public bool SetDx11SourceNative(bool enabled)
+    {
+        if (Profile is null || !CanEditDx11Source())
+        {
+            return false;
+        }
+
+        Profile.SetDx11SourceNative(enabled);
         Profile.Save();
         return true;
     }

@@ -717,6 +717,23 @@ var reloaded = ReShadeProfile.Load(profilePath);
 Check(reloaded.GetHookPoint() == 0, "重新加载后 HookPoint 仍是 0");
 Check(reloaded.GetLoadFromDllMain() is { Count: 3 }, "重新加载后 LoadFromDllMain 槽位数不变");
 
+Console.WriteLine("-- DX11Source（RenoDX DLSS5 呈现模式）--");
+Check(profile.GetDx11Source() is null, "默认没有 DX11Source");
+profile.SetDx11SourceNative(true);
+Check(profile.IsDx11SourceNative(), "写 DX11Source=native 后判定为 native");
+profile.Save();
+string dx11Text = File.ReadAllText(profilePath);
+int dx11SecIdx = dx11Text.IndexOf("[RenoDX.DLSS5]", StringComparison.Ordinal);
+int dx11SecEnd = dx11Text.IndexOf("\n[", dx11SecIdx + 1, StringComparison.Ordinal);
+string dx11Section = dx11SecEnd < 0 ? dx11Text[dx11SecIdx..] : dx11Text[dx11SecIdx..dx11SecEnd];
+Check(dx11Section.Contains("DX11Source=native"), "native 落在 [RenoDX.DLSS5] 段（DLSS5 addon 真正读的位置）");
+Check(dx11Text.IndexOf("DX11Source", StringComparison.Ordinal) == dx11Text.LastIndexOf("DX11Source", StringComparison.Ordinal), "全文件只有一处 DX11Source（没往 [ADDON] 里乱写）");
+Check(ReShadeProfile.Load(profilePath).IsDx11SourceNative(), "重载后 DX11Source 还是 native");
+profile.SetDx11SourceNative(false);
+Check(profile.GetDx11Source() is null, "关掉 = 删键（跟随插件默认）");
+profile.Save();
+Check(!File.ReadAllText(profilePath).Contains("DX11Source"), "关掉后文件里不再有 DX11Source");
+
 Console.WriteLine("-- 旧版本误写在 [ADDON] 的那份要能读、并自动搬家 --");
 string legacyPath = Path.Combine(root, "legacy", "ReShade.ini");
 Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
@@ -1012,6 +1029,16 @@ Check(File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("DirectNeura
 Check(File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("DirectNeuralRenderingHookStage=0"), "ShortFuse 那版的 DirectNeuralRenderingHookStage 也一起写（用户实测的键名）");
 Check(File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("[STYLE]"), "往返后 [STYLE] 段还在");
 
+Console.WriteLine("-- DX11Source（服务层）--");
+Check(!serviceA.IsDx11SourceNative(), "默认不是 native");
+Check(serviceA.SetDx11SourceNative(true), "写 DX11Source=native");
+Check(serviceA.IsDx11SourceNative(), "读回来是 native");
+string dx11Raw = File.ReadAllText(Path.Combine(gameA, "ReShade.ini"));
+Check(dx11Raw.Contains("DX11Source=native"), "native 落到盘上");
+Check(dx11Raw.IndexOf("DX11Source", StringComparison.Ordinal) == dx11Raw.LastIndexOf("DX11Source", StringComparison.Ordinal), "只有一处（没写进 [ADDON]）");
+Check(serviceA.SetDx11SourceNative(false), "关掉 DX11Source");
+Check(!File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("DX11Source"), "关掉后盘上没了");
+
 string plainDlss = "renodx-dlss(9.17.12).addon64";
 
 // 用户反馈过：文件名里常常没有 ShortFuse 分支信息（装的就是 renodx-dlss.addon64），
@@ -1042,6 +1069,28 @@ var servicePlain = new GamePluginService(onlyPlainEntry.Entry!, null, null);
 Check(!servicePlain.CanEditHookPoint(), "只装 dlss5-bridge → hook 点不可改");
 Check(!servicePlain.SetHookPoint(4), "不可改的时候写不进去");
 Check(!File.ReadAllText(Path.Combine(Path.GetDirectoryName(onlyPlain)!, "ReShade.ini")).Contains("DirectNeuralRenderingHookPoint"), "盘上确实没写");
+Check(!servicePlain.SetDx11SourceNative(true), "不可改的时候 DX11Source 也写不进去");
+Check(!File.ReadAllText(Path.Combine(Path.GetDirectoryName(onlyPlain)!, "ReShade.ini")).Contains("DX11Source"), "盘上确实没写 DX11Source");
+
+Console.WriteLine("-- 启用 RenoDX DLSS5 时自动补写 DX11Source=native --");
+Check(!GamePluginService.IsRenoDxDlss5Addon("renodx-dlss5-super-anus(1.0.8.18).addon64"), "super-anus 不是主插件（另一款实现，段名不同）");
+Check(!GamePluginService.IsRenoDxDlss5Addon("renodx-dlss(9.17.12).addon64"), "renodx-dlss（DLSS 版）不是主插件");
+Check(!GamePluginService.IsRenoDxDlss5Addon(null), "null 不是");
+string autoExe = Path.Combine(root, "auto-dx11", "YuanShen.exe");
+Directory.CreateDirectory(Path.GetDirectoryName(autoExe)!);
+File.WriteAllText(autoExe, "fake");
+string autoAddons = Path.Combine(root, "auto-dx11-addons");
+Directory.CreateDirectory(autoAddons);
+File.WriteAllText(Path.Combine(autoAddons, "renodx-dlss5(1.0.8.18).addon64"), "x");
+File.WriteAllText(Path.Combine(Path.GetDirectoryName(autoExe)!, "ReShade.ini"), "[ADDON]\r\nAddonPath=" + autoAddons + "\\\r\n");
+AddCustomResult autoEntry = discovery.AddCustom(autoExe);
+var serviceAuto = new GamePluginService(autoEntry.Entry!, null, null);
+Check(GamePluginService.IsRenoDxDlss5Addon("renodx-dlss5(1.0.8.18).addon64"), "主插件判定：renodx-dlss5( ... ) 算");
+Check(GamePluginService.IsRenoDxDlss5Addon("renodx-dlss5.addon64"), "主插件判定：renodx-dlss5.addon64 算");
+Check(serviceAuto.SetAddonEnabled("renodx-dlss5(1.0.8.18).addon64", true), "启用 RenoDX DLSS5");
+string autoIni = File.ReadAllText(Path.Combine(Path.GetDirectoryName(autoExe)!, "ReShade.ini"));
+Check(autoIni.Contains("DX11Source=native"), "启用时自动补写 DX11Source=native（进游戏插件不再弹提示）");
+Check(serviceAuto.GetAddons().First(a => a.Slug == "renodx-dlss5").LoadFromDllMain, "DLSS5 家族顺带进 LoadFromDllMain（原有规则不回退）");
 
 Console.WriteLine("-- 没有 ReShade.ini 的游戏 --");
 var serviceNone = new GamePluginService(bare.Entry!, ShadeHostLocator.FromUserDataFolder(userDataFolder)!);

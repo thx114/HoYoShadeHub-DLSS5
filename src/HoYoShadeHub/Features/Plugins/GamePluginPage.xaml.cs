@@ -663,6 +663,19 @@ public sealed partial class GamePluginPage : PageBase
             bool forceOff = CurrentGameId is { } gameId && AppConfig.GetForceHookOffOnLaunch(gameId.GameBiz);
             CheckBox_ForceHookOff.IsChecked = forceOff;
             CheckBox_ForceHookOff.IsEnabled = canEdit;
+
+            // RenoDX DLSS5 已启用但键缺失（老安装 / 键被清过）：自动补上，
+            // 免得进游戏插件一直弹「set DX11Source=native」的提示（用户反馈）
+            if (_plugins is { HasReShadeIni: true } pluginsAuto
+                && pluginsAuto.IsRenoDxDlss5AddonEnabled()
+                && !pluginsAuto.IsDx11SourceNative()
+                && pluginsAuto.SetDx11SourceNative(true))
+            {
+                TextBlock_Status.Text = "RenoDX DLSS5 已启用：自动补写 [RenoDX.DLSS5] DX11Source=native（呈现模式需要，进游戏不再提示）。";
+            }
+
+            CheckBox_Dx11SourceNative.IsChecked = _plugins?.IsDx11SourceNative() ?? false;
+            CheckBox_Dx11SourceNative.IsEnabled = canEdit;
         }
         finally
         {
@@ -732,6 +745,28 @@ public sealed partial class GamePluginPage : PageBase
         TextBlock_Status.Text = value
             ? "已开启：以后从这里启动/注入这个游戏之前，会自动把 hook 点写成 0。"
             : "已关闭：启动前不再动 hook 点。";
+    }
+
+    /// <summary>「DX11Source=native（呈现模式）」：写 / 删 [RenoDX.DLSS5] DX11Source</summary>
+    private void CheckBox_Dx11SourceNative_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isApplying || _plugins is null)
+        {
+            return;
+        }
+
+        bool value = CheckBox_Dx11SourceNative.IsChecked == true;
+        if (_plugins.SetDx11SourceNative(value))
+        {
+            TextBlock_Status.Text = value
+                ? "已写 [RenoDX.DLSS5] DX11Source=native（RenoDX DLSS5 呈现模式）。"
+                : "已删掉 DX11Source，跟随插件默认。";
+        }
+        else
+        {
+            TextBlock_Status.Text = "DX11Source 写不进去 —— 要么没有 ReShade.ini，要么没有 RenoDX DLSS5 插件。";
+            UpdateHookPointUi();
+        }
     }
 
     private void ComboBox_HookPoint_SelectionChanged(object sender, SelectionChangedEventArgs e)

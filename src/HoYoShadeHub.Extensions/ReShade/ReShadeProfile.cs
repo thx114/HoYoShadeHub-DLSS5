@@ -256,6 +256,14 @@ public sealed class ReShadeProfile
     public const string RenoDlssSection = "RENODX-DLSS";
 
     /// <summary>
+    /// <c>renodx-dlss5.addon64</c>（新的 DLSS5 插件）自己的配置段 —— 注意名字**带点**，
+    /// 和上面旧插件的 <c>[RENODX-DLSS]</c> 不是一个段（写错段插件根本不看）。
+    /// 权威来源：addon 二进制里的提示原文
+    /// 「set DX11Source=native in [RenoDX.DLSS5] in ReShade.ini and restart the game」。
+    /// </summary>
+    public const string Dlss5Section = "RenoDX.DLSS5";
+
+    /// <summary>
     /// ShortFuse 的安装配置段。<c>HookStreamline=1</c> 让 DLSS 插件知道无需理会 Streamline
     /// 的 Present 钩子（外部注入时 Streamline 已先挂好，避免双重 Present hook / 顺序错乱）。
     /// </summary>
@@ -278,6 +286,15 @@ public sealed class ReShadeProfile
 
     /// <summary>神经渲染 pass 数（用户要求：超过 3 就算高）</summary>
     public const string PassCountKey = "DirectNeuralRenderingPassCount";
+
+    /// <summary>
+    /// RenoDX DLSS5 的「呈现模式」（presentation）要求 <c>DX11Source=native</c>。
+    /// 写进 <c>[RenoDX.DLSS5]</c>（renodx-dlss5.addon64 自己的配置段）。
+    /// </summary>
+    public const string Dx11SourceKey = "DX11Source";
+
+    /// <summary>DX11Source 打开时写的取值</summary>
+    public const string Dx11SourceNative = "native";
 
     /// <summary>允许改 hook 点的插件 slug（用户明确要求的前置条件）</summary>
     public static readonly string[] HookPointCapableSlugs = ["renodx-dlss5-super-anus", "renodx-dlss"];
@@ -538,6 +555,37 @@ public sealed class ReShadeProfile
         _ini.RemoveKey(RenoDlssSection, HookStageKey);
         _ini.RemoveKey(AddonSection, HookPointKey);
         _ini.RemoveKey(AddonSection, HookStageKey);
+    }
+
+    #endregion
+
+    #region DX11Source（RenoDX DLSS5 呈现模式）
+
+    /// <summary>DX11Source 的原始值；键不存在返回 null</summary>
+    public string? GetDx11Source() => _ini.GetValue(Dlss5Section, Dx11SourceKey)?.Trim();
+
+    /// <summary>是否已经是 <c>native</c>（呈现模式要求的取值）</summary>
+    public bool IsDx11SourceNative() =>
+        string.Equals(GetDx11Source(), Dx11SourceNative, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 开 = 写 <c>DX11Source=native</c>；关 = 删键（回到 addon 自己的默认，不硬编一个没见过的值）。
+    /// 顺手把老版本可能误写进 <c>[ADDON]</c> 的那份删掉。
+    /// </summary>
+    public void SetDx11SourceNative(bool enabled)
+    {
+        if (enabled)
+        {
+            _ini.SetValue(Dlss5Section, Dx11SourceKey, Dx11SourceNative);
+        }
+        else
+        {
+            _ini.RemoveKey(Dlss5Section, Dx11SourceKey);
+        }
+
+        // 旧段（旧插件用的 [RENODX-DLSS]）和 [ADDON] 里都不该有它；历史上可能被误写过，顺手清掉
+        _ini.RemoveKey(RenoDlssSection, Dx11SourceKey);
+        _ini.RemoveKey(AddonSection, Dx11SourceKey);
     }
 
     #endregion
