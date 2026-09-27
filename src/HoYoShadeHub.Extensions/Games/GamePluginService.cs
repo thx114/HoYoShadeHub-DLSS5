@@ -236,7 +236,7 @@ public sealed class GamePluginService
 
         // 运行时 dll 可能在**两个**目录里：插件目录（ReShade 扫的）和游戏目录
         // （neural interposer 要求 nvngx_dlssnr.dll 躺在游戏 exe 旁边）。只查插件目录会误报「缺 dll」。
-        List<string?> dllFileNames = CollectRuntimeFileNames(AddonDirectory);
+        List<string?> dllFileNames = CollectRuntimeFileNames(AddonDirectory, Game.GameDirectory);
 
         foreach (AddonFileInfo file in files)
         {
@@ -264,8 +264,17 @@ public sealed class GamePluginService
         return result;
     }
 
-    /// <summary>插件目录 + 游戏目录里所有文件名（给「缺 dll」检查用）</summary>
-    private static List<string?> CollectRuntimeFileNames(string? addonsDirectory)
+    /// <summary>
+    /// 插件目录 + 游戏目录里所有文件名（给「缺 dll」检查用）。
+    ///
+    /// <para>
+    /// 运行时 dll（nvngx_dlssnr.dll 这类）合法位置有两个：插件目录（ReShade 扫的）和
+    /// 游戏 exe 旁边（neural interposer 的要求；EnsureInterposerDlls / EnsureNrdll / 用户手放
+    /// 都会放那儿）。只查插件目录会把「dll 明明在游戏目录、能正常加载」误报成「缺 dll」，
+    /// 启动前的弹窗就每次都弹（用户报过：DLL 配置里装过了还弹）。
+    /// </para>
+    /// </summary>
+    private static List<string?> CollectRuntimeFileNames(string? addonsDirectory, string? gameDirectory)
     {
         var names = new List<string?>();
 
@@ -285,6 +294,7 @@ public sealed class GamePluginService
         }
 
         AddDirectory(addonsDirectory);
+        AddDirectory(gameDirectory);
         return names;
     }
 

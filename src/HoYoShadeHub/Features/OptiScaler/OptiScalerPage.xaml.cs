@@ -563,7 +563,7 @@ public sealed partial class OptiScalerPage : PageBase
     private static OptiScalerBuildItemViewModel? BuildOf(object sender)
         => (sender as FrameworkElement)?.DataContext as OptiScalerBuildItemViewModel;
 
-    /// <summary>新增：空配置 / 复制现有配置 / 从网络下载</summary>
+    /// <summary>新增：空配置 / 复制现有配置 / 从网络下载 / 从文件导入</summary>
     private async void Button_PresetAdd_Click(object sender, RoutedEventArgs e)
     {
         if (BuildOf(sender) is not { } item)
@@ -578,17 +578,19 @@ public sealed partial class OptiScalerPage : PageBase
         }
 
         const string networkLabel = "从网络下载配置";
+        const string fileLabel = "从文件导入（.ini / .zip）";
 
         var nameBox = new TextBox
         {
             Header = "配置名",
-            PlaceholderText = "例如：40系6倍帧生成 NR50%2层",
+            PlaceholderText = "例如：40系6倍帧生成 NR50%2层（从文件导入可留空）",
             MinWidth = 340,
         };
 
         var sourceItems = new List<string> { OptiScalerPresets.EmptyLabel };
         sourceItems.AddRange(OptiScalerPresets.List());
         sourceItems.Add(networkLabel);
+        sourceItems.Add(fileLabel);
 
         var sourceBox = new ComboBox
         {
@@ -605,9 +607,24 @@ public sealed partial class OptiScalerPage : PageBase
             Visibility = Visibility.Collapsed,
         };
 
+        var pickedText = new TextBlock
+        {
+            Text = "还没选文件。",
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+
+        var pickButton = new Button { Content = "选择文件…" };
+        var pickPanel = new StackPanel { Spacing = 6, Visibility = Visibility.Collapsed };
+        pickPanel.Children.Add(pickButton);
+        pickPanel.Children.Add(pickedText);
+
         var hint = new TextBlock
         {
-            Text = "空配置 = 一份全默认的 OptiScaler.ini；复制现有 = 以某个本地配置为底改。",
+            Text = "空配置 = 一份全默认的 OptiScaler.ini；复制现有 = 以某个本地配置为底改；" +
+                   "从文件导入 = 选一份现成的 .ini 原样导入（不改编码），或选 .zip 解出里面全部 .ini —— " +
+                   "重名自动加序号，不覆盖现有配置。",
             TextWrapping = TextWrapping.Wrap,
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
         };
@@ -616,20 +633,40 @@ public sealed partial class OptiScalerPage : PageBase
         panel.Children.Add(nameBox);
         panel.Children.Add(sourceBox);
         panel.Children.Add(remoteBox);
+        panel.Children.Add(pickPanel);
         panel.Children.Add(hint);
 
         List<OptiScalerPresetCatalog.RemotePreset> remote = [];
         bool fetched = false;
+        string? pickedPath = null;
 
-        sourceBox.SelectionChanged += async (_, _) =>
+        pickButton.Click += async (_, _) =>
         {
-            if (!string.Equals(sourceBox.SelectedItem as string, networkLabel, StringComparison.Ordinal))
+            string? picked = await FileDialogHelper.PickSingleFileAsync(
+                XamlRoot,
+                ("OptiScaler 配置（ini）", ".ini"),
+                ("Zip 压缩包", ".zip"));
+            if (picked is null)
             {
-                remoteBox.Visibility = Visibility.Collapsed;
                 return;
             }
 
-            remoteBox.Visibility = Visibility.Visible;
+            pickedPath = picked;
+            pickedText.Text = Path.GetFileName(picked);
+        };
+
+        sourceBox.SelectionChanged += async (_, _) =>
+        {
+            bool network = string.Equals(sourceBox.SelectedItem as string, networkLabel, StringComparison.Ordinal);
+            remoteBox.Visibility = network ? Visibility.Visible : Visibility.Collapsed;
+            pickPanel.Visibility = string.Equals(sourceBox.SelectedItem as string, fileLabel, StringComparison.Ordinal)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            if (!network)
+            {
+                return;
+            }
+
             if (fetched)
             {
                 return;
@@ -670,55 +707,147 @@ public sealed partial class OptiScalerPage : PageBase
         }
 
         string name = nameBox.Text?.Trim() ?? string.Empty;
-        if (name.Length == 0)
-        {
-            TextBlock_Status.Text = "配置名不能为空。";
-            return;
-        }
-
-        string content = string.Empty;
+        List<string> imported = [];
         List<string>? newSources = null;
-        if (string.Equals(sourceBox.SelectedItem as string, networkLabel, StringComparison.Ordinal))
+        string content = string.Empty;
+
+        if (string.Equals(sourceBox.SelectedItem as string, fileLabel, StringComparison.Ordinal))
         {
-            if (remoteBox.SelectedItem is not OptiScalerPresetCatalog.RemotePreset picked)
+            // —— 从文件导入：.ini 原样拷一份；.zip 解出里面全部 .ini（重名加序号，不覆盖）——
+            if (pickedPath is null)
             {
-                TextBlock_Status.Text = "还没选远端配置。";
+                TextBlock_Status.Text = "还没选文件  先点「选择文件…」。";
                 return;
             }
 
-            string? downloaded = await OptiScalerPresetCatalog.DownloadAsync(picked, CancellationToken.None);
-            if (string.IsNullOrWhiteSpace(downloaded))
+            if (string.Equals(Path.GetExtension(pickedPath), ".zip", StringComparison.OrdinalIgnoreCase))
             {
-                TextBlock_Status.Text = $"下载「{picked.Name}」失败  网络不通或远端文件缺失。";
+                try
+                {
+                    Directory.CreateDirectory(OptiScalerPresets.Root);
+                    using System.IO.Compression.ZipArchive archive = System.IO.Compression.ZipFile.OpenRead(pickedPath);
+                    foreach (System.IO.Compression.ZipArchiveEntry entry in archive.Entries)
+                    {
+                        // 条目名两种分隔符都可能有（Compress-Archive 的历史包袱）
+                        string flat = entry.FullName.Replace('\\', '/');
+                        if (flat.EndsWith("/"))
+                        {
+                            continue;
+                        }
+
+                        flat = flat[(flat.LastIndexOf('/') + 1)..];
+                        if (flat.Length == 0
+                            || flat.StartsWith("__MACOSX", StringComparison.OrdinalIgnoreCase)
+                            || !flat.EndsWith(".ini", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        string finalName = UniquePresetName(Path.GetFileNameWithoutExtension(flat));
+                        using Stream entryStream = entry.Open();
+                        using FileStream target = File.Create(OptiScalerPresets.PathOf(finalName));
+                        entryStream.CopyTo(target);
+                        imported.Add(finalName);
+                    }
+                }
+                catch
+                {
+                    // 包读不了 / 写不进去，按「没找到」走下面的提示
+                }
+
+                if (imported.Count == 0)
+                {
+                    TextBlock_Status.Text = "压缩包里没有找到 .ini 配置（或包读不了）。";
+                    return;
+                }
+            }
+            else
+            {
+                string finalName = UniquePresetName(name.Length > 0 ? name : Path.GetFileNameWithoutExtension(pickedPath));
+                if (!OptiScalerPresets.ImportFile(pickedPath, finalName))
+                {
+                    TextBlock_Status.Text = $"导入「{Path.GetFileName(pickedPath)}」失败  文件读不了或目录不可写。";
+                    return;
+                }
+
+                imported.Add(finalName);
+            }
+        }
+        else
+        {
+            if (name.Length == 0)
+            {
+                TextBlock_Status.Text = "配置名不能为空。";
                 return;
             }
 
-            newSources = picked.Sources;
-            content = downloaded;
-        }
-        else if (sourceBox.SelectedItem is string source
-                 && !string.Equals(source, OptiScalerPresets.EmptyLabel, StringComparison.Ordinal))
-        {
-            content = OptiScalerPresets.Read(source) ?? string.Empty;
-        }
+            if (string.Equals(sourceBox.SelectedItem as string, networkLabel, StringComparison.Ordinal))
+            {
+                if (remoteBox.SelectedItem is not OptiScalerPresetCatalog.RemotePreset picked)
+                {
+                    TextBlock_Status.Text = "还没选远端配置。";
+                    return;
+                }
 
-        if (!OptiScalerPresets.Save(name, content, newSources))
-        {
-            TextBlock_Status.Text = $"写入配置「{name}」失败  目录不可写。";
-            return;
+                string? downloaded = await OptiScalerPresetCatalog.DownloadAsync(picked, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(downloaded))
+                {
+                    TextBlock_Status.Text = $"下载「{picked.Name}」失败  网络不通或远端文件缺失。";
+                    return;
+                }
+
+                newSources = picked.Sources;
+                content = downloaded;
+            }
+            else if (sourceBox.SelectedItem is string source
+                     && !string.Equals(source, OptiScalerPresets.EmptyLabel, StringComparison.Ordinal))
+            {
+                content = OptiScalerPresets.Read(source) ?? string.Empty;
+            }
+
+            if (!OptiScalerPresets.Save(name, content, newSources))
+            {
+                TextBlock_Status.Text = $"写入配置「{name}」失败  目录不可写。";
+                return;
+            }
+
+            imported.Add(name);
         }
 
         // 建完直接切过去（用户流程：测完一份存起来  换新的空配置接着测）
         string? addKey = _gameId?.GameBiz.ToString();
         if (!string.IsNullOrWhiteSpace(addKey))
         {
-            AppConfig.SetValue(name, PresetKey(addKey, item.CurrentBuildId));
+            AppConfig.SetValue(imported[^1], PresetKey(addKey, item.CurrentBuildId));
         // 记下「这个游戏挂的是哪份配置」 游戏改完退出时按它同步回配置
-        AppConfig.SetValue(name, OptiScalerPresets.FollowKey(addKey));
+        AppConfig.SetValue(imported[^1], OptiScalerPresets.FollowKey(addKey));
         }
 
-        TextBlock_Status.Text = $"已新增配置「{name}」，下拉已切过去。";
+        TextBlock_Status.Text = imported.Count == 1
+            ? $"已新增配置「{imported[0]}」，下拉已切过去。"
+            : $"已从压缩包导入 {imported.Count} 份配置：{string.Join("、", imported)}（已切到最后一份）。";
         Load();
+    }
+
+    /// <summary>导入用的预设名：非法字符清洗；与现有预设重名时加序号（不悄悄覆盖）</summary>
+    private string UniquePresetName(string baseName)
+    {
+        string name = OptiScalerPresets.Sanitize(baseName);
+        if (!File.Exists(OptiScalerPresets.PathOf(name)))
+        {
+            return name;
+        }
+
+        for (int i = 2; i < 100; i++)
+        {
+            string candidate = $"{name} {i}";
+            if (!File.Exists(OptiScalerPresets.PathOf(candidate)))
+            {
+                return candidate;
+            }
+        }
+
+        return name + " " + DateTime.Now.ToString("HHmmss");
     }
 
     /// <summary>修改：把构建当前生效的 OptiScaler.ini 覆盖回选中的配置</summary>

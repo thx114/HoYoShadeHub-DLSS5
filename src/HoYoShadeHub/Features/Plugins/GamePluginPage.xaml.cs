@@ -355,6 +355,8 @@ public sealed partial class GamePluginPage : PageBase
     /// 例外：<b>每游戏插件包</b>（<c>&lt;CacheRoot&gt;\games\&lt;游戏&gt;\Addons</c>）是新系统的
     /// 正常状态，不是「指向了别的 HoYoShade」。这时候只给一句中性说明，按钮收起来 ——
     /// 点它反而会把包路径改回共享目录，破坏「这个游戏用哪一版」。
+    /// 宿主根目录**里面**的子目录（例：上游自带的「若DX11崩溃或无效请解压」备用包解压在
+    /// Addons 子目录）同理 —— 不算指向别的 HoYoShade，不报「不一致」也不劝人指回。
     /// </para>
     /// </summary>
     private void UpdatePathHint(string? addonDirectory)
@@ -372,9 +374,12 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
+        // 宿主根目录里面的子目录（上游备用包解压在 Addons 子目录那种）不算「指向别的 HoYoShade」
+        // —— 对齐器按根对齐，不会动它；按整串相等判会把「指回」变成永远无效的空操作（用户报过）。
         bool differs = !string.IsNullOrWhiteSpace(addonDirectory)
                        && !string.IsNullOrWhiteSpace(hostAddons)
-                       && !string.Equals(addonDirectory.TrimEnd('\\', '/'), hostAddons!.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+                       && !string.Equals(addonDirectory.TrimEnd('\\', '/'), hostAddons!.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
+                       && !IsInsideHostRoot(addonDirectory, _host?.RootPath);
 
         if (!differs)
         {
@@ -389,6 +394,29 @@ public sealed partial class GamePluginPage : PageBase
                                   "启动/注入时 Hub 会自动把它指回当前 HoYoShade，也可以现在就点右边的按钮。";
         TextBlock_PathHint.Visibility = Visibility.Visible;
         Button_AlignIni.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>路径落在当前 HoYoShade 根目录里面吗（子目录也算；分隔符一律取运行时常量）</summary>
+    private static bool IsInsideHostRoot(string? path, string? hostRoot)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(hostRoot))
+        {
+            return false;
+        }
+
+        try
+        {
+            string full = path.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                               .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            string root = hostRoot.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                  .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            return Path.IsPathFullyQualified(full)
+                   && full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>插件包标记里记的「扩展 id → tag」，拼成一句给人看的版本说明</summary>

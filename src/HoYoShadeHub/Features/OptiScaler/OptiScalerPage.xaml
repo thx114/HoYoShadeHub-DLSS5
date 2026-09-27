@@ -128,7 +128,7 @@
                                 <ComboBox MinWidth="160"
                                           ItemsSource="{x:Bind PresetOptions, Mode=OneWay}"
                                           SelectedItem="{x:Bind CurrentPreset, Mode=TwoWay}" />
-                                <Button Padding="8,2" Click="Button_PresetAdd_Click" ToolTipService.ToolTip="新增配置（空配置 / 复制现有 / 从网络下载）">
+                                <Button Padding="8,2" Click="Button_PresetAdd_Click" ToolTipService.ToolTip="新增配置（空配置 / 复制现有 / 从网络下载 / 从文件导入 ini·zip）">
                                     <FontIcon FontSize="14" Glyph="&#xE710;" />
                                 </Button>
                                 <Button Padding="8,2" Click="Button_PresetOpenFile_Click" ToolTipService.ToolTip="修改：用编辑器打开这份配置">

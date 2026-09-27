@@ -2200,4 +2200,96 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
   同一套（`StopFpsUnlocker` + `GameExitedMessage` + `CheckGameVersion` 重算状态）。
   文件：StartGameButton.xaml / .cs、GameLauncherPage.xaml / .cs。
 
+### 36 DLSS5「缺运行时文件」启动弹窗误报（nrdll 在游戏目录时也弹）
 
+- 现象（用户转报他人）：DLL 配置里装过 nvngx_dlssnr.dll，启动仍弹「DLSS5 缺运行时文件：
+  插件目录里没有 nvngx_dlssnr.dll」。汇报原文写的是 nvngx_dssnr.dll —— 笔误，代码里的
+  required 文件只有 `nvngx_dlssnr.dll`（弹窗文本直接来自 `DllRequirement.Files`）。
+- 根因一（已修）：`GamePluginService.CollectRuntimeFileNames` 的注释宣称「插件目录 + 游戏目录」，
+  实现只扫插件目录 —— nrdll 按 interposer 语义放在游戏 exe 旁边（`EnsureInterposerDlls` /
+  `EnsureNrdll` / 用户手放）时明明能加载，却判「缺」，弹窗每次启动都弹。
+  修复：文件名集合把 `Game.GameDirectory` 一并收进来（与 `InGameDirectory` 标志同口径）。
+- 根因二（未修，记档）：**装与查的目录不一致** —— DLL 配置页装到「当前 HoYoShade 宿主」的
+  `AddonsPath`；启动弹窗查的是「该游戏 ini 的 `[ADDON] AddonPath`」指的目录（`GamePluginService.Reload`：
+  ini 里的绝对路径逐字用，没写才回落宿主）。ini 指向旧安装根 / 另一份 HoYoShade / 每游戏插件包时
+  （§5.3 同款），在 DLL 配置里装了也不算数。让汇报者核对：游戏 ini 的 `[ADDON] AddonPath`
+  vs DLL 配置页顶部显示的目标路径 —— 不一致就是这个；目前靠 `ShadePathAligner` 对齐，
+  它的误判问题在 §34 尾部记档，未动。
+- 验证：x64 Release 构建 0 错误；扩展自测 PASS 481 / FAIL 0。
+- 文件：`HoYoShadeHub.Extensions/Games/GamePluginService.cs`。
+
+### 37 兼容性检测第 12 项与「指回当前 HoYoShade」打架（宿主 Addons 子目录被报「不一致」但指回不动）
+
+- 现象（§36 同一位汇报者）：他的 `[ADDON] AddonPath` 指向
+  `…\HoYoShade\reshade-shaders\Addons\若DX11崩溃或无效请解压` —— 上游 HoYoShade 自带的
+  DX11 备用插件包，按说明解压出来的，目录里没有 pack.json（不是每游戏包）。检测第 12 项报
+  「AddonPath 和当前 HoYoShade 的插件目录不一致」，给了「指回当前 HoYoShade」按钮；点了却回
+  「没有需要改的键（路径本来就对得上）」—— 两个消息自相矛盾，修复永远无效。
+- 根因：**检测与对齐器口径不同**。第 12 项按「AddonPath 与 hostAddons **整串相等**」判
+  （`Dlss5CompatibilityCheck.CheckIniPaths`）；对齐器按「路径反推出的 HoYoShade 根 == 当前根」
+  对齐（`ShadePathAligner`：用锚点 `reshade-shaders` 反推根）。宿主 Addons 的**子目录**同时满足
+  「≠ hostAddons」和「根 == 当前根」→ 必然「报不一致 + 指回不动」。每游戏插件页的路径提示
+  （`GamePluginPage.UpdatePathHint`）同口径，一并修。
+- 改法：两处都补「落在当前宿主根目录**里面**的不算指错」判定（`IsInsideCurrentRoot` /
+  `IsInsideHostRoot`；分隔符取 `Path.DirectorySeparatorChar` 等运行时常量，不写反斜杠字面量）；
+  真正指到别的 HoYoShade 根、或认不出的自定义目录仍然照报。
+- 遗留说明：这种子目录状态下 §36 的启动弹窗仍可能响 —— nrdll 由 DLL 配置装在共享 `Addons`，
+  而 AddonPath 指着的**子目录**里的插件按依赖搜索看不到父目录的 dll。要让弹窗消失：
+  把 `nvngx_dlssnr.dll` 复制到**游戏 exe 旁边**（§36 修复后的启动检查认这个位置），或把
+  AddonPath 指回共享 `Addons`（确认插件本体也在那里）。
+- 验证：x64 Release 构建 0 错误；扩展自测 PASS 481 / FAIL 0。
+- 文件：`Features/Plugins/Dlss5CompatibilityCheck.cs`（UTF-16 源，pwsh 保编码改）、
+  `Features/Plugins/GamePluginPage.xaml.cs`。
+
+### 38 OptiScaler 配置「从文件导入」（ini / zip）
+
+- 需求：「+」新增配置支持从本地文件导入，两个场景：别人单发的 ini；打包互传的一套配置（zip）。
+- 实现：新增对话框内容来源加「从文件导入（.ini / .zip）」，选中后出现「选择文件…」
+  （WinUI FileOpenPicker，走 `FileDialogHelper` 的 COM 兜底）。
+  - `.ini`：`OptiScalerPresets.ImportFile` **字节级拷贝**进 `presets\` —— 不改编码 / BOM
+    （用户互传的 ini 什么编码都有，读出再写容易坏中文注释）；
+  - `.zip`：`ZipArchive` 枚举条目，兼容 `/` 与 `\` 两种分隔符（Compress-Archive 历史包袱），
+    平铺取文件名，只收 `.ini`（跳目录 / `__MACOSX`），一个都没有就报「压缩包里没有找到 .ini」；
+  - 重名不覆盖：`UniquePresetName` 清洗非法字符后追加「 2」「 3」…；
+  - 导入完自动把当前游戏切到最后导入那份（PresetKey + FollowKey，同「新增」），
+    多份时状态栏列全名单。
+- 验证：x64 Release 构建 0 错误；扩展自测 PASS 481 / FAIL 0。
+- 文件：`Features/OptiScaler/OptiScalerPresets.cs`、`Features/OptiScaler/OptiScalerPage.xaml(.cs)`。
+
+### 39 日志保存到启动器所在文件夹
+
+- 需求：便携版日志别再丢 C 盘（`%LOCALAPPDATA%\HoYoShadeHub\log\`）——用户问「日志在哪」
+  得解释半天缓存目录规则，发日志支持也麻烦；直接放启动器旁边最好找。
+- 实现（`AppConfig`）：
+  - 新增 `LogFolder`：静态构造里解析。便携判定沿用现成原语（app 目录父层有外层
+    `HoYoShadeHub.exe` = `IsPortable`）→ 日志目录 = **启动器文件夹下的 `log\`**；
+  - 带可写探针（建目录 + 写删 `.write-probe`），只读盘 / 没权限自动回退缓存目录 `log\`；
+  - Setup 版 exe 目录在 Program Files 通常不可写，维持缓存目录 `log\`；
+  - RPC 进程（`HoYoShadeHub.RPC`）用同一套 `AppConfig` 判定，主程序 / RPC 日志进同一目录。
+- 全部 10 处 `Path.Combine(CacheFolder, "log")` 调用点统一改读 `AppConfig.LogFolder`：
+  主 Serilog（AppConfig）、App/Program 崩溃兜底、RPC Serilog、设置页日志体积统计 +
+  「打开日志目录」、RPC 超时提示 ×4（RpcService / QuickSetupView / HoYoShadeDownloadView /
+  RpcClientFactory）。RPC 的 `HoYoShadeHub.RPC.AppConfig` 是独立副本，同步加了 `LogFolder`。
+  老日志留在原处不迁移。
+- 影响：日志随安装目录走 → 整包拷走即带上日志，支持时让对方直接压缩安装目录即可。
+
+### 40 去掉「帧生成模型代改」+ 新增兼容检测第 21 项：NV 面板替换帧生成模型
+
+- 需求（原话）：「去除启动游戏和兼容性检测把游戏帧生成模型替换的功能」；「兼容性检测那边加一个
+  此游戏已被NV面板替换帧生成模型，在使用多倍帧生成可能出现闪烁和黑屏」。
+- 启动侧（已删）：`GameLauncherPage.ConfirmGameDlssgAsync`（启动前弹窗提议用 310.9 覆盖游戏目录
+  `nvngx_dlssg.dll` 的整段）连同调用点整体移除；`OptiScalerRuntime.ReplaceGameDlssg`（替换执行体）
+  删除，`FindGameDlssg` / `IsUnlockDlssg` / `TryReadFileVersion` 保留。
+- 检测侧（本次改）：
+  - 第 18 项 `CheckNvDlssFgPreset` 去掉 `CanFix / FixLabel / Fix`（不再代写驱动），提示语改为
+    「如需修改请自行到 NVIDIA App / 控制面板覆盖 DLSS-FG 预设（启动器不再代改）」；
+  - 新增第 21 项 `CheckNvAppFgModelOverride`（`#region 21`）：读
+    `NvDrsInterop.DlssFgOverrideEnableSettingId`（0x10E41E03，「Enable DLSS-FG override」）——
+    已覆盖（`Overridden`）且值非 0 判 Warning，文案用用户原话
+    「此游戏已被NV面板替换帧生成模型，在使用多倍帧生成可能出现闪烁和黑屏。」；未覆盖 / 值 0 判 Ok；
+    读不到驱动配置判 Info。只检测，不代改。
+- 编号：该项占 **21**（不是 20 —— 20 已被「每游戏插件包」占用；交接文档 §3.2 误记，已纠正）。
+  注册顺序与 region 顺序保持 1…21 升序。
+- 验证：x64 Release 构建 0 错误；扩展自测 PASS 481 / FAIL 0。
+- 文件：`Features/Plugins/Dlss5CompatibilityCheck.cs`（UTF-16 源，pwsh 保编码改）、
+  `Features/GameLauncher/GameLauncherPage.xaml.cs`、`HoYoShadeHub.Extensions/OptiScaler/OptiScalerRuntime.cs`。

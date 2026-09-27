@@ -123,6 +123,30 @@ internal static class OptiScalerPresets
         }
     }
 
+    /// <summary>
+    /// 从文件导入：把一份现成的 ini 原样拷进预设目录。
+    /// 字节级拷贝、不改编码 / BOM —— 用户互传的 ini 什么编码都有，
+    /// 读出来再写一遍反而容易把里面的中文注释 / 特殊字节弄坏。
+    /// </summary>
+    public static bool ImportFile(string sourcePath, string name)
+    {
+        try
+        {
+            if (Root.Length == 0 || !File.Exists(sourcePath))
+            {
+                return false;
+            }
+
+            Directory.CreateDirectory(Root);
+            File.Copy(sourcePath, PathOf(name), overwrite: true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>这份预设限定的 OptiScaler 来源分支（空 = 谁都能用）</summary>
     public static List<string> GetSources(string name)
     {

@@ -2123,83 +2123,6 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>
-    /// 启用 OptiScaler 时启动前检查游戏目录自带的 dlssg：存在且版本不是 310.9 就提示。
-    /// 用户确认后用构建目录里的 310.9 替换（旧文件改名 .bak）；拒绝则照常启动（多帧生成解锁不可用）。
-    /// </summary>
-    /// <returns>false 表示中止本次启动</returns>
-    private async Task<bool> ConfirmGameDlssgAsync()
-    {
-        try
-        {
-            if (!UseOptiScaler || CurrentGameId is not { } gameId)
-            {
-                return true;
-            }
-
-            string? optiDll = AppConfig.GetSelectedOptiScalerDll(gameId);
-            string? buildDirectory = Path.GetDirectoryName(optiDll);
-            if (string.IsNullOrWhiteSpace(buildDirectory) || !Directory.Exists(buildDirectory))
-            {
-                return true;
-            }
-
-            string? installPath = GameInstallPath;
-            if (string.IsNullOrWhiteSpace(installPath) || !Directory.Exists(installPath))
-            {
-                return true;
-            }
-
-            // BFS 游戏目录放到后台，不在 UI 线程枚举
-            string? gameDlssg = await Task.Run(() => OptiScalerRuntime.FindGameDlssg(installPath));
-            if (gameDlssg is null || OptiScalerRuntime.IsUnlockDlssg(gameDlssg))
-            {
-                return true;
-            }
-
-            Version? version = OptiScalerRuntime.TryReadFileVersion(gameDlssg);
-            string versionText = version is null ? "未知版本" : $"{version.Major}.{version.Minor}";
-
-            var dialog = new ContentDialog
-            {
-                XamlRoot = XamlRoot,
-                Title = "DLSSG 版本过低",
-                Content = $"游戏目录里的 nvngx_dlssg.dll 是 {versionText}，不支持多帧生成解锁。\n\n" +
-                          "是否使用 310.9 的 nvngx_dlssg.dll？（原文件会备份为 .bak）",
-                PrimaryButtonText = "使用 310.9",
-                CloseButtonText = "仍然启动",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-
-            ContentDialogResult result = await dialog.ShowAsync();
-            if (result != ContentDialogResult.Primary)
-            {
-                _logger.LogInformation("Game dlssg {Version} kept by user, launch continues", versionText);
-                return true;
-            }
-
-            string? error = OptiScalerRuntime.ReplaceGameDlssg(gameDlssg, buildDirectory);
-            if (error is not null)
-            {
-                _logger.LogWarning("{Error}", error);
-                InAppToast.MainWindow?.Error("DLSSG", error, 10000);
-                return false;
-            }
-
-            _logger.LogInformation("Game dlssg replaced with 310.9: {Path}", gameDlssg);
-            InAppToast.MainWindow?.Success("DLSSG", "已用 310.9 替换游戏目录的 nvngx_dlssg.dll。", 8000);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            // 检查本身出错不该拦着人玩游戏
-            _logger.LogWarning(ex, "Check game dlssg before launch");
-            return true;
-        }
-    }
-
-
-
-    /// <summary>
     /// 启用 OptiScaler 时启动前查「NVIDIA 驱动里的 DLSS-FG 多帧生成数量」（设置 ID 0x104D6667）。
     /// 被驱动钉住数量时 MFG 解锁会看不出效果，问一下要不要顺手改成 N/A（写 0 = 不覆盖）。
     /// 读不到 / 没覆盖 / 已经是 N/A / 写失败  一律放行，不拦着人玩游戏。
@@ -2598,9 +2521,37 @@ public sealed partial class GameLauncherPage : PageBase
                     }
                 }
 
-                // OptiScaler 自己的「注入时机」（按游戏）；没单独设就用全局预热默认
-                specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
-                    DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                // 桥在 specs 里时，原神 mhyprot 会拒绝外部注入 OptiScaler（VirtualAllocEx 拒绝访问）。
+                // 改由已注入的桥在进程内 LoadLibraryW 加载 OptiScaler（不走外部注入 API，mhyprot 拦不到）：
+                // 写 sidecar 到桥 DLL 同目录，桥 initialize() 末尾读它并起线程加载。
+                // 没桥的游戏（星铁/绝区零）仍走外部注入，行为不变。
+                InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s =>
+                    string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+                if (bridgeSpec is not null)
+                {
+                    string sidecar = Path.Combine(
+                        Path.GetDirectoryName(bridgeSpec.Path) ?? string.Empty,
+                        "Dx11FsrBridge.autoload.txt");
+                    try
+                    {
+                        File.WriteAllText(sidecar, optiScaler + Environment.NewLine, System.Text.Encoding.UTF8);
+                        _logger.LogInformation(
+                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：sidecar={Sidecar} -> {OptiScaler}",
+                            sidecar, optiScaler);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "写 FSR Bridge autoload sidecar 失败，回退外部注入：{Sidecar}", sidecar);
+                        specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                    }
+                }
+                else
+                {
+                    // 没桥：照旧外部注入
+                    specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                }
             }
         }
 
@@ -2668,54 +2619,54 @@ public sealed partial class GameLauncherPage : PageBase
         });
     }
 
-    private static long GetFileLengthOrZero(string filePath)
-    {
-        try
-        {
-            return File.Exists(filePath) ? new FileInfo(filePath).Length : 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
 
     /// <summary>
     /// 等 FSR Bridge 完成初始化：它在 IAT/loader hooks 安装前会写入
     /// <c>Dx11FsrBridge active pid=&lt;pid&gt;</c>。看到本次进程这行后再留 500ms，
     /// 让随后的 loader hooks 装完；后台日志线程按 200ms 批量落盘，轮询间隔 200ms。
-    /// 日志被截断（长度小于基线）时从文件头读起。
+    ///
+    /// ⚠️ 2026-09-26 修复 baselineLength 陷阱：桥 <c>truncate_on_start=1</c> 每次启动
+    /// 截断日志重写，marker 在文件开头。旧逻辑用「注入前文件长度」做 offset，
+    /// 当新文件增长超过该长度时会 seek 到新文件**中间**、跳过开头的 marker →
+    /// 30 秒超时误报 "not seen"（启动器日志与桥日志 pid 相同时仍说没看到）。
+    /// marker 本身含 pid，旧运行的 marker 是旧 pid 不会误匹配本次 → baselineLength
+    /// 多余且有害，直接读整个文件找本次 pid 的 marker。
     /// </summary>
     private static async Task<bool> WaitForFsrBridgeReadyAsync(
         string bridgeDirectory,
         int processId,
-        long baselineLength,
         TimeSpan timeout,
         System.Threading.CancellationToken cancellationToken)
     {
         string logPath = Path.Combine(bridgeDirectory, "Dx11FsrBridge.log");
         string marker = "Dx11FsrBridge active pid=" + processId.ToString();
+        // 兜底就绪线：桥的新版日志器（2026-09-26 重编）可能在启动器采完 baseline **之前**
+        // 就初始化完毕 —— pid 精确行落在 baseline 之前会被永远裁掉，30 秒必超时，
+        // OptiScaler 于是错过反作弊窗口（VirtualAllocEx 拒绝访问）。下面这几行只在本次
+        // 会话真正跑起来之后才会出现在 baseline 之后的内容里，任一出现 = hook 已装好。
+        string[] fallbackMarkers = ["draw_indexed_hook_active", "draw_hook_active", "hook_ready mode=feature_query"];
         DateTime deadline = DateTime.UtcNow + timeout;
 
         while (DateTime.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // 游戏在等待期退出（mhyprot 锁定后 OptiScaler 注入会被拒，用户常在此退游戏）
+            // → 立即返回 false，让外层换新 pid 重试，不傻等满超时。
+            if (!DllInjector.IsProcessAlive(processId))
+                return false;
+
             try
             {
                 if (File.Exists(logPath))
                 {
-                    long offset = new FileInfo(logPath).Length >= baselineLength ? baselineLength : 0;
                     using (var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     using (var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
                     {
-                        if (offset > 0)
-                        {
-                            stream.Seek(offset, SeekOrigin.Begin);
-                        }
-
+                        // 读整个文件：marker 含 pid，旧运行的 marker 不会误匹配本次 pid。
                         string tail = reader.ReadToEnd();
-                        if (tail.Contains(marker, StringComparison.Ordinal))
+                        if (tail.Contains(marker, StringComparison.Ordinal)
+                            || fallbackMarkers.Any(m => tail.Contains(m, StringComparison.Ordinal)))
                         {
                             await Task.Delay(500, cancellationToken);
                             return true;
@@ -2799,15 +2750,6 @@ public sealed partial class GameLauncherPage : PageBase
                         break;
                     }
 
-                    // Bridge 的日志会在每次启动时截断；记下注入前的文件长度，就绪检测只看新增内容，
-                    // 避免上一次运行留下的 "active" 行被误判成本次就绪。
-                    long baselineLength = 0;
-                    if (spec.WaitForReady)
-                    {
-                        baselineLength = GetFileLengthOrZero(Path.Combine(
-                            Path.GetDirectoryName(spec.Path) ?? string.Empty, "Dx11FsrBridge.log"));
-                    }
-
                     bool ok = DllInjector.Inject(pid, spec.Path, out string error);
                     attemptOk |= ok;
 
@@ -2838,7 +2780,6 @@ public sealed partial class GameLauncherPage : PageBase
                         bool ready = await WaitForFsrBridgeReadyAsync(
                             Path.GetDirectoryName(spec.Path) ?? string.Empty,
                             pid,
-                            baselineLength,
                             TimeSpan.FromSeconds(30),
                             cancellationToken);
 
@@ -3336,13 +3277,11 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
-            // 启用 OptiScaler：游戏目录自带 dlssg 不是 310.9 就先提示，确认后再启动
-            if (!await ConfirmGameDlssgAsync())
+            // 启用 OptiScaler：驱动里把 MFG 数量钉死了会盖住 MFG 解锁，先问一下要不要改成 N/A
+            if (!await ConfirmNvMfgCountAsync())
             {
                 return;
             }
-
-            // 启用 OptiScaler：驱动里把 MFG 数量钉死了会盖住 MFG 解锁，先问一下要不要改成 N/A             if (!await ConfirmNvMfgCountAsync())             {                 return;             }
 
             // 「启动游戏时强制 off」：启动/注入之前把 hook 点写 0（按游戏开关）
             ApplyForceHookOffOnLaunch();

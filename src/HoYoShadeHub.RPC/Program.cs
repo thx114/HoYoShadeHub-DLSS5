@@ -34,7 +34,7 @@ public static class RpcRunner
 
         builder.Configuration["Serilog:MinimumLevel:Override:Microsoft.AspNetCore"] = "Warning";
 
-        var logFolder = Path.Combine(AppConfig.CacheFolder, "log");
+        var logFolder = AppConfig.LogFolder;
         Directory.CreateDirectory(logFolder);
         var logFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
         Log.Logger = new LoggerConfiguration().WriteTo.File(path: logFile, shared: true, outputTemplate: $$"""[{Timestamp:HH:mm:ss.fff}] [{Level:u4}] [HoYoShadeHub RPC ({{Environment.ProcessId}})] {SourceContext}{NewLine}{Message}{NewLine}{Exception}{NewLine}""")

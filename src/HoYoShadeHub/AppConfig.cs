@@ -100,6 +100,8 @@ public static class AppConfig
 #endif
             }
             Directory.CreateDirectory(CacheFolder);
+            LogFolder = ResolveLogFolder();
+            Directory.CreateDirectory(LogFolder);
             var webviewFolder = Path.Combine(CacheFolder, "webview");
             Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", webviewFolder, EnvironmentVariableTarget.Process);
 
@@ -459,6 +461,43 @@ public static class AppConfig
 
     public static string LogFile { get; private set; }
 
+    /// <summary>
+    /// 日志目录：便携版 = 启动器（外层 HoYoShadeHub.exe）所在文件夹下的 log\，跟着安装目录走、
+    /// 不再丢进 C 盘缓存目录；启动器目录写不进去（只读盘 / 没权限）时回退缓存目录。
+    /// Setup 版 exe 目录通常在 Program Files 不可写，维持缓存目录下的 log\。
+    /// </summary>
+    public static string LogFolder { get; private set; } = string.Empty;
+
+    /// <summary>按便携 / Setup 形态解析日志目录（带可写探针，写不进就回退缓存目录）</summary>
+    private static string ResolveLogFolder()
+    {
+        string fallback = Path.Combine(CacheFolder, "log");
+
+        // 便携版：日志放启动器所在文件夹（外层 HoYoShadeHub.exe 旁边）
+        if (IsPortable && !string.IsNullOrWhiteSpace(HoYoShadeHubLauncherExecutePath))
+        {
+            string? launcherFolder = Path.GetDirectoryName(HoYoShadeHubLauncherExecutePath);
+            if (!string.IsNullOrWhiteSpace(launcherFolder))
+            {
+                string candidate = Path.Combine(launcherFolder, "log");
+                try
+                {
+                    Directory.CreateDirectory(candidate);
+                    string probe = Path.Combine(candidate, ".write-probe");
+                    File.WriteAllText(probe, "ok");
+                    File.Delete(probe);
+                    return candidate;
+                }
+                catch
+                {
+                    // 只读盘 / 没权限：回退缓存目录
+                }
+            }
+        }
+
+        return fallback;
+    }
+
 
     public static bool? EnableLoginAuthTicket { get; set; }
 
@@ -529,7 +568,7 @@ public static class AppConfig
     {
         if (_serviceProvider == null)
         {
-            var logFolder = Path.Combine(CacheFolder, "log");
+            var logFolder = LogFolder;
             Directory.CreateDirectory(logFolder);
             LogFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
             Log.Logger = new LoggerConfiguration().WriteTo.File(path: LogFile, shared: true, outputTemplate: $$"""[{Timestamp:HH:mm:ss.fff}] [{Level:u4}] [{{Path.GetFileName(Environment.ProcessPath)}} ({{Environment.ProcessId}})] {SourceContext}{NewLine}{Message}{NewLine}{Exception}{NewLine}""")

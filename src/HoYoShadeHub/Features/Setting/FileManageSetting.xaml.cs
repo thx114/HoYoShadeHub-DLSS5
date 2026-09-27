@@ -1359,7 +1359,7 @@ public sealed partial class FileManageSetting : PageBase
                 long gameSize = 0;
 
                 // Log cache
-                string logFolder = Path.Combine(AppConfig.CacheFolder, "log");
+                string logFolder = AppConfig.LogFolder;
                 if (Directory.Exists(logFolder))
                 {
                     logSize = Directory.GetFiles(logFolder, "*", SearchOption.AllDirectories)
@@ -1426,7 +1426,7 @@ public sealed partial class FileManageSetting : PageBase
     {
         try
         {
-            string logFolder = Path.Combine(AppConfig.CacheFolder, "log");
+            string logFolder = AppConfig.LogFolder;
             if (Directory.Exists(logFolder))
             {
                 await Launcher.LaunchUriAsync(new Uri(logFolder));

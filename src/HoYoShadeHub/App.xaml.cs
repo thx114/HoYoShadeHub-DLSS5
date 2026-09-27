@@ -43,9 +43,8 @@ public partial class App : Application
         string logFile = AppConfig.LogFile;
         if (string.IsNullOrWhiteSpace(logFile))
         {
-            var logFolder = Path.Combine(AppConfig.CacheFolder, "log");
-            Directory.CreateDirectory(logFolder);
-            logFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
+            Directory.CreateDirectory(AppConfig.LogFolder);
+            logFile = Path.Combine(AppConfig.LogFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
         }
         var sb = new StringBuilder();
         sb.AppendLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] App Crash:");

@@ -34,6 +34,39 @@ internal static class AppConfig
     public static string CacheFolder { get; private set; }
 
 
+    /// <summary>
+    /// 日志目录：便携版 = 启动器所在文件夹下的 log\（与主程序同一规则、同一目录）；
+    /// 写不进去时回退缓存目录。与 HoYoShadeHub.AppConfig.LogFolder 保持一致。
+    /// </summary>
+    public static string LogFolder { get; private set; } = string.Empty;
+
+    private static string ResolveLogFolder()
+    {
+        string fallback = Path.Combine(CacheFolder, "log");
+
+        if (IsPortable && !string.IsNullOrWhiteSpace(HoYoShadeHubLauncherExecutePath))
+        {
+            string? launcherFolder = Path.GetDirectoryName(HoYoShadeHubLauncherExecutePath);
+            if (!string.IsNullOrWhiteSpace(launcherFolder))
+            {
+                string candidate = Path.Combine(launcherFolder, "log");
+                try
+                {
+                    Directory.CreateDirectory(candidate);
+                    string probe = Path.Combine(candidate, ".write-probe");
+                    File.WriteAllText(probe, "ok");
+                    File.Delete(probe);
+                    return candidate;
+                }
+                catch
+                {
+                    // 只读盘 / 没权限：回退缓存目录
+                }
+            }
+        }
+
+        return fallback;
+    }
 
 
     static AppConfig()
@@ -68,6 +101,8 @@ internal static class AppConfig
             CacheFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HoYoShadeHub");
         }
         Directory.CreateDirectory(CacheFolder);
+        LogFolder = ResolveLogFolder();
+        Directory.CreateDirectory(LogFolder);
     }
 
 

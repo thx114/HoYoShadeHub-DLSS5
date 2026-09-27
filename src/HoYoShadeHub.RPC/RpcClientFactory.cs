@@ -47,7 +47,7 @@ public static class RpcClientFactory
         }
         catch (RpcException ex) when (ex.Status is { StatusCode: StatusCode.DeadlineExceeded })
         {
-            var logPath = System.IO.Path.Combine(AppConfig.CacheFolder, "log");
+            var logPath = AppConfig.LogFolder;
             string errorMsg = $"Checking RPC server timed out.\n" +
                               $"The RPC process might have failed to start or crashed.\n" +
                               $"You can check the logs in: {logPath}\n" +

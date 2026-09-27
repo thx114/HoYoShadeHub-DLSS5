@@ -1,4 +1,4 @@
-﻿namespace HoYoShadeHub.Extensions.Services;
+namespace HoYoShadeHub.Extensions.Services;
 
 /// <summary>「把 <c>nvngx_dlssnr.dll</c> 放到 OptiScaler 旁边」的结果</summary>
 public enum NrdllPlaceStatus
@@ -241,62 +241,6 @@ public static class OptiScalerRuntime
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// 用构建目录里的 310.9 dlssg 替换游戏目录那份。
-    /// 源取自构建内 2 个落位之一（<c>OptiScaler\streamline</c> 或 <c>OptiScaler</c>）。
-    /// </summary>
-    /// <returns>错误信息；成功返回 null</returns>
-    public static string? ReplaceGameDlssg(string gameDlssgPath, string buildDirectory)
-    {
-        if (string.IsNullOrWhiteSpace(gameDlssgPath))
-        {
-            return "游戏 dlssg 路径为空。";
-        }
-
-        string? source = DlssgTargetSubdirs
-            .Select(subdir => Path.Combine(buildDirectory, subdir, DlssgFileName))
-            .FirstOrDefault(file => File.Exists(file) && IsUnlockDlssg(file));
-        if (source is null)
-        {
-            return "OptiScaler 目录里没有可用的 310.9 dlssg。";
-        }
-
-        try
-        {
-            string backup = gameDlssgPath + ".bak";
-            if (File.Exists(backup))
-            {
-                File.Delete(backup);
-            }
-
-            File.Move(gameDlssgPath, backup);
-            try
-            {
-                File.Copy(source, gameDlssgPath, overwrite: true);
-            }
-            catch
-            {
-                // 复制失败把备份还原，保证游戏目录不留缺
-                try
-                {
-                    File.Move(backup, gameDlssgPath);
-                }
-                catch
-                {
-                    // 还原也失败：维持抛出，交给调用方报告
-                }
-
-                throw;
-            }
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            return $"替换游戏目录 dlssg 失败：{ex.Message}";
-        }
     }
 
     /// <summary>读 PE 文件版本，读不出来返回 null</summary>

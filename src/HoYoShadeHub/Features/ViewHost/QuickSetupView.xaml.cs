@@ -564,7 +564,7 @@ public sealed partial class QuickSetupView : UserControl
 
         if (!RpcClientFactory.CheckRpcServerRunning())
         {
-            var logPath = Path.Combine(AppConfig.CacheFolder, "log");
+            var logPath = AppConfig.LogFolder;
             string errorMsg = $"无法启动安装服务。请确认管理员权限或检查杀毒软件是否拦截。\n日志目录：{logPath}";
             throw new Exception(errorMsg);
         }
