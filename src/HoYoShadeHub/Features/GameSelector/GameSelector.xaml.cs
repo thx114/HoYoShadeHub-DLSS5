@@ -1176,6 +1176,7 @@ public sealed partial class GameSelector : UserControl
             }
 
             GameBizDisplays = new(list);
+            StaggerGameBar();
         }
         catch { }
     }
@@ -1689,6 +1690,26 @@ public sealed partial class GameSelector : UserControl
     private void Expander_InstalledGamesActualSize_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
     {
         e.Handled = true;
+    }
+
+
+
+    /// <summary>
+    /// 顶部游戏图标行的入场：一个接一个淡入 + 由下往上 18px + 轻微放大。
+    /// 时长 / 间隔在 <see cref="MotionAnimations"/> 里（500ms = Fluent 2 的 durationUltraSlow、45ms 一档）。
+    /// 属性刚被换掉时面板还没实例化，所以排到消息队列末尾再抓。
+    /// </summary>
+    private void StaggerGameBar()
+    {
+        DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(ItemsControl_GameBar, pointerScale: true));
+    }
+
+
+
+    /// <summary>「已装游戏」平时收在 Expander 里，展开的时候让它有顺序地露出来。</summary>
+    private void Expander_InstalledGames_Expanding(Expander sender, ExpanderExpandingEventArgs args)
+    {
+        DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(ItemsControl_InstalledGames, pointerScale: true));
     }
 
 

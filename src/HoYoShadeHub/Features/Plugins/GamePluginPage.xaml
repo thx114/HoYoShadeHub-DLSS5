@@ -89,15 +89,6 @@
 
             <Grid Grid.Column="0">
                 <ListView x:Name="AddonList" Padding="0" SelectionMode="None">
-                    <!--  卡片入场动效。这里只放 Entrance（淡入 + 由下往上 20px），
-                          不放 RepositionThemeTransition：卡片展开是我自己在逐帧改高度，
-                          兄弟卡的位置每帧都在动，再叠一层「追位置」的过渡会拖出橡皮筋效果。
-                          曲线/时长出处见 Features/ViewHost/Motion.xaml 的注释。  -->
-                    <ListView.ItemContainerTransitions>
-                        <TransitionCollection>
-                            <EntranceThemeTransition FromVerticalOffset="20" />
-                        </TransitionCollection>
-                    </ListView.ItemContainerTransitions>
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="local:AddonItemViewModel">
                             <Border Margin="0,0,0,8"

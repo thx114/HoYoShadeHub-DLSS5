@@ -78,6 +78,7 @@ public sealed partial class GamePluginPage : PageBase
     public GamePluginPage()
     {
         InitializeComponent();
+        Loaded += GamePluginPage_Loaded;
 
         // 订阅**不放在构造函数里**：页面实例会被复用 / 重建，构造函数里的订阅没有配对的退订点，
         // 页面一释放就成了「僵尸订阅」 —— 见 OnLoaded / OnUnloaded 与 _isPageAlive。
@@ -667,6 +668,13 @@ public sealed partial class GamePluginPage : PageBase
             item.RevertLoadFromDllMain();
             TextBlock_Status.Text = "写入失败 —— 这个游戏的 ReShade.ini 可能被占用或只读。";
         }
+    }
+
+    /// <summary>插件卡片列表的错峰入场（和顶部游戏栏同一套参数：500ms + 45ms 一档）。</summary>
+    private void GamePluginPage_Loaded(object sender, RoutedEventArgs e)
+    {
+        Loaded -= GamePluginPage_Loaded;   // 只播一次：每次切页回来都重播会腻
+        DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(AddonList));
     }
 
     /// <summary>需求3：卡片右下角那个展开 / 缩回按钮（专属配置）</summary>

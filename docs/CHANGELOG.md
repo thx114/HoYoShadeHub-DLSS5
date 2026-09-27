@@ -16,6 +16,13 @@
 - **曲线 / 时长全部来自微软官方文档**（[Timing and easing](https://learn.microsoft.com/windows/apps/design/motion/timing-and-easing)）：
   三档标准时长 250 / 167 / 83ms，Fluent 两条基线曲线 入场 `cubic-bezier(0, 0, 0, 1)`、
   出场 `cubic-bezier(1, 0, 1, 1)`；统一放在 `Features/ViewHost/Motion.xaml`，附了逼近误差的推导。
+- **第二轮（用户要求「略微放慢、有顺序出来、再加点仅好看的」）**：
+  - 首屏和列表的入场改成 Composition 错峰：**500ms**（Fluent 2 token `durationUltraSlow`）+ 相邻两项错开 **45ms**，
+    淡入 + 由下往上 18px + 0.96→1 轻微放大。顶部游戏栏、`Expander` 里的「已装游戏」、插件卡片列表都走这套。
+  - 点缀特效：悬停放大 1.04（150ms）、按下缩小 0.97（100ms），挂游戏图标和「已装游戏」两项上；纯装饰、不改状态。
+  - 顺手删掉这三处原来的平台 `EntranceThemeTransition`（和自己那套错峰入场会互相打架）。
+  - 时长出处：官方 `@fluentui/tokens` 的 `global/durations`（50 / 100 / 150 / 200 / 250 / 300 / 400 / 500ms）；
+    曲线还是 Microsoft Learn「Timing and easing」那条入场基线 —— Composition 能直接写真贝塞尔，不用逼近。
 - 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**；已部署到本机 `app-1.3.8.5`。
 
 ## 未发版 · 插件卡片的「专属配置」展开区（feed 延迟 / HookPoint / LoadFromDllMain）

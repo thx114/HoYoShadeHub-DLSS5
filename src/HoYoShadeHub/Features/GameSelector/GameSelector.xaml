@@ -105,15 +105,16 @@
                 <StackPanel Margin="0,0,12,12" Spacing="40">
 
                     <!--  游戏展示和选择  -->
-                    <ItemsControl ItemsSource="{x:Bind GameBizDisplays}">
+                    <ItemsControl x:Name="ItemsControl_GameBar" ItemsSource="{x:Bind GameBizDisplays}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <ItemsWrapGrid Orientation="Horizontal" 
                                                ItemWidth="208" 
                                                ItemHeight="124">
+                                    <!--  入场交给 MotionAnimations.PlayStaggeredEntrance（要 500ms 慢档 + 45ms 一个接一个），
+                                          这里只留挪位；两个一起放会互相打架。  -->
                                     <ItemsWrapGrid.ChildrenTransitions>
                                         <TransitionCollection>
-                                            <EntranceThemeTransition FromVerticalOffset="16" />
                                             <RepositionThemeTransition />
                                         </TransitionCollection>
                                     </ItemsWrapGrid.ChildrenTransitions>
@@ -291,6 +292,7 @@
                           Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
                           CornerRadius="8">
                         <Expander x:Name="Expander_InstalledGamesActualSize"
+                                  Expanding="Expander_InstalledGames_Expanding"
                                   MinWidth="820"
                                   HorizontalContentAlignment="Stretch"
                                   Background="Transparent"
@@ -364,13 +366,12 @@
                                     </StackPanel>
                                 </Grid>
                             </Expander.Header>
-                            <ItemsControl Grid.Row="1" ItemsSource="{x:Bind InstalledGames}">
+                            <ItemsControl x:Name="ItemsControl_InstalledGames" Grid.Row="1" ItemsSource="{x:Bind InstalledGames}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <StackPanel Spacing="8">
                                             <StackPanel.ChildrenTransitions>
                                                 <TransitionCollection>
-                                                    <EntranceThemeTransition FromVerticalOffset="16" />
                                                     <RepositionThemeTransition />
                                                 </TransitionCollection>
                                             </StackPanel.ChildrenTransitions>

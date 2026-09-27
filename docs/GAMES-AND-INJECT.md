@@ -2500,3 +2500,46 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
   `Features/Modules/ModulesPage.xaml`、`Features/OptiScaler/OptiScalerPage.xaml`、
   `Features/Screenshot/ScreenshotPage.xaml`、`Features/GameSelector/GameSelector.xaml`。
 
+
+### 45 动效第二轮：放慢 + 错峰入场 + 点缀特效（用户反馈）
+
+用户：「启动器的启动动画感觉有点感觉了，游戏列表的展开什么的，能把他们略微放慢，有顺序出来，
+最好再加点仅好看的特效」。
+
+**时长从哪来**：三档控件时长（250/167/83ms）是给「控件交互」用的，首屏那种「一屏东西一起冒出来」太赶，
+所以这一轮改用 **Fluent 2 的时长 token**（官方 `@fluentui/tokens` → `global/durations`）：
+
+| token | 值 | 用在哪 |
+| --- | --- | --- |
+| `durationFast` | 150ms | 悬停放大 |
+| `durationFaster` | 100ms | 按下缩小 |
+| `durationUltraSlow` | 500ms | 入场（图标 / 卡片一条一条出来） |
+
+间隔（相邻两项错开多少）官方没给死数，这里取 **45ms**：一眼能数出「有顺序」，再大就嫌拖。
+曲线还是 Microsoft Learn「Timing and easing」那条入场基线 `cubic-bezier(0, 0, 0, 1)` ——
+**Composition 能直接写真正的贝塞尔**（`CreateCubicBezierEasingFunction`），不用像 XAML 的 EasingFunction 那样逼近。
+
+- 新增 `Features/ViewHost/MotionAnimations.cs`（走 Composition，GPU 侧）：
+  - `PlayListEntrance(ItemsControl, reverse, pointerScale)`：给 `ItemsPanelRoot.Children` 逐个起
+    `Opacity 0→1` + `Translation (0,18)→0` + `Scale 0.96→1`，靠 `KeyFrameAnimation.DelayTime` 错峰 ——
+    首屏十几个图标也不必起十几个 Storyboard，不占 UI 线程。
+  - `AttachPointerScale`：悬停 1.04 / 按下 0.97，纯装饰、不改任何状态；用 `ConditionalWeakTable` 保证同一个元素只挂一次
+    （列表每次重播入场都会走到挂载点）。
+  - **坑**：`Microsoft.UI.Composition.Visual` 上没有可直接写的 `Translation` 属性（C# 编译不过），
+    `Offset` 又会和 XAML 每帧写回的布局值打架 —— 正确姿势是
+    `ElementCompositionPreview.SetIsTranslationEnabled(element, true)` +
+    `visual.Properties.InsertVector3("Translation", …)` 先落起始值，再 `StartAnimation("Translation", …)`（属性名走字符串）。
+  - 顺序：先 `SetIsTranslationEnabled`、再写起始值、最后起动画；`visual.Opacity = 0` 也在起动画之前写好，
+    不然延迟期间元素是终点态、会闪一下。
+- 接了三处：顶部游戏图标行（`GameBizDisplays` 每次换掉都跑一次，`DispatcherQueue.TryEnqueue` 排到消息末尾再抓面板）、
+  `Expander_InstalledGamesActualSize` 展开时的「已装游戏」列表、插件页的卡片列表（`Loaded` 只播一次，切页回来不重播）。
+- 同时**删掉**这三处的平台 `EntranceThemeTransition`：和自己的错峰入场叠在一起会互相打架（一个淡入、一个也淡入）。
+  `RepositionThemeTransition`（挪位）全留着 —— 那条和自己动高度不冲突的判定见 §44（卡片列表除外）。
+- 页面切换（`NavigationThemeTransition`）、全局插件页 / 模块页 / OptiScaler 页 / 截图页的平台入场**保持原样**
+  （那些不是首屏，平台的入场 + 自带错峰已经够）。
+- **顺带发现**：C# 编译错误同样会表现为那个静默 `MSB3073`（XamlCompiler.exe 退 1）——
+  因为它要的中间程序集压根没生成。所以看到 MSB3073 先看同一份日志里有没有 `error CS`，有就先修 C#（补进 §9.6 的经验里）。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 571 / FAIL 0**；已 publish 到 `D:\APPS\HoYoShadeHub\app-1.3.8.5`。
+- 文件：`Features/ViewHost/MotionAnimations.cs`（新）、`Features/GameSelector/GameSelector.xaml(.cs)`、
+  `Features/Plugins/GamePluginPage.xaml(.cs)`。
+
