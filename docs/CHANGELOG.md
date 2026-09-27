@@ -3,7 +3,7 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
-## 未发版 · 插件汉化重做（整条覆盖式替换 + 随时可还原）
+## 1.3.8.5 · 插件汉化重做（整条覆盖式替换 + 随时可还原）
 
 - **修：汉化后界面出现「半个中文 + 英文尾巴」**（`结构强度 sity`、`缩ling`、`上采?镜`、`漫反射白 (niits)`…）。
   根因：老补丁对「编译器用多条立即数在栈上拼出来的标签」是「能写多少写多少」，中文和英文的 UTF-8 边界不同，
@@ -38,7 +38,10 @@
 - 实测（v5）：`renodx-dlss` 66 条命中 56 条 → 汉化 56 条 / 改动 1075 字节（v2 988、v3 1138）；`Options Mode` /
   `Model A/B/C` / `Model` 那些共享常量**一个字节没动**，`Structure Intensity` 那份补空格、`Local Tone Intensity`
   那份写自己的「度」，`Skin Structure Strength` 的 `"Strength"` 覆盖写换成「度 + 空格」。
-  `renodx-dlss5` 另有 11 条命中（它自带语言设置，本来不该补丁）。新增 5 条自测（基线分组、共享常量、尾巴归属）。
+  `renodx-dlss5` 另有 14 条命中（它自带语言设置，本来不该补丁）。新增 5 条自测（基线分组、共享常量、尾巴归属）。
+- **补充词条**：`Quality`→`质量`、`Balanced`→`均衡`、`Performance`→`性能`（DLSS Mode 那几个下拉值，之前只有
+  `Ultra Quality`/`Ultra Performance` 是中文）；`Local Tone Intensity` 的译文从 `局部色调强度` 缩成 `局部色调`
+  （短于那条运行时覆盖写的起点，无论共享常量归谁都不会坏）。实测 59 条命中 / 改动 1123 字节。
 ## 未发版 · NR 组件目录：Lecram 修改版
 
 - **新：DLL 组件目录的 dlssnr 族新增 `310.8.Lecram`。** RenoDX 组的 Lecram 改版 NR 运行时
