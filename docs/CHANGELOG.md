@@ -3,6 +3,22 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · 全部卡片展开 / 收起动画（全局插件页 6 个列表 + 插件页统一实现）
+
+- **修：全局插件页的卡片展开 / 收起没有动画，兄弟卡片也不跟着动**（OptiScaler 构建 / 源、模块、
+  模块下载、已装插件、插件目录 6 个列表全接了）。插件页那套展开动画从私有方法**通用化**进
+  `MotionAnimations.PlayAreaExpand / PlayItemAreaExpand`，一处实现全启动器共用。
+- **兄弟卡让位**：展开动画逐帧改配置区高度 → 面板每帧重新排版，下面几张卡的位置自然平滑跟走；
+  所以这些列表面板上**不挂** RepositionThemeTransition（和逐帧高度动画叠一起会拖橡皮筋，§44 的老坑）。
+- **修了一个隐藏 bug**：`Visibility="{x:Bind ExpandedVisibility}"` 会在 IsExpanded 变 false 的**瞬间**
+  把元素 Collapsed 掉 —— 收起动画其实一直播在不可见元素上（只有展开动画真正被看见）。
+  现在动画开始时用本地值把面板顶回 Visible，播完 `ClearValue` 交还给绑定。
+- 手风琴（点一张收其它）时，被收起来的那几张也各自播收起动画，不再瞬间消失。
+- **检查过所有页面**：有展开卡片的只有插件页 + 全局插件页这 6 个列表；模块页 / OptiScaler 页的
+  可展开内容本来就在全局插件页里；GameSelector 和启动设置对话框的 Expander 是平台控件（内容显隐走
+  Visibility，要动画得重写模板，维持不做）。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 579 / FAIL 0**。
+
 ## 未发版 · dlssnr 变体识别修复（下的 Lecram 不再显示成 50 系）+ 全页面动效统一
 
 - **修：DLL 配置页把盘上那份 nvngx_dlssnr.dll 认成 310.8.0（「50 系」）**。

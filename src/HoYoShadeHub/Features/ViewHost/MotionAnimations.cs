@@ -1,6 +1,8 @@
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using System;
@@ -173,6 +175,163 @@ public static class MotionAnimations
         element.PointerPressed += (_, _) => AnimateScale(element, PressedScale, PressedDurationMs);
         element.PointerReleased += (_, _) => AnimateScale(element, HoverScale, PressedDurationMs);
     }
+
+    // ==================== 卡片展开 / 收起（Height + Opacity，驱动兄弟卡平滑挪动） ====================
+
+    /// <summary>
+    /// 卡片展开 / 收起动画：只动配置区的 <c>Height</c> + <c>Opacity</c>。
+    /// 因为高度逐帧在变，面板每帧都重新排版 —— 下面那张（几张）卡的位置自然跟着走，这就是「兄弟卡让位」的动画。
+    /// </summary>
+    /// <para>
+    /// <c>Height</c> 是**依赖动画**：必须显式打开 <c>EnableDependentAnimation</c>，
+    /// 否则 Storyboard 会被静默跳过 —— 不报错、也不动，最容易白写。
+    /// </para>
+    /// <para>
+    /// 时长曲线取 Fluent 基线（出处见 Motion.xaml 顶部注释）：展开 250ms + decelerate，
+    /// 收起 167ms + accelerate。系统关掉「动画效果」时直接落终态。
+    /// </para>
+    /// <param name="expanding">展开还是收起。注意绑定的 Visibility 会**立即**翻转
+    /// （OneWay 绑定以 VM 为准），所以这里用本地值把面板顶回 Visible 再播动画，播完
+    /// <c>ClearValue</c> 交还给绑定 —— 不然收起动画播在 Collapsed 元素上，根本看不见。</param>
+    public static void PlayAreaExpand(FrameworkElement panel, bool expanding)
+    {
+        // 收起时绑定已经把它 Collapsed 了；展开时绑定刚把它 Visible。统一用本地值顶住：
+        // 收起要再变回 Visible 才能播「收拢」的过程。
+        panel.Visibility = Visibility.Visible;
+
+        // 收起状态（或刚 Visible 还没量过）的元素 ActualWidth/Height 不可靠，宽度问父级
+        double width = (panel.Parent as FrameworkElement)?.ActualWidth ?? panel.ActualWidth;
+        if (width <= 0)
+        {
+            return;
+        }
+
+        // 先按内容量一次，拿到动画的目标高度（此时面板是 Visible 的，量得出来）
+        panel.Height = double.NaN;
+        panel.Measure(new Windows.Foundation.Size(width, double.PositiveInfinity));
+        double target = panel.DesiredSize.Height;
+        if (target <= 0)
+        {
+            // 内容本来就是空的：没什么可播的，直接落终态
+            Finish();
+            return;
+        }
+
+        double from = expanding ? 0 : Math.Max(panel.ActualHeight, target);
+
+        // XAML 默认**不裁剪**子元素：收起动画中途内容会溢到下面那张卡片上。
+        // 挂一个 inset clip（四个 inset 都是 0 = 按自身边界裁），边界跟着动画里的 Height 走，不用单独动画。
+        Visual visual = ElementCompositionPreview.GetElementVisual(panel);
+        visual.Clip ??= visual.Compositor.CreateInsetClip();
+
+        if (!AnimationsEnabled())
+        {
+            Finish();
+            return;
+        }
+
+        Duration duration = MotionDuration(expanding ? "MotionDurationNormal" : "MotionDurationFast", expanding ? 250 : 167);
+        EasingFunctionBase ease = MotionEase(expanding ? "MotionEaseEnter" : "MotionEaseExit", expanding ? EasingMode.EaseOut : EasingMode.EaseIn);
+
+        var storyboard = new Storyboard();
+
+        var height = new DoubleAnimation
+        {
+            From = from,
+            To = expanding ? target : 0,
+            Duration = duration,
+            EasingFunction = ease,
+            EnableDependentAnimation = true,
+        };
+        Storyboard.SetTarget(height, panel);
+        Storyboard.SetTargetProperty(height, "Height");
+        storyboard.Children.Add(height);
+
+        var opacity = new DoubleAnimation
+        {
+            From = expanding ? 0 : 1,
+            To = expanding ? 1 : 0,
+            Duration = duration,
+            EasingFunction = ease,
+        };
+        Storyboard.SetTarget(opacity, panel);
+        Storyboard.SetTargetProperty(opacity, "Opacity");
+        storyboard.Children.Add(opacity);
+
+        storyboard.Completed += (_, _) => Finish();
+        storyboard.Begin();
+
+        void Finish()
+        {
+            // 交回给布局：Height 恢复 Auto、Opacity 复位、Visibility 还给绑定（它会落到正确的终态）
+            panel.Height = double.NaN;
+            panel.Opacity = 1;
+            panel.ClearValue(FrameworkElement.VisibilityProperty);
+        }
+    }
+
+    /// <summary>
+    /// 从列表容器里找到 DataTemplate 里那块配置区（<paramref name="areaName"/>），给它播展开 / 收起。
+    /// 找不到容器或控件就静默返回（还没排版的快速点击属于正常情况）。
+    /// </summary>
+    public static void PlayItemAreaExpand(ItemsControl host, object item, string areaName, bool expanding)
+    {
+        if (host.ContainerFromItem(item) is not DependencyObject container)
+        {
+            return;
+        }
+
+        if (FindDescendantByName(container, areaName) is not FrameworkElement panel)
+        {
+            return;
+        }
+
+        PlayAreaExpand(panel, expanding);
+    }
+
+    /// <summary>在模板实例的可视化树里按名字找控件（DataTemplate 里的 x:Name 找得到）</summary>
+    public static FrameworkElement? FindDescendantByName(DependencyObject root, string name)
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement element && element.Name == name)
+            {
+                return element;
+            }
+
+            if (FindDescendantByName(child, name) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>系统「动画效果」开关（无障碍 / 省电设置）</summary>
+    private static bool AnimationsEnabled()
+    {
+        try
+        {
+            return new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static Duration MotionDuration(string key, double fallbackMs) =>
+        Application.Current.Resources.TryGetValue(key, out object? value) && value is Duration duration
+            ? duration
+            : new Duration(TimeSpan.FromMilliseconds(fallbackMs));
+
+    private static EasingFunctionBase MotionEase(string key, EasingMode mode) =>
+        Application.Current.Resources.TryGetValue(key, out object? value) && value is EasingFunctionBase ease
+            ? ease
+            : new PowerEase { Power = 3, EasingMode = mode };
 
     /// <summary>把一个元素平滑缩放到指定倍数。</summary>
     public static void AnimateScale(UIElement element, float scale, int durationMs)

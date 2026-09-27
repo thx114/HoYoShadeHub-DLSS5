@@ -2595,3 +2595,44 @@ prerelease 标记（includePrerelease=false 的来源主路径可能解析到预
 - 验证：x64 Release **0 错误**；扩展自测 PASS。
 - 文件：`GlobalPluginPage.xaml(.cs)`、`ModulesPage.xaml(.cs)`、`OptiScalerPage.xaml(.cs)`、
   `ScreenshotPage.xaml(.cs)`、`DllConfigPage.xaml(.cs)`。\n
+
+### 48 卡片展开 / 收起动画通用化 + 全局插件页 6 个列表接入
+
+用户反馈：「全局插件的卡片展开没动画；opt 和模块界面不光展开没动画，避开的卡片也没移动动画。检查所有页面。」
+
+**盘点结论**（全 Features 树搜了一遍展开入口）：有展开卡片的只有
+插件页（`AddonList`，§43/§44 已接）和**全局插件页的 6 个列表** ——
+已装插件（`InstalledPluginList` + `PluginList`，共用 `Button_PluginHeader_Click`，手风琴）、
+OptiScaler 构建（`OptiScalerBuildList`）、OptiScaler 源（`OptiScalerSourceList`，与构建共用
+`Button_OptiScalerHeader_Click`，按 `IOptiScalerVersionHost` 收）、模块（`ModuleList`）、
+模块下载（`ModuleDownloadList`）。模块页 / OptiScaler 页本身没有展开卡片；
+GameSelector 和 GameLauncherSettingDialog 的 `Expander` 是平台控件（维持不重写模板）。
+
+**实现**：
+- `MotionAnimations.PlayAreaExpand(FrameworkElement, bool)`：从 GamePluginPage 的私有
+  `AnimateDedicatedConfig` 原样搬出（Height + Opacity，`EnableDependentAnimation = true`，
+  inset clip，250ms 展开 / 167ms 收起），GamePluginPage 删私有副本改调共享版。
+- `MotionAnimations.PlayItemAreaExpand(ItemsControl, object item, string areaName, bool)`：
+  `ContainerFromItem` 拿容器 → 模板里按名字找配置区 → 播。6 个模板的展开区统一命名
+  `x:Name="CardExpandedArea"`（不同模板互不冲突，查找只在一个容器子树内进行）。
+- 共享处理器的列表（插件页两个列表共用 `Button_PluginHeader_Click`）：页面级小工具
+  `AnimateCardArea(item, expanding, hosts...)` 依次试 `ContainerFromItem`，找到宿主就播。
+- **手风琴**：收起其它卡前先记下开着的，全部播收起动画。
+
+**兄弟卡为什么不用 Reposition**：高度是依赖动画，逐帧变化 → 面板每帧排版 → 下方卡片的位置
+每帧都平滑更新，这就是「让位」动画本身。若再挂 `RepositionThemeTransition`，它会让每张卡
+「追」自己的目标位置，和逐帧布局叠加成橡皮筋（§44 记过的坑）。所以 InstalledPluginList 面板的
+Reposition 也移除了（其余 5 个面板本来就没挂）。
+
+**这次揪出来的隐藏 bug（重要）**：`Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}"`
+以 VM 为准 —— `IsExpanded=false` 的瞬间绑定就把元素 Collapsed 了，之后 167ms 的收起动画
+其实播在一个不可见元素上（之前插件页也只有展开动画真正可见）。修法：动画开始先
+`panel.Visibility = Visibility.Visible`（本地值盖过 OneWay 绑定的当前值），播完
+`panel.ClearValue(FrameworkElement.VisibilityProperty)` 把 Visibility 还给绑定，绑定会立即
+重推正确的终态（展开=Visible / 收起=Collapsed）。这个知识对所有「绑定驱动 Visible/Collapsed +
+想要过渡动画」的场景通用。
+
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 579 / FAIL 0**。
+- 文件：`Features/ViewHost/MotionAnimations.cs`（+PlayAreaExpand/PlayItemAreaExpand/FindDescendantByName）、
+  `Features/Plugins/GamePluginPage.xaml.cs`（删私有实现）、
+  `Features/Plugins/GlobalPluginPage.xaml(.cs)`。\n

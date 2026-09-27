@@ -180,13 +180,9 @@
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <StackPanel>
-                                        <!--  入场交给 MotionAnimations.PlayListEntrance（500ms 慢档 + 45ms 错峰），
-                                              这里只留挪位；两个一起放会互相打架。  -->
-                                        <StackPanel.ChildrenTransitions>
-                                            <TransitionCollection>
-                                                <RepositionThemeTransition />
-                                            </TransitionCollection>
-                                        </StackPanel.ChildrenTransitions>
+                                        <!--  这个面板的卡片会展开 / 收起（逐帧改配置区高度，兄弟卡靠每帧布局自然跟位）；
+                                              入场交给 MotionAnimations.PlayListEntrance，挪位 / 入场过渡都不挂 —— 和逐帧高度动画
+                                              叠一起会拖出橡皮筋（见 docs/GAMES-AND-INJECT.md §44）。  -->
                                     </StackPanel>
                                 </ItemsPanelTemplate>
                             </ItemsControl.ItemsPanel>
@@ -312,7 +308,7 @@
                                                          Visibility="{x:Bind BusyVisibility}"
                                                          Value="{x:Bind ProgressPercent}" />
 
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"
@@ -569,7 +565,7 @@
                                                 </Grid>
                                             </Button>
 
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"
@@ -729,7 +725,7 @@
                                             </Button>
 
                                             <!--  展开后：元信息 + 换版本 + 目录 / 删除 / nrdll  -->
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind MetaText}"
@@ -879,7 +875,7 @@
                                             </Button>
 
                                             <!--  展开后才是完整的可下载卡片  -->
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"
@@ -1047,7 +1043,7 @@
                                                 </StackPanel>
                                             </Grid>
 
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"
@@ -1201,7 +1197,7 @@
                                                 </Grid>
                                             </Button>
 
-                                            <StackPanel Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
+                                            <StackPanel x:Name="CardExpandedArea" Spacing="6" Visibility="{x:Bind ExpandedVisibility}">
                                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind Description}"

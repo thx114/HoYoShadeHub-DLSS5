@@ -1416,6 +1416,8 @@ public sealed partial class GlobalPluginPage : PageBase
         {
             item.IsExpanded = !item.IsExpanded;
 
+            AnimateCardArea(item, item.IsExpanded, OptiScalerBuildList, OptiScalerSourceList);
+
             if (item.IsExpanded && item.Versions.Count == 0 && item.CanInteract && item.HasVersionsSource)
             {
                 _ = LoadOptiScalerVersionsAsync(item);
@@ -2009,6 +2011,8 @@ public sealed partial class GlobalPluginPage : PageBase
             {
                 item.IsExpanded = !item.IsExpanded;
 
+                AnimateCardArea(item, item.IsExpanded, ModuleList);
+
                 // 展开时懒加载版本列表（内置且走 Release 的模块才有）
                 if (item.IsExpanded && item.CanSwitchVersion && !item.VersionsLoaded)
                 {
@@ -2024,6 +2028,8 @@ public sealed partial class GlobalPluginPage : PageBase
         {
             bool expand = !item.IsExpanded;
             item.IsExpanded = expand;
+
+            AnimateCardArea(item, expand, ModuleDownloadList);
 
             if (expand && !item.VersionsLoaded && !item.Module.IsDirect)
             {
@@ -3126,6 +3132,24 @@ public sealed partial class GlobalPluginPage : PageBase
 
     #region 列表操作
 
+    /// <summary>
+    /// 给卡片展开 / 收起播动画：在几个候选列表里找到装着这个 item 的容器，
+    /// 把模板里名为 <c>CardExpandedArea</c> 的配置区交给 <see cref="MotionAnimations.PlayItemAreaExpand"/>。
+    /// </summary>
+    private static void AnimateCardArea(object item, bool expanding, params ItemsControl[] hosts)
+    {
+        foreach (ItemsControl host in hosts)
+        {
+            if (host.ContainerFromItem(item) is null)
+            {
+                continue;
+            }
+
+            MotionAnimations.PlayItemAreaExpand(host, item, "CardExpandedArea", expanding);
+            return;
+        }
+    }
+
     /// <summary>点标题行 = 展开/收起详情（默认只占一行）；已装的卡片展开时顺手拉一次版本</summary>
     private void Button_PluginHeader_Click(object sender, RoutedEventArgs e)
     {
@@ -3139,12 +3163,24 @@ public sealed partial class GlobalPluginPage : PageBase
         {
             bool expand = !item.IsExpanded;
 
+            // 手风琴：先记下现在开着的其它卡片，它们收起来的过程也播动画（兄弟卡让位）
+            List<PluginItemViewModel> closing = Items
+                .Where(other => other.IsExpanded && !ReferenceEquals(other, item))
+                .ToList();
+
             foreach (PluginItemViewModel other in Items)
             {
                 other.IsExpanded = false;
             }
 
             item.IsExpanded = expand;
+
+            foreach (PluginItemViewModel other in closing)
+            {
+                AnimateCardArea(other, false, InstalledPluginList, PluginList);
+            }
+
+            AnimateCardArea(item, expand, InstalledPluginList, PluginList);
 
             if (expand && item.IsInstalled && !item.VersionsLoaded)
             {
