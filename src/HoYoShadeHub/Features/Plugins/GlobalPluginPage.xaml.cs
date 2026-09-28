@@ -2828,6 +2828,52 @@ public sealed partial class GlobalPluginPage : PageBase
             AppConfig.CacheRoot);
 
     /// <summary>
+    /// 本地包装完之后统一收尾：按类型刷新对应界面，并把「装了什么、装到哪儿」写进日志。
+    /// 出问题时（比如只有 OptiScaler 那一半落了）日志里能直接看出来，不用靠猜。
+    /// </summary>
+    private async Task ApplyLocalInstallResultAsync(LocalPackageInstallResult result, string file)
+    {
+        _logger.LogInformation(
+            "本地安装 {Kind}：{Display}{Version} → {Target}（源：{File}）",
+            result.Kind,
+            result.DisplayName,
+            string.IsNullOrWhiteSpace(result.Version) ? string.Empty : " " + result.Version,
+            result.TargetPath,
+            file);
+
+        foreach (string detail in result.Details)
+        {
+            _logger.LogInformation("本地安装明细：{Detail}", detail);
+        }
+
+        switch (result.Kind)
+        {
+            case LocalPackageKind.Addon:
+                await ReloadPluginDataAsync();
+                break;
+            case LocalPackageKind.OptiScaler:
+                RefreshOptiScaler();
+                int auto = AutoEnableSoleOptiScalerBuild();
+                if (auto > 0)
+                {
+                    TextBlock_Status.Text = result.Summary + $"；已为 {auto} 个游戏默认启用。";
+                    return;
+                }
+                break;
+            case LocalPackageKind.Module:
+                RefreshModules();
+                break;
+            case LocalPackageKind.Overlay:
+                // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
+                await ReloadPluginDataAsync();
+                RefreshOptiScaler();
+                break;
+        }
+
+        TextBlock_Status.Text = result.Summary;
+    }
+
+    /// <summary>
     /// 本地安装：GitHub 原始 zip / 单个 addon / 模块 DLL / 一键覆盖包 都收。
     /// 自动识别类型，OptiScaler 缺的 dlssnr / streamline / dlssg 由安装器补齐。
     /// </summary>
@@ -2859,31 +2905,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
         LocalPackageInstallResult result = await installer.InstallAsync(file);
 
-        switch (result.Kind)
-        {
-            case LocalPackageKind.Addon:
-                await ReloadPluginDataAsync();
-                break;
-            case LocalPackageKind.OptiScaler:
-                RefreshOptiScaler();
-                int auto = AutoEnableSoleOptiScalerBuild();
-                if (auto > 0)
-                {
-                    TextBlock_Status.Text = result.Summary + $"；已为 {auto} 个游戏默认启用。";
-                    return;
-                }
-                break;
-            case LocalPackageKind.Module:
-                RefreshModules();
-                break;
-            case LocalPackageKind.Overlay:
-                // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
-                await ReloadPluginDataAsync();
-                RefreshOptiScaler();
-                break;
-        }
-
-        TextBlock_Status.Text = result.Summary;
+        await ApplyLocalInstallResultAsync(result, file);
     }
 
     #region 显示名 / 版本号覆盖（只改显示，不动磁盘）
@@ -3316,31 +3338,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
             LocalPackageInstallResult result = await installer.InstallAsync(file);
 
-            switch (result.Kind)
-            {
-                case LocalPackageKind.Addon:
-                    await ReloadPluginDataAsync();
-                    break;
-                case LocalPackageKind.OptiScaler:
-                    RefreshOptiScaler();
-                    int auto = AutoEnableSoleOptiScalerBuild();
-                    if (auto > 0)
-                    {
-                        TextBlock_Status.Text = result.Summary + $"；已为 {auto} 个游戏默认启用。";
-                        return;
-                    }
-                    break;
-                case LocalPackageKind.Module:
-                    RefreshModules();
-                    break;
-                case LocalPackageKind.Overlay:
-                    // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
-                    await ReloadPluginDataAsync();
-                    RefreshOptiScaler();
-                    break;
-            }
-
-            TextBlock_Status.Text = result.Summary;
+            await ApplyLocalInstallResultAsync(result, file);
         });
     }
 
