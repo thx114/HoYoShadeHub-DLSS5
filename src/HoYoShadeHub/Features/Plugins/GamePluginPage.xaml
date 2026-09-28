@@ -292,6 +292,14 @@
                                                  IsEnabled="{x:Bind CanEditLoadFromDllMain, Mode=OneWay}"
                                                  ToolTipService.ToolTip="这类插件要在 DllMain 阶段就加载；空槽位会原样保留。关闭插件会自动摘掉，重新启用会再补上"
                                                  Visibility="{x:Bind LoadFromDllMainVisibility, Mode=OneWay}" />
+
+                                        <!--  「永远 off」：每次启动/注入前把 [RENODX-DLSS] 挂钩点写成 0（按游戏记）。
+                                              只有旧 RenoDX DLSS 卡片有 —— DLSS5 走 Streamline，不吃这个键。  -->
+                                        <CheckBox Content="启动游戏时强制 off（永远 off）"
+                                                 IsChecked="{x:Bind ForceHookOffOnLaunch, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind CanEditForceHookOff, Mode=OneWay}"
+                                                 ToolTipService.ToolTip="每次从这里启动/注入游戏之前，自动把 [RENODX-DLSS] DirectNeuralRenderingHookPoint 写成 0（免得忘了改回来导致游戏起不来）"
+                                                 Visibility="{x:Bind ForceHookOffVisibility, Mode=OneWay}" />
                                     </StackPanel>
                                 </Grid>
                                 

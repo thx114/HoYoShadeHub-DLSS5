@@ -276,6 +276,7 @@ public sealed partial class GamePluginPage : PageBase
                 HookPointChanged = OnAddonHookPointChanged,
                 Dx11SourceChanged = OnAddonDx11SourceChanged,
                 EnableHooksChanged = OnAddonEnableHooksChanged,
+                ForceHookOffChanged = OnAddonForceHookOffChanged,
                 FeedConfigChanged = OnAddonFeedConfigChanged,
             };
             ApplyAddonVersionChoice(item, versionStore, tagsByExtension);
@@ -285,7 +286,8 @@ public sealed partial class GamePluginPage : PageBase
                 feedConfig?.WarmupRebuild ?? Dlss5FeedConfig.DefaultWarmupRebuild,
                 feedConfig?.Path,
                 item.IsRenoDxDlss5Main && _plugins.IsDx11SourceNative(),
-                item.IsRenoDxDlss5Main && _plugins.IsEnableHooksOn());
+                item.IsRenoDxDlss5Main && _plugins.IsEnableHooksOn(),
+                CurrentGameId is { } gid && AppConfig.GetForceHookOffOnLaunch(gid.GameBiz));
             Addons.Add(item);
         }
 
@@ -761,6 +763,20 @@ public sealed partial class GamePluginPage : PageBase
             TextBlock_Status.Text = "EnableHooks 写不进去 —— 要么没有 ReShade.ini，要么插件没启用。";
             item.RefreshEnableHooks(_plugins.IsEnableHooksOn());
         }
+    }
+
+    /// <summary>卡片上的「永远 off」：启动/注入前把 [RENODX-DLSS] 挂钩点写成 0（按游戏记在 AppConfig）</summary>
+    private void OnAddonForceHookOffChanged(AddonItemViewModel item, bool value)
+    {
+        if (CurrentGameId is not { } gameId)
+        {
+            return;
+        }
+
+        AppConfig.SetForceHookOffOnLaunch(gameId.GameBiz, value);
+        TextBlock_Status.Text = value
+            ? "已开启：以后从这里启动/注入这个游戏之前，会自动把旧 RenoDX DLSS 的挂钩点写成 0。"
+            : "已关闭：启动前不再动挂钩点。";
     }
 
     /// <summary>
@@ -1360,6 +1376,15 @@ public partial class AddonItemViewModel : ObservableObject
 
     public bool CanEditEnableHooks => CanToggle && Enabled && IsRenoDxDlss5Main;
 
+    /// <summary>
+    /// 「永远 off」（启动/注入前把挂钩点写成 0）：只属于旧 RenoDX DLSS —— 键是
+    /// [RENODX-DLSS] DirectNeuralRenderingHookPoint；DLSS5 走 Streamline，不吃这个键，所以不显示。
+    /// </summary>
+    public Visibility ForceHookOffVisibility =>
+        IsRenoDxDlssFamily && !IsRenoDxDlss5Main ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool CanEditForceHookOff => CanToggle && Enabled && IsRenoDxDlssFamily && !IsRenoDxDlss5Main;
+
     /// <summary>cfg 的完整路径（展开时显示出来，方便自己去改）</summary>
     public string FeedConfigPath { get; private set; } = string.Empty;
 
@@ -1371,6 +1396,10 @@ public partial class AddonItemViewModel : ObservableObject
 
     [ObservableProperty]
     private bool enableHooks;
+
+    /// <summary>「永远 off」：启动/注入这个游戏之前把旧 DLSS 的挂钩点写成 0（按游戏记在 AppConfig）</summary>
+    [ObservableProperty]
+    private bool forceHookOffOnLaunch;
 
     [ObservableProperty]
     private double feedCreateDelay;
@@ -1387,11 +1416,14 @@ public partial class AddonItemViewModel : ObservableObject
     /// <summary>用户改了 EnableHooks（页面写盘；写失败页面会调 <see cref="RefreshEnableHooks"/> 拨回来）</summary>
     internal Action<AddonItemViewModel, bool>? EnableHooksChanged { get; set; }
 
+    /// <summary>用户改了「永远 off」（页面记到 AppConfig；失败页面会调 <see cref="RefreshForceHookOff"/> 拨回来）</summary>
+    internal Action<AddonItemViewModel, bool>? ForceHookOffChanged { get; set; }
+
     /// <summary>用户改了 Feed 的延迟（页面读这两个属性一起写，失败一起拨回来）</summary>
     internal Action<AddonItemViewModel>? FeedConfigChanged { get; set; }
 
     /// <summary>程序填专属配置的初值（不算用户改的）</summary>
-    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath, bool dx11SourceNative, bool enableHooks)
+    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath, bool dx11SourceNative, bool enableHooks, bool forceHookOffOnLaunch)
     {
         _suppress = true;
         try
@@ -1403,6 +1435,7 @@ public partial class AddonItemViewModel : ObservableObject
             HasFeedConfig = !string.IsNullOrWhiteSpace(feedConfigPath);
             Dx11SourceNative = dx11SourceNative;
             EnableHooks = enableHooks;
+            ForceHookOffOnLaunch = forceHookOffOnLaunch;
         }
         finally
         {
@@ -1450,6 +1483,20 @@ public partial class AddonItemViewModel : ObservableObject
         try
         {
             EnableHooks = value;
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    /// <summary>跟 AppConfig 对齐「永远 off」勾选（切游戏重建卡片时填初值）</summary>
+    public void RefreshForceHookOff(bool value)
+    {
+        _suppress = true;
+        try
+        {
+            ForceHookOffOnLaunch = value;
         }
         finally
         {
@@ -1524,6 +1571,16 @@ public partial class AddonItemViewModel : ObservableObject
         }
 
         EnableHooksChanged?.Invoke(this, value);
+    }
+
+    partial void OnForceHookOffOnLaunchChanged(bool value)
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        ForceHookOffChanged?.Invoke(this, value);
     }
 
     partial void OnFeedCreateDelayChanged(double value) => NotifyFeedConfigChanged();
