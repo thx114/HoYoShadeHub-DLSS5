@@ -1192,17 +1192,72 @@ public sealed partial class GlobalPluginPage : PageBase
         }
 
         bool wasLocalized = row.IsLocalized;
-        string message = wasLocalized
-            ? await RestoreAddonFileAsync(target)
-            : await LocalizeAddonFileAsync(target);
+        string message = await RunWithProgressAsync(
+            wasLocalized ? "正在还原" : "正在汉化",
+            (progress, token) => wasLocalized
+                ? RestoreAddonFileAsync(target, progress, token)
+                : LocalizeAddonFileAsync(target, progress, token));
 
         // 就地刷按钮文案；不重建列表（重建会把展开状态顶回去）
         row.RefreshLocalizeState();
         await ShowMessageAsync(wasLocalized ? "还原结果" : "汉化结果", message);
     }
 
+    /// <summary>
+    /// 跑一个耗时操作，同时弹「转圈 + 说明 + 停止」的对话框。
+    /// 找副本要扫所有固定盘（深度 5），十几秒很正常 —— 没有进度界面用户会以为卡死或点了没反应。
+    /// </summary>
+    private async Task<string> RunWithProgressAsync(
+        string title,
+        Func<IProgress<string>, CancellationToken, Task<string>> work)
+    {
+        using var cts = new CancellationTokenSource();
+
+        var ring = new ProgressRing { IsActive = true, Width = 28, Height = 28 };
+        var text = new TextBlock { Text = "准备中…", TextWrapping = TextWrapping.Wrap, MaxWidth = 360 };
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        content.Children.Add(ring);
+        content.Children.Add(text);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = title,
+            Content = content,
+            CloseButtonText = "停止",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        dialog.CloseButtonClick += (_, _) => cts.Cancel();
+
+        var progress = new Progress<string>(message => text.Text = message);
+        _ = dialog.ShowAsync();
+
+        try
+        {
+            return await work(progress, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return "已停止。停在半路的那份可能只改了一部分，再点一次会先还原、再按完整表重打一遍。";
+        }
+        finally
+        {
+            try
+            {
+                dialog.Hide();
+            }
+            catch
+            {
+                // 用户已经按了「停止」，对话框早关了
+            }
+        }
+    }
+
     /// <summary>汉化一个插件文件：按翻译表把英文界面文本原地换成中文（先自动备份，副本一起打）</summary>
-    private async Task<string> LocalizeAddonFileAsync(string file)
+    private async Task<string> LocalizeAddonFileAsync(
+        string file,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         string fileName = Path.GetFileName(file);
         List<AddonI18nTable> tables = AddonLocalizer.LoadTables(I18nTableDirectory);
@@ -1217,19 +1272,27 @@ public sealed partial class GlobalPluginPage : PageBase
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             // 已经汉化过：先还原成原文再按当前表来一遍 —— 否则英文原文已经被换掉了，
             // 第二次点会大面积「DLL 里没有」，用户看到的还是上一版翻译。
             string prefix = string.Empty;
             if (AddonLocalizer.BackupPathOf(file, I18nBackupDirectory) is not null)
             {
-                AddonLocalizeResult undo = AddonLocalizer.Restore(file, I18nBackupDirectory);
+                progress?.Report($"先还原上次的汉化（{fileName}）…");
+                AddonLocalizeResult undo = await Task.Run(
+                    () => AddonLocalizer.Restore(file, I18nBackupDirectory),
+                    cancellationToken);
                 prefix = undo.Ok ? "已还原上次的汉化，" : string.Empty;
             }
 
             // 同一份插件在别的 HoYoShade 目录里可能还有副本（便携版 / 默认装各一份），
             // 游戏读哪一份取决于它用哪个启动器 —— 所以一起打上。
+            progress?.Report($"正在找 {fileName} 的副本（要扫所有固定盘，可能十几秒）…");
             TextBlock_Status.Text = $"正在找 {fileName} 的副本…";
-            List<string> copies = await Task.Run(() => AddonLocalizationJob.FindCopies(fileName));
+            List<string> copies = await Task.Run(
+                () => AddonLocalizationJob.FindCopies(fileName, cancellationToken),
+                cancellationToken);
             List<string> targets =
             [
                 file,
@@ -1238,10 +1301,16 @@ public sealed partial class GlobalPluginPage : PageBase
 
             List<string> details = [];
             int total = 0;
+            int index = 0;
 
             foreach (string target in targets)
             {
-                AddonLocalizeResult one = AddonLocalizer.Apply(target, table, I18nBackupDirectory);
+                cancellationToken.ThrowIfCancellationRequested();
+                index++;
+                progress?.Report($"正在汉化 {Path.GetFileName(target)}（{index}/{targets.Count}）…");
+                AddonLocalizeResult one = await Task.Run(
+                    () => AddonLocalizer.Apply(target, table, I18nBackupDirectory, cancellationToken),
+                    cancellationToken);
                 AddonLocalizationJob.Remember(target);
                 total += one.Applied;
                 details.Add($"{target} → {one.Applied} 条");
@@ -1264,33 +1333,43 @@ public sealed partial class GlobalPluginPage : PageBase
     }
 
     /// <summary>还原一个插件文件（shallow 扫得到的副本一起还原）；没备份的副本跳过</summary>
-    private async Task<string> RestoreAddonFileAsync(string file)
+    private async Task<string> RestoreAddonFileAsync(
+        string file,
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         string fileName = Path.GetFileName(file);
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report($"正在找 {fileName} 的副本（要扫所有固定盘，可能十几秒）…");
             List<string> targets = await Task.Run(() =>
             {
-                List<string> copies = AddonLocalizationJob.FindCopies(fileName);
+                List<string> copies = AddonLocalizationJob.FindCopies(fileName, cancellationToken);
                 return (List<string>)
                 [
                     file,
                     .. copies.Where(p => !string.Equals(p, file, StringComparison.OrdinalIgnoreCase)),
                 ];
-            });
+            }, cancellationToken);
 
             List<string> details = [];
 
             foreach (string target in targets)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 // 没备份的副本跳过（记账里记过但备份被删了之类），不算失败
                 if (AddonLocalizer.BackupPathOf(target, I18nBackupDirectory) is null)
                 {
                     continue;
                 }
 
-                AddonLocalizeResult one = await Task.Run(() => AddonLocalizer.Restore(target, I18nBackupDirectory));
+                progress?.Report($"正在还原 {Path.GetFileName(target)}…");
+                AddonLocalizeResult one = await Task.Run(
+                    () => AddonLocalizer.Restore(target, I18nBackupDirectory),
+                    cancellationToken);
                 AddonLocalizationJob.Forget(target);
                 // 备份已经拷回原文件、使命完成 —— 删掉它，不然「已汉化」的判定（有备份就算）永远为真，
                 // 按钮永远停在「已汉化·还原」，用户看起来就是「点了没反应」。

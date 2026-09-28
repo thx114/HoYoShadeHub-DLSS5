@@ -147,12 +147,16 @@ internal sealed class AddonLocalizationJob
     /// 默认装在 &lt;用户数据目录&gt;\HoYoShade\reshade-shaders\Addons —— 游戏读哪一份取决于它用的是哪个启动器。
     /// 所以汉化时把所有能便宜找到的副本都打上（浅层目录里叫 HoYoShade 的，最多往下 5 层）。
     /// </summary>
-    public static List<string> FindCopies(string fileName)
+    /// <summary>
+    /// 找副本要扫所有固定盘（深度 5），十几秒很正常 —— 全程可取消（界面上那个「停止」按钮靠它）。
+    /// </summary>
+    public static List<string> FindCopies(string fileName, CancellationToken cancellationToken = default)
     {
         List<string> copies = [];
 
-        foreach (string root in CandidateRoots())
+        foreach (string root in CandidateRoots(cancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string path = Path.Combine(root, "reshade-shaders", "Addons", fileName);
 
             if (File.Exists(path) && !copies.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -164,7 +168,7 @@ internal sealed class AddonLocalizationJob
         return copies;
     }
 
-    private static IEnumerable<string> CandidateRoots()
+    private static IEnumerable<string> CandidateRoots(CancellationToken cancellationToken = default)
     {
         if (!string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
         {
@@ -173,12 +177,14 @@ internal sealed class AddonLocalizationJob
 
         foreach (DriveInfo drive in DriveInfo.GetDrives())
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (drive.DriveType != DriveType.Fixed || !drive.IsReady)
             {
                 continue;
             }
 
-            foreach (string dir in ShallowDirectories(drive.RootDirectory.FullName, 5))
+            foreach (string dir in ShallowDirectories(drive.RootDirectory.FullName, 5, cancellationToken))
             {
                 if (string.Equals(Path.GetFileName(dir), "HoYoShade", StringComparison.OrdinalIgnoreCase))
                 {
@@ -188,12 +194,14 @@ internal sealed class AddonLocalizationJob
         }
     }
 
-    private static IEnumerable<string> ShallowDirectories(string root, int depth)
+    private static IEnumerable<string> ShallowDirectories(string root, int depth, CancellationToken cancellationToken = default)
     {
         if (depth <= 0)
         {
             yield break;
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         IEnumerable<string> children;
 
@@ -208,9 +216,10 @@ internal sealed class AddonLocalizationJob
 
         foreach (string child in children)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             yield return child;
 
-            foreach (string nested in ShallowDirectories(child, depth - 1))
+            foreach (string nested in ShallowDirectories(child, depth - 1, cancellationToken))
             {
                 yield return nested;
             }
@@ -228,13 +237,16 @@ internal sealed class AddonLocalizationJob
 
         List<string> directories = [];
 
-        foreach (string root in CandidateRoots())
+        foreach (string root in CandidateRoots(cancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             directories.Add(Path.Combine(root, "reshade-shaders", "Addons"));
         }
 
         foreach (string directory in directories)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (!Directory.Exists(directory))
             {
                 continue;
