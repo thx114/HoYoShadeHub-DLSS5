@@ -173,6 +173,86 @@ internal sealed class AddonLocalizationJob
     }
 
     /// <summary>
+    /// 这个版本 tag 在**版本归档**里的那份（&lt;缓存&gt;\plugins\&lt;扩展&gt;\&lt;tag&gt;\reshade-shaders\Addons）：
+    /// 找不到返回 null（比如老版本还没归档）。
+    /// </summary>
+    public static string? FindVersionCopy(string fileName, string? versionTag, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(versionTag))
+        {
+            return null;
+        }
+
+        string marker = Path.DirectorySeparatorChar + versionTag + Path.DirectorySeparatorChar;
+
+        foreach (string directory in AddonDirectories(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (directory.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                string path = Path.Combine(directory, fileName);
+
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 两份文件是不是同一份（逐字节比）。**同名不同版本只能这样认** ——
+    /// 归档 / 包目录里的插件文件名都保持规范名（renodx-dlss.addon64），版本信息只在目录名和内容里。
+    /// </summary>
+    public static bool SameContent(string left, string right)
+    {
+        try
+        {
+            if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var a = new FileInfo(left);
+            var b = new FileInfo(right);
+
+            if (!a.Exists || !b.Exists || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            using FileStream sa = File.OpenRead(left);
+            using FileStream sb = File.OpenRead(right);
+            const int Chunk = 64 * 1024;
+            byte[] ba = new byte[Chunk];
+            byte[] bb = new byte[Chunk];
+
+            while (true)
+            {
+                int na = sa.Read(ba, 0, Chunk);
+                int nb = sb.Read(bb, 0, Chunk);
+
+                if (na != nb || !ba.AsSpan(0, na).SequenceEqual(bb.AsSpan(0, nb)))
+                {
+                    return false;
+                }
+
+                if (na == 0)
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 所有可能装着这个插件的 Addons 目录（都按固定位置拼，不遍历磁盘）：
     /// <list type="bullet">
     /// <item>活动宿主：&lt;用户数据目录&gt; 下的 HoYoShade / reshade-shaders / Addons（用户手动指定过的也算）</item>

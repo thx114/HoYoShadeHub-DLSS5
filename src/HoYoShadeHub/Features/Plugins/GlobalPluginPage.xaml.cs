@@ -1196,7 +1196,7 @@ public sealed partial class GlobalPluginPage : PageBase
             wasLocalized ? "正在还原" : "正在汉化",
             (progress, token) => wasLocalized
                 ? RestoreAddonFileAsync(target, progress, token)
-                : LocalizeAddonFileAsync(target, progress, token));
+                : LocalizeAddonFileAsync(target, row.Tag, progress, token));
 
         // 就地刷按钮文案；不重建列表（重建会把展开状态顶回去）
         row.RefreshLocalizeState();
@@ -1256,6 +1256,7 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>汉化一个插件文件：按翻译表把英文界面文本原地换成中文（先自动备份，副本一起打）</summary>
     private async Task<string> LocalizeAddonFileAsync(
         string file,
+        string? versionTag,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -1288,16 +1289,31 @@ public sealed partial class GlobalPluginPage : PageBase
 
             // 同一份插件在别的 HoYoShade 目录里可能还有副本（便携版 / 默认装各一份），
             // 游戏读哪一份取决于它用哪个启动器 —— 所以一起打上。
-            progress?.Report($"正在找 {fileName} 的副本（活动目录 / 版本归档 / 各游戏插件包）…");
+            progress?.Report($"正在找这个版本的其它副本（活动目录 / 版本归档 / 各游戏插件包）…");
             TextBlock_Status.Text = $"正在找 {fileName} 的副本…";
-            List<string> copies = await Task.Run(
-                () => AddonLocalizationJob.FindCopies(fileName, cancellationToken),
-                cancellationToken);
-            List<string> targets =
-            [
-                file,
-                .. copies.Where(p => !string.Equals(p, file, StringComparison.OrdinalIgnoreCase)),
-            ];
+
+            // **只动这一行那个版本**：归档里每个 tag 各有一份同名文件，别的版本一律不碰。
+            // 基准 = 这个版本在归档里的那份（没归档就以这一行指向的盘上文件为基准）；
+            // 其余副本靠「逐字节相同」认同一版本 —— 文件名都叫 renodx-dlss.addon64，认不出别的。
+            List<string> targets = await Task.Run(() =>
+            {
+                string? archived = AddonLocalizationJob.FindVersionCopy(fileName, versionTag, cancellationToken);
+                string anchor = archived ?? file;
+                var list = new List<string> { anchor };
+
+                foreach (string copy in AddonLocalizationJob.FindCopies(fileName, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!list.Contains(copy, StringComparer.OrdinalIgnoreCase)
+                        && AddonLocalizationJob.SameContent(copy, anchor))
+                    {
+                        list.Add(copy);
+                    }
+                }
+
+                return list;
+            }, cancellationToken);
 
             List<string> details = [];
             int total = 0;
@@ -1316,7 +1332,13 @@ public sealed partial class GlobalPluginPage : PageBase
                 details.Add($"{target} → {one.Applied} 条");
             }
 
-            string summary = $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条（{string.Join("；", details)}）。";
+            int others = AddonLocalizationJob.FindCopies(fileName, cancellationToken)
+                .Count(p => !targets.Contains(p, StringComparer.OrdinalIgnoreCase));
+            string versionLabel = string.IsNullOrWhiteSpace(versionTag) ? string.Empty : $"（版本 {versionTag}）";
+            string othersNote = others > 0
+                ? $"另外 {others} 份同名文件是别的版本，没动 —— 要汉化它们就点对应版本那一行。"
+                : string.Empty;
+            string summary = $"{prefix}汉化 {targets.Count} 份、共 {total} 条{versionLabel}（{string.Join("；", details)}）。{othersNote}";
             TextBlock_Status.Text = summary + "重启游戏生效，已汉化时同位置点一下即还原";
             ShowInfo("汉化完成", summary + "重启游戏生效。", InfoBarSeverity.Success);
             _logger.LogInformation("Localize addon {File}: {Prefix}{Total} 条 / {Count} 份 → {Paths}", fileName, prefix, total, targets.Count, string.Join(" | ", targets));
@@ -1332,7 +1354,7 @@ public sealed partial class GlobalPluginPage : PageBase
         }
     }
 
-    /// <summary>还原一个插件文件（shallow 扫得到的副本一起还原）；没备份的副本跳过</summary>
+    /// <summary>还原一个插件文件：只还原**同一版本**的副本（备份逐字节相同），没备份的跳过</summary>
     private async Task<string> RestoreAddonFileAsync(
         string file,
         IProgress<string>? progress = null,
@@ -1343,15 +1365,37 @@ public sealed partial class GlobalPluginPage : PageBase
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report($"正在找 {fileName} 的副本（活动目录 / 版本归档 / 各游戏插件包）…");
+            progress?.Report($"正在找这个版本的其它副本（活动目录 / 版本归档 / 各游戏插件包）…");
             List<string> targets = await Task.Run(() =>
             {
-                List<string> copies = AddonLocalizationJob.FindCopies(fileName, cancellationToken);
-                return (List<string>)
-                [
-                    file,
-                    .. copies.Where(p => !string.Equals(p, file, StringComparison.OrdinalIgnoreCase)),
-                ];
+                var list = new List<string> { file };
+                string? anchorBackup = AddonLocalizer.BackupPathOf(file, I18nBackupDirectory);
+
+                if (anchorBackup is null)
+                {
+                    // 这一份都没备份，别的副本更不该动
+                    return list;
+                }
+
+                foreach (string copy in AddonLocalizationJob.FindCopies(fileName, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (list.Contains(copy, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    // 同版本才一起还原：备份（第一次汉化前的原版）逐字节相同 = 同一版本
+                    string? copyBackup = AddonLocalizer.BackupPathOf(copy, I18nBackupDirectory);
+
+                    if (copyBackup is not null && AddonLocalizationJob.SameContent(copyBackup, anchorBackup))
+                    {
+                        list.Add(copy);
+                    }
+                }
+
+                return list;
             }, cancellationToken);
 
             List<string> details = [];
