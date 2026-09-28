@@ -2538,38 +2538,6 @@ public sealed partial class GameLauncherPage : PageBase
                         _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
                     }
 
-                    // 光把 310.9 放进构建目录不够：OptiScaler 是从**游戏 exe 目录**开始广度优先找 dlssg 的，
-                    // 游戏自带那份（310.6.0）永远先被命中 → 叠加层报 unlock unavailable、多帧生成不生效。
-                    // 所以把游戏目录里那份也换掉（原文件先备份），失败原因原样告诉用户，别让它变成一个谜。
-                    string? unlockDlssg = OptiScalerRuntime.FindUnlockDlssg(buildDirectory);
-
-                    if (unlockDlssg is not null && _currentGameEntry?.ExePath is { Length: > 0 } dlssgGameExe
-                        && Path.GetDirectoryName(dlssgGameExe) is { Length: > 0 } dlssgGameDir)
-                    {
-                        string backupRoot = string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
-                            ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-game-dll-backup")
-                            : Path.Combine(AppConfig.UserDataFolder, ".hysx", "game-dll-backup");
-
-                        OptiScalerRuntime.GameDlssgSwapResult swap = OptiScalerRuntime.ReplaceGameDlssg(
-                            dlssgGameDir,
-                            unlockDlssg,
-                            backupRoot);
-
-                        if (swap.Replaced > 0)
-                        {
-                            _logger.LogInformation("Game dlssg replaced: {Message}", swap.Message);
-                            InAppToast.MainWindow?.Success("DLSSG 已替换", swap.Message, 8000);
-                        }
-                        else if (!swap.Ok)
-                        {
-                            _logger.LogWarning("Game dlssg replace failed: {Message}", swap.Message);
-                            InAppToast.MainWindow?.Error("DLSSG 替换失败", swap.Message, 15000);
-                        }
-                        else
-                        {
-                            _logger.LogInformation("Game dlssg already current: {Message}", swap.Message);
-                        }
-                    }
                 }
 
                 // 桥在 specs 里时，原神 mhyprot 会拒绝外部注入 OptiScaler（VirtualAllocEx 拒绝访问）。
@@ -3305,6 +3273,76 @@ public sealed partial class GameLauncherPage : PageBase
 
 
     [RelayCommand]
+    /// <summary>
+    /// 启动前：把游戏目录自带的 <c>nvngx_dlssg.dll</c> 换成 310.9（OptiScaler 的 MFG 解锁只认这个版本）。
+    ///
+    /// <para>
+    /// OptiScaler 从**游戏 exe 目录**开始广度优先找 dlssg，游戏自带那份（典型 310.6.0）永远先被命中 ——
+    /// 光把 310.9 放进 OptiScaler 构建目录没用，多帧生成不生效。这里做版本检测 + 替换：
+    /// 原文件先备份（<c>.hysx\game-dll-backup</c>），失败会把路径和原因弹出来。
+    /// </para>
+    ///
+    /// <para>
+    /// 必须放在 <see cref="StartGameAsync"/> 这个统一入口：注入模式 / 非注入模式 / Starward / 自定义游戏
+    /// 各条路径都会走到（以前只在注入流程里做，走别的路径的游戏比如绝区零就漏了）。
+    /// </para>
+    /// </summary>
+    private void EnsureGameDlssgForMfg()
+    {
+        if (!UseOptiScaler || CurrentGameId is not { } gameId)
+        {
+            return;
+        }
+
+        string? optiDll = AppConfig.GetSelectedOptiScalerDll(gameId);
+
+        if (string.IsNullOrWhiteSpace(optiDll) || Path.GetDirectoryName(optiDll) is not { Length: > 0 } buildDirectory)
+        {
+            _logger.LogInformation("Game dlssg: 这个游戏还没选 OptiScaler 构建，跳过。");
+            return;
+        }
+
+        string? unlockDll = OptiScalerRuntime.FindUnlockDlssg(buildDirectory);
+
+        if (unlockDll is null)
+        {
+            _logger.LogInformation("Game dlssg: 构建目录里没有 310.9 的 dlssg，跳过（{Build}）", buildDirectory);
+            return;
+        }
+
+        // 游戏目录：优先用当前条目的 exe；biz 游戏（绝区零这种）没有条目路径时用安装路径兜底
+        string? gameDirectory = _currentGameEntry?.ExePath is { Length: > 0 } exe
+            ? Path.GetDirectoryName(exe)
+            : GameInstallPath;
+
+        if (string.IsNullOrWhiteSpace(gameDirectory) || !Directory.Exists(gameDirectory))
+        {
+            _logger.LogInformation("Game dlssg: 还不知道游戏目录，跳过。");
+            return;
+        }
+
+        string backupRoot = string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
+            ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-game-dll-backup")
+            : Path.Combine(AppConfig.UserDataFolder, ".hysx", "game-dll-backup");
+
+        OptiScalerRuntime.GameDlssgSwapResult swap = OptiScalerRuntime.ReplaceGameDlssg(gameDirectory, unlockDll, backupRoot);
+
+        if (swap.Replaced > 0)
+        {
+            _logger.LogInformation("Game dlssg replaced: {Message}", swap.Message);
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success("DLSSG 已替换", swap.Message, 8000));
+        }
+        else if (!swap.Ok)
+        {
+            _logger.LogWarning("Game dlssg replace failed: {Message}", swap.Message);
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("DLSSG 替换失败", swap.Message, 15000));
+        }
+        else
+        {
+            _logger.LogInformation("Game dlssg check: {Message}", swap.Message);
+        }
+    }
+
     private async Task StartGameAsync()
     {
         try
@@ -3335,6 +3373,10 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 「启动游戏时强制 off」：启动/注入之前把 hook 点写 0（按游戏开关）
             ApplyForceHookOffOnLaunch();
+
+            // 游戏目录自带的 nvngx_dlssg.dll 换成 310.9（MFG 解锁只认它）。
+            // **放统一入口**：以前挂在注入流程里，走别的启动路径的游戏（绝区零）就漏了。
+            EnsureGameDlssgForMfg();
 
             // 「启用 XXMI 注入」：**按 XXMI 的方式启动** —— 挂起起进程 → 往进程里 Inject 3DMigoto 的
             // d3d11.dll → 恢复线程（注入发生在 D3D 初始化前，且 DllMain 在游戏进程里跑，不会踩 1114）。
