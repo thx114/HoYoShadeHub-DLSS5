@@ -11,22 +11,40 @@ using System.IO.Compression;
 using System.Text.Json;
 
 // 临时诊断入口：overlay-install <zip> <HoYoShade 根> <OptiScaler 根> <模块根> <缓存根> [临时目录]
-// 拿真包往一份「假装的安装目录」上盖一遍，验证识别 / 落位 / 归档都对
-if (args.Length >= 6 && args[0] == "overlay-install")
+// 拿真包往一份「假装的安装目录」上盖一遍，验证识别 / 落位 / 归档都对。
+// overlay-noshade（或 HoYoShade 根传 "-"）= 模拟「本机还没装 HoYoShade」的全新便携包。
+if (args.Length >= 6 && (args[0] == "overlay-install" || args[0] == "overlay-noshade"))
 {
     if (args.Length >= 7)
     {
         TemporaryFolder.Override = args[6];
     }
 
-    string probeAddons = Path.Combine(args[2], "reshade-shaders", "Addons");
+    bool noShade = args[0] == "overlay-noshade" || args[2] == "-";
+    string probeShade = noShade ? string.Empty : args[2];
+    string probeAddons = probeShade.Length == 0 ? string.Empty : Path.Combine(probeShade, "reshade-shaders", "Addons");
+
     Console.WriteLine("kind    = " + LocalPackageInstaller.DetectKind(args[1]));
+    Console.WriteLine("shade   = " + (probeShade.Length == 0 ? "(没装 HoYoShade)" : probeShade));
 
-    LocalPackageInstallResult probeResult = await new LocalPackageInstaller(
-        args[3], probeAddons, args[4], null, args[2], null, args[5]).InstallAsync(args[1]);
+    try
+    {
+        LocalPackageInstallResult probeResult = await new LocalPackageInstaller(
+            args[3], probeAddons, args[4], null, probeShade.Length == 0 ? null : probeShade, null, args[5])
+            .InstallAsync(args[1]);
 
-    Console.WriteLine("summary = " + probeResult.Summary);
-    Console.WriteLine("target  = " + probeResult.TargetPath);
+        Console.WriteLine("summary = " + probeResult.Summary);
+        Console.WriteLine("target  = " + probeResult.TargetPath);
+        foreach (string line in probeResult.Details)
+        {
+            Console.WriteLine("detail  = " + line);
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("EXCEPTION " + ex.GetType().Name + ": " + ex.Message);
+    }
+
     return 0;
 }
 
@@ -2744,6 +2762,93 @@ Check(new OptiScalerLibrary(mfOpti).GetSelected()?.Id == "mfg-ada/mfg-ada-0.1.5"
     "清单没关 select → 装完就选中这个构建");
 Check(mfResult.Summary.Contains("按清单安装"), "状态栏说明是按清单装的：" + mfResult.Summary);
 
+// 全新便携包（还没装 HoYoShade）里先导覆盖包：必须明确报错，不能默默只装 OptiScaler 一半
+// （用户实测：这样导完 DLL 页一直「缺必需文件」，因为框架那半根本没落）
+string noShadeWork = Path.Combine(root, "overlay-no-shade");
+string noShadeOpti = Path.Combine(noShadeWork, "OptiScaler");
+string noShadeModules = Path.Combine(noShadeWork, "Modules");
+string noShadeCache = Path.Combine(noShadeWork, "cache-root");
+Directory.CreateDirectory(noShadeOpti);
+Directory.CreateDirectory(noShadeModules);
+
+string? noShadeError = null;
+try
+{
+    await new LocalPackageInstaller(noShadeOpti, string.Empty, noShadeModules, null, null, null, noShadeCache)
+        .InstallAsync(mfZip);
+}
+catch (Exception ex)
+{
+    noShadeError = ex.Message;
+}
+
+Check(noShadeError is not null, "没装 HoYoShade 时导带框架的覆盖包 → 报错，不再默默只装一半");
+Check(noShadeError?.Contains("HoYoShade") == true, "报错说清是缺 HoYoShade：" + noShadeError);
+Check(!Directory.Exists(Path.Combine(noShadeOpti, "mfg-ada")), "报错就整包不落（不会有 OptiScaler 半拉的残留）");
+
+// 老包（没清单）靠目录结构认，同样不能只装一半
+string legacyZip = Path.Combine(noShadeWork, "老包没有清单.zip");
+using (ZipArchive zip = ZipFile.Open(legacyZip, ZipArchiveMode.Create))
+{
+    WriteZipText(zip, "HoYoShade/ReShade64.dll", "old");
+    WriteZipText(zip, "OptiScaler/state.json", @"{ ""selected"": ""mfg-ada/v1"" }");
+}
+
+string? legacyError = null;
+try
+{
+    await new LocalPackageInstaller(noShadeOpti, string.Empty, noShadeModules, null, null, null, noShadeCache)
+        .InstallAsync(legacyZip);
+}
+catch (Exception ex)
+{
+    legacyError = ex.Message;
+}
+
+Check(legacyError?.Contains("HoYoShade") == true, "老包（没清单）同样报错：" + legacyError);
+
+// 反例：包里只有 OptiScaler 那一半 → 本机没装 HoYoShade 也该照装
+string optiOnlyZip = Path.Combine(noShadeWork, "只有 opti 的包.zip");
+using (ZipArchive zip = ZipFile.Open(optiOnlyZip, ZipArchiveMode.Create))
+{
+    WriteZipText(zip, "filelist.json",
+        """{"hysxOverlay":1,"name":"只有 OptiScaler 的包","targets":[{"from":"opti-lib","to":"optiscaler"}]}""");
+    WriteZipText(zip, "opti-lib/mfg-ada/mfg-ada-0.1.5/OptiScaler.dll", "dll");
+}
+
+LocalPackageInstallResult optiOnly = await new LocalPackageInstaller(
+    noShadeOpti, string.Empty, noShadeModules, null, null, null, noShadeCache).InstallAsync(optiOnlyZip);
+Check(optiOnly.Kind == LocalPackageKind.Overlay
+      && File.Exists(Path.Combine(noShadeOpti, "mfg-ada", "mfg-ada-0.1.5", "OptiScaler.dll")),
+    "包里没有 HoYoShade 那一半 → 没装框架也照样装 OptiScaler 那半");
+
+
+Console.WriteLine("== FG-only minimal INI runtime path regression ==");
+string minimalBuild = Path.Combine(root, "中文 launcher", "mfg-ada-0.1.6");
+Directory.CreateDirectory(minimalBuild);
+string minimalIni = Path.Combine(minimalBuild, "OptiScaler.ini");
+string expectedPathLine = "OptiDllPath = " + Path.Combine(minimalBuild, "OptiScaler");
+foreach (string input in new[]
+{
+    "[FrameGen]\nEnabled=false\n",
+    "[Libraries]\nNvngxPath=auto\n[FrameGen]\nEnabled=false\n",
+    "[Libraries]\nOptiDllPath=auto\n[FrameGen]\nEnabled=false\n",
+    "[libraries]\noptidllpath=old-path\n[FrameGen]\nEnabled=false\n",
+    ""
+})
+{
+    File.WriteAllText(minimalIni, input);
+    Check(OptiScalerRuntime.EnsureConfigDllPath(minimalBuild), "minimal INI path repaired");
+    string once = File.ReadAllText(minimalIni);
+    Check(once.Contains(expectedPathLine), "path pinned to build, including Unicode path");
+    Check(!input.Contains("Enabled=false") || once.Contains("Enabled=false"), "FG setting preserved");
+    Check(!input.Contains("NvngxPath=auto") || once.Contains("NvngxPath=auto"), "other library setting preserved");
+    Check(OptiScalerRuntime.EnsureConfigDllPath(minimalBuild) && File.ReadAllText(minimalIni) == once,
+        "path repair is idempotent");
+}
+File.Delete(minimalIni);
+Check(!OptiScalerRuntime.EnsureConfigDllPath(minimalBuild), "missing INI not fabricated");
+Check(!OptiScalerRuntime.EnsureConfigDllPath(Path.Combine(root, "absent-build")), "missing build not fabricated");
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }

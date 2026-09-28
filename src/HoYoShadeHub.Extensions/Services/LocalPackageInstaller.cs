@@ -569,6 +569,18 @@ public sealed class LocalPackageInstaller
 
             OverlayManifest? manifest = OverlayManifest.Load(root);
 
+            // 包里带 HoYoShade 那一半、但本机还没定位到 HoYoShade 目录：直接说清楚，别默默只装一半。
+            // （实测：全新便携包里先导覆盖包 → 只有 OptiScaler 那半进去，DLL 页报「缺必需文件」，
+            //  用户根本看不出来框架那半被跳过了。）
+            if (_shadeRoot.Length == 0 && OverlayHasShadeHalf(root, manifest))
+            {
+                throw new InvalidOperationException(
+                    "这个覆盖包里有 HoYoShade 那一半（ReShade 框架 / 滤镜 / 插件），"
+                    + "但本机还没装 HoYoShade、没定位到它的目录，没地方落。"
+                    + "先到「启动器」页装一次 HoYoShade，再导入这个包；"
+                    + "现在导进去只有 OptiScaler 那一半生效，插件和运行时 dll（nvngx_dlssnr / sl.*）都不会有。");
+            }
+
             var details = new List<string>();
             var stuck = new List<string>();
             string target = _shadeRoot.Length > 0 ? _shadeRoot : _optiscalerRoot;
@@ -670,6 +682,29 @@ public sealed class LocalPackageInstaller
     }
 
     private sealed record OverlayCopyResult(int Copied, int Failed);
+
+    /// <summary>
+    /// 包里有没有 HoYoShade 那一半：有清单就看清单里有没有 from 存在、to = shade 的目录；
+    /// 老包（没清单）就靠 <c>HoYoShade\ReShade64.dll</c> 这个特征文件认。
+    /// </summary>
+    private static bool OverlayHasShadeHalf(string root, OverlayManifest? manifest)
+    {
+        if (manifest is not null)
+        {
+            foreach ((string from, string to) in ResolveTargets(manifest))
+            {
+                if (to == OverlayManifest.TargetShade
+                    && Directory.Exists(Path.Combine(root, from.Replace('/', Path.DirectorySeparatorChar))))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return ResolveOverlayFolder(root, ShadeOverlayFolder, "ReShade64.dll") is not null;
+    }
 
     /// <summary>清单里的「从哪个目录盖到哪儿」；没写 targets 就按约定俗成的两个目录</summary>
     private static IEnumerable<(string From, string To)> ResolveTargets(OverlayManifest manifest)
