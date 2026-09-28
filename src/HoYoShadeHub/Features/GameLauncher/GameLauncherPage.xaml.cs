@@ -2537,6 +2537,39 @@ public sealed partial class GameLauncherPage : PageBase
                     {
                         _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
                     }
+
+                    // 光把 310.9 放进构建目录不够：OptiScaler 是从**游戏 exe 目录**开始广度优先找 dlssg 的，
+                    // 游戏自带那份（310.6.0）永远先被命中 → 叠加层报 unlock unavailable、多帧生成不生效。
+                    // 所以把游戏目录里那份也换掉（原文件先备份），失败原因原样告诉用户，别让它变成一个谜。
+                    string? unlockDlssg = OptiScalerRuntime.FindUnlockDlssg(buildDirectory);
+
+                    if (unlockDlssg is not null && _currentGameEntry?.ExePath is { Length: > 0 } dlssgGameExe
+                        && Path.GetDirectoryName(dlssgGameExe) is { Length: > 0 } dlssgGameDir)
+                    {
+                        string backupRoot = string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
+                            ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-game-dll-backup")
+                            : Path.Combine(AppConfig.UserDataFolder, ".hysx", "game-dll-backup");
+
+                        OptiScalerRuntime.GameDlssgSwapResult swap = OptiScalerRuntime.ReplaceGameDlssg(
+                            dlssgGameDir,
+                            unlockDlssg,
+                            backupRoot);
+
+                        if (swap.Replaced > 0)
+                        {
+                            _logger.LogInformation("Game dlssg replaced: {Message}", swap.Message);
+                            InAppToast.MainWindow?.Success("DLSSG 已替换", swap.Message, 8000);
+                        }
+                        else if (!swap.Ok)
+                        {
+                            _logger.LogWarning("Game dlssg replace failed: {Message}", swap.Message);
+                            InAppToast.MainWindow?.Error("DLSSG 替换失败", swap.Message, 15000);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("Game dlssg already current: {Message}", swap.Message);
+                        }
+                    }
                 }
 
                 // 桥在 specs 里时，原神 mhyprot 会拒绝外部注入 OptiScaler（VirtualAllocEx 拒绝访问）。

@@ -243,6 +243,292 @@ public static class OptiScalerRuntime
         return null;
     }
 
+    /// <summary>
+    /// 游戏目录里**所有** nvngx_dlssg.dll 副本（根部 + 广度优先的各级子目录，最多 <paramref name="max"/> 份）。
+    /// OptiScaler 运行时也是这么找的，命中哪一份由目录结构决定 —— 要换就得把能找到的都换掉。
+    /// </summary>
+    public static List<string> FindGameDlssgCopies(string gameExeDirectory, int max = 8)
+    {
+        var found = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(gameExeDirectory) || !Directory.Exists(gameExeDirectory))
+        {
+            return found;
+        }
+
+        string direct = Path.Combine(gameExeDirectory, DlssgFileName);
+        if (File.Exists(direct))
+        {
+            found.Add(direct);
+        }
+
+        var queue = new Queue<string>();
+        queue.Enqueue(gameExeDirectory);
+        int visited = 0;
+
+        while (queue.Count > 0 && visited < 4096 && found.Count < max)
+        {
+            string current = queue.Dequeue();
+            visited++;
+
+            string[] subdirs;
+            try
+            {
+                subdirs = Directory.GetDirectories(current);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (string dir in subdirs)
+            {
+                try
+                {
+                    var info = new DirectoryInfo(dir);
+                    if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    {
+                        continue;
+                    }
+
+                    string candidate = Path.Combine(dir, DlssgFileName);
+                    if (File.Exists(candidate) && !found.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+                    {
+                        found.Add(candidate);
+                        if (found.Count >= max)
+                        {
+                            break;
+                        }
+                    }
+
+                    queue.Enqueue(dir);
+                }
+                catch
+                {
+                    // 无权限等：跳过
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>构建目录里那份 310.9 的 dlssg（拿来替换游戏目录自带的旧版）</summary>
+    public static string? FindUnlockDlssg(string buildDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(buildDirectory))
+        {
+            return null;
+        }
+
+        foreach (string subdir in DlssgTargetSubdirs)
+        {
+            string file = Path.Combine(buildDirectory, subdir, DlssgFileName);
+            if (File.Exists(file) && IsUnlockDlssg(file))
+            {
+                return file;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>替换游戏目录自带 dlssg 的结果</summary>
+    public sealed record GameDlssgSwapResult(
+        bool Ok,
+        int Replaced,
+        int Already,
+        IReadOnlyList<string> Failures,
+        string Message);
+
+    /// <summary>
+    /// 把游戏目录里自带的 nvngx_dlssg.dll（典型 310.6.0）换成 310.9.1，原文件先备份到
+    /// <paramref name="backupRoot"/>（只留第一次那份原版）。
+    ///
+    /// <para>
+    /// 为什么必须换游戏目录这份：OptiScaler 运行时从**游戏 exe 目录**开始按广度优先找 dlssg，
+    /// 游戏自带的那份永远先被命中 —— 只把 310.9 放进 OptiScaler 构建目录没用，
+    /// 叠加层照样报「unlock unavailable for this runtime」，多帧生成不生效（用户实测：手动换掉才生效）。
+    /// </para>
+    /// </summary>
+    public static GameDlssgSwapResult ReplaceGameDlssg(string gameExeDirectory, string sourceDll, string backupRoot)
+    {
+        if (string.IsNullOrWhiteSpace(gameExeDirectory) || !Directory.Exists(gameExeDirectory))
+        {
+            return new GameDlssgSwapResult(false, 0, 0, [], "游戏目录不存在。");
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceDll) || !File.Exists(sourceDll))
+        {
+            return new GameDlssgSwapResult(false, 0, 0, [], "找不到 310.9.1 的 nvngx_dlssg.dll —— 先在「全局插件 → OptiScaler」把构建补齐。");
+        }
+
+        List<string> targets = FindGameDlssgCopies(gameExeDirectory);
+        if (targets.Count == 0)
+        {
+            return new GameDlssgSwapResult(true, 0, 0, [], "游戏目录里没有 nvngx_dlssg.dll，不用替换。");
+        }
+
+        string? sourceHash = null;
+        int replaced = 0;
+        int already = 0;
+        var failures = new List<string>();
+
+        foreach (string target in targets)
+        {
+            if (IsSameContent(target, sourceDll, ref sourceHash))
+            {
+                already++;
+                continue;
+            }
+
+            BackupGameDll(target, gameExeDirectory, backupRoot);
+
+            if (TryReplaceFile(sourceDll, target, out string error) && IsSameContent(target, sourceDll, ref sourceHash))
+            {
+                replaced++;
+            }
+            else
+            {
+                failures.Add($"{target}：{error}");
+            }
+        }
+
+        string message = failures.Count == 0
+            ? $"游戏目录的 nvngx_dlssg.dll 已替换成 310.9.1（换掉 {replaced} 份，本来就是新版 {already} 份）。"
+            : $"替换 {replaced} 份、跳过 {already} 份，{failures.Count} 份没成功：{string.Join("；", failures)}";
+
+        return new GameDlssgSwapResult(failures.Count == 0, replaced, already, failures, message);
+    }
+
+    /// <summary>
+    /// 把 <paramref name="source"/> 覆盖到 <paramref name="target"/>，遇到只读 / 占用 / 权限逐个绕：
+    /// 1) 直接覆盖；2) 清只读再试；3) 改名让位再写（写失败把原文件挪回去，绝不让游戏缺文件）。
+    /// </summary>
+    public static bool TryReplaceFile(string source, string target, out string error)
+    {
+        error = string.Empty;
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                File.Copy(source, target, overwrite: true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+
+                if (attempt == 0)
+                {
+                    try
+                    {
+                        FileAttributes attributes = File.GetAttributes(target);
+                        if (attributes.HasFlag(FileAttributes.ReadOnly))
+                        {
+                            File.SetAttributes(target, attributes & ~FileAttributes.ReadOnly);
+                        }
+                    }
+                    catch
+                    {
+                        // 属性拿不到就算了，进下一轮
+                    }
+                }
+                else if (attempt == 1)
+                {
+                    string aside = target + ".hysx-old-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+
+                    try
+                    {
+                        File.Move(target, aside);
+                    }
+                    catch (Exception moveEx)
+                    {
+                        error = moveEx.Message;
+                        continue;
+                    }
+
+                    try
+                    {
+                        File.Copy(source, target, overwrite: true);
+                        return true;
+                    }
+                    catch (Exception copyEx)
+                    {
+                        error = copyEx.Message;
+
+                        try
+                        {
+                            File.Move(aside, target);
+                        }
+                        catch
+                        {
+                            // 挪回去也失败：至少错误信息里有原名，让用户知道
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>两个文件内容是否一致（先比大小，再比 SHA256；源文件哈希只算一次）</summary>
+    private static bool IsSameContent(string left, string right, ref string? rightHash)
+    {
+        try
+        {
+            var a = new FileInfo(left);
+            var b = new FileInfo(right);
+
+            if (!a.Exists || !b.Exists || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            rightHash ??= Sha256Of(right);
+            return string.Equals(Sha256Of(left), rightHash, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string Sha256Of(string path)
+    {
+        using FileStream stream = File.OpenRead(path);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+    }
+
+    /// <summary>替换前把原文件备份一份（相对路径压平成文件名，只留第一次那份）</summary>
+    private static void BackupGameDll(string target, string gameExeDirectory, string backupRoot)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(backupRoot))
+            {
+                return;
+            }
+
+            string relative = Path.GetRelativePath(gameExeDirectory, target).Replace('\\', '_').Replace('/', '_');
+            string backup = Path.Combine(backupRoot, relative + ".bak");
+
+            if (File.Exists(backup))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(backupRoot);
+            File.Copy(target, backup, overwrite: false);
+        }
+        catch
+        {
+            // 备份失败不拦替换
+        }
+    }
+
     /// <summary>读 PE 文件版本，读不出来返回 null</summary>
     public static Version? TryReadFileVersion(string path)
     {
