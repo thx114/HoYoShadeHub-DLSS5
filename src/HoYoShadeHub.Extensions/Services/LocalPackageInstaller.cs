@@ -1,6 +1,8 @@
 using HoYoShadeHub.Core;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Archives;
+using HoYoShadeHub.Extensions.Dlls;
+using HoYoShadeHub.Extensions.Models;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Services;
@@ -19,6 +21,15 @@ public enum LocalPackageKind
 
     /// <summary>模块 DLL（version.dll / dxgi.dll 之类，要单独注入的原生 DLL）</summary>
     Module,
+
+    /// <summary>
+    /// 「一键覆盖包」：顶层整棵 <c>HoYoShade\</c>（ReShade 框架 + 滤镜 + 插件）和 / 或
+    /// <c>OptiScaler\</c>（含 state.json 的本地库）盖到对应目录上。
+    /// </summary>
+    Overlay,
+
+    /// <summary>启动器本体的包（根上有 version.ini / app-&lt;版本&gt;\HoYoShadeHub.exe）—— 不是插件包</summary>
+    AppPackage,
 }
 
 /// <summary>本地包安装结果。</summary>
@@ -39,13 +50,16 @@ public sealed record LocalPackageInstallResult(
         LocalPackageKind.OptiScaler => "OptiScaler",
         LocalPackageKind.Addon => "插件",
         LocalPackageKind.Module => "模块",
+        LocalPackageKind.Overlay => "覆盖包",
+        LocalPackageKind.AppPackage => "启动器包",
         _ => "未知",
     };
 }
 
 /// <summary>
 /// 把用户从 GitHub / Discord 拿到的「原始包」装进 Hub：
-/// 标准 hysx 扩展包、OptiScaler 整包、单个或打包的 addon、模块 DLL 都走这里。
+/// 标准 hysx 扩展包、OptiScaler 整包、单个或打包的 addon、模块 DLL、
+/// 以及别人配好整棵 HoYoShade / OptiScaler 的「一键覆盖包」都走这里。
 ///
 /// <para>
 /// 用户手里的包通常没有 Hub 的 manifest.json：OptiScaler 的 release zip 只有
@@ -55,25 +69,58 @@ public sealed record LocalPackageInstallResult(
 /// </summary>
 public sealed class LocalPackageInstaller
 {
+    /// <summary>覆盖包里 HoYoShade 框架那一层的目录名</summary>
+    public const string ShadeOverlayFolder = ShadeHostLocator.HoYoShadeFolderName;
+
+    /// <summary>覆盖包里 OptiScaler 本地库那一层的目录名</summary>
+    public const string OptiOverlayFolder = "OptiScaler";
+
     private readonly string _optiscalerRoot;
     private readonly string _addonsDirectory;
     private readonly string _modulesRoot;
     private readonly IEnumerable<string> _otherOptiBuildDirectories;
+    private readonly string _shadeRoot;
+    private readonly ShadeHost? _shadeHost;
+    private readonly string _cacheRoot;
 
     /// <param name="optiscalerRoot">OptiScaler 本地库根目录</param>
     /// <param name="addonsDirectory">HoYoShade 的 addons 目录（DLL 运行时来源）</param>
     /// <param name="modulesRoot">模块根目录</param>
     /// <param name="otherOptiBuildDirectories">已有的其它 OptiScaler 构建目录（补依赖用）</param>
+    /// <param name="shadeRoot">HoYoShade 框架根目录（覆盖包往这儿盖）；不传就从 addonsDirectory 反推</param>
+    /// <param name="shadeHost">宿主 —— 归档「已装插件的当前版本」要用；没有就跳过插件归档</param>
+    /// <param name="cacheRoot">缓存根 —— dll / 插件的版本归档落在它下面；没有就跳过归档</param>
     public LocalPackageInstaller(
         string optiscalerRoot,
         string addonsDirectory,
         string modulesRoot,
-        IEnumerable<string>? otherOptiBuildDirectories = null)
+        IEnumerable<string>? otherOptiBuildDirectories = null,
+        string? shadeRoot = null,
+        ShadeHost? shadeHost = null,
+        string? cacheRoot = null)
     {
         _optiscalerRoot = optiscalerRoot;
         _addonsDirectory = addonsDirectory;
         _modulesRoot = modulesRoot;
         _otherOptiBuildDirectories = otherOptiBuildDirectories ?? [];
+        _shadeRoot = string.IsNullOrWhiteSpace(shadeRoot) ? DeriveShadeRoot(addonsDirectory) : shadeRoot;
+        _shadeHost = shadeHost;
+        _cacheRoot = cacheRoot ?? string.Empty;
+    }
+
+    /// <summary>从 <c>&lt;HoYoShade&gt;\reshade-shaders\Addons</c> 反推 HoYoShade 根目录</summary>
+    private static string DeriveShadeRoot(string addonsDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(addonsDirectory))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = addonsDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string? shaders = Path.GetDirectoryName(trimmed);
+        string? root = shaders is null ? null : Path.GetDirectoryName(shaders);
+
+        return root ?? string.Empty;
     }
 
     /// <summary>识别一个文件是什么包。zip 看包内文件；裸文件按扩展名。</summary>
@@ -109,15 +156,31 @@ public sealed class LocalPackageInstaller
         return LocalPackageKind.Module;
     }
 
-    /// <summary>按包内文件清单识别类型：hysx 清单 &gt; OptiScaler &gt; addon。</summary>
+    /// <summary>按包内文件清单识别类型：hysx 清单 &gt; 启动器包 &gt; 覆盖包 &gt; OptiScaler &gt; addon。</summary>
     public static LocalPackageKind DetectKindFromEntries(IEnumerable<string> entryNames)
     {
-        var names = entryNames.ToList();
+        // 打包工具常把整包再套一层同名目录（「星穹铁道6倍覆盖包_1.1/…」），先脱掉那层
+        List<string> raw = entryNames.Select(NormalizeEntry).ToList();
+
+        // 打包工具常把整包再套一层同名目录（「星穹铁道6倍覆盖包_1.1/…」），再算一份脱壳后的
+        List<string> names = StripCommonWrapper(raw);
 
         if (names.Any(n => string.Equals(Path.GetFileName(n), "manifest.json", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(Path.GetFileName(n), "hysx.json", StringComparison.OrdinalIgnoreCase)))
         {
             return LocalPackageKind.Extension;
+        }
+
+        // 启动器本体包和覆盖包都带着 HoYoShade\，先按根上的特征把两者分开
+        if (IsLauncherAppPackage(raw))
+        {
+            return LocalPackageKind.AppPackage;
+        }
+
+        // 包里只有 HoYoShade 一层时，「多套了一层壳」和「真的只有框架」长得一模一样 —— 两边都试
+        if (IsOverlayPackage(raw) || IsOverlayPackage(names))
+        {
+            return LocalPackageKind.Overlay;
         }
 
         if (names.Any(IsOptiScalerFile))
@@ -132,6 +195,71 @@ public sealed class LocalPackageInstaller
 
         return LocalPackageKind.Module;
     }
+
+    /// <summary>包内路径统一成 <c>a/b/c</c> 形式，去掉 <c>.\</c> 前缀，便于按顶层目录判断</summary>
+    private static string NormalizeEntry(string path)
+        => path.Replace('\\', '/').TrimStart('.', '/');
+
+    /// <summary>
+    /// 脱掉「所有条目都在同一个顶层目录下」的那层套壳 ——
+    /// 打包工具（右键压缩 / Compress-Archive）经常把整个包再包一层同名目录。
+    /// 根上只要还夹着别的文件就认为没有套壳，原样返回。
+    /// </summary>
+    private static List<string> StripCommonWrapper(List<string> names)
+    {
+        string? wrapper = null;
+
+        foreach (string name in names)
+        {
+            int slash = name.IndexOf('/');
+
+            if (slash <= 0)
+            {
+                // 根上直接躺着文件 / 空条目 → 没有公共套壳
+                return names;
+            }
+
+            string head = name[..slash];
+
+            if (wrapper is null)
+            {
+                wrapper = head;
+            }
+            else if (!string.Equals(wrapper, head, StringComparison.OrdinalIgnoreCase))
+            {
+                return names;
+            }
+        }
+
+        if (wrapper is null)
+        {
+            return names;
+        }
+
+        return
+        [
+            .. names.Where(n => n.Length > wrapper.Length + 1)
+                .Select(n => n[(wrapper.Length + 1)..]),
+        ];
+    }
+
+    /// <summary>是不是启动器本体的包：根上有 version.ini，或有 app-&lt;版本&gt;\HoYoShadeHub.exe</summary>
+    private static bool IsLauncherAppPackage(List<string> names)
+        => names.Any(n => n.Equals("version.ini", StringComparison.OrdinalIgnoreCase))
+           || names.Any(n => n.StartsWith("app-", StringComparison.OrdinalIgnoreCase)
+                             && n.EndsWith("/HoYoShadeHub.exe", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 是不是「一键覆盖包」：顶层带 <c>filelist.json</c>（权威标记），
+    /// 或者带着整棵 <c>HoYoShade</c>（认 ReShade64.dll）/ <c>OptiScaler</c>（认 state.json）；
+    /// 也收「内容直接铺在根上」的那种。
+    /// </summary>
+    private static bool IsOverlayPackage(List<string> names)
+        => names.Any(n => n.Equals(OverlayManifest.FileName, StringComparison.OrdinalIgnoreCase))
+           || names.Any(n => n.Equals(ShadeOverlayFolder + "/ReShade64.dll", StringComparison.OrdinalIgnoreCase))
+           || names.Any(n => n.Equals(OptiOverlayFolder + "/" + OptiScalerLibrary.StateFileName, StringComparison.OrdinalIgnoreCase))
+           || (names.Any(n => n.Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase))
+               && names.Any(n => n.StartsWith("reshade-shaders/", StringComparison.OrdinalIgnoreCase)));
 
     private static bool IsAddonFile(string path)
     {
@@ -172,6 +300,10 @@ public sealed class LocalPackageInstaller
             LocalPackageKind.Addon => await InstallAddonAsync(file, cancellationToken),
             LocalPackageKind.OptiScaler => await InstallOptiScalerAsync(file, cancellationToken),
             LocalPackageKind.Module => InstallModule(file),
+            LocalPackageKind.Overlay => await InstallOverlayAsync(file, cancellationToken),
+            LocalPackageKind.AppPackage => throw new NotSupportedException(
+                "这是启动器本体的包（根上有 version.ini / app- 目录），不是插件覆盖包；"
+                + "把它解压覆盖到启动器目录，或者用「检查更新」。"),
             _ => throw new NotSupportedException("标准 hysx 扩展包请走扩展安装器。"),
         };
     }
@@ -397,6 +529,519 @@ public sealed class LocalPackageInstaller
             version,
             target,
             details);
+    }
+
+    // ───────────────────────── 一键覆盖包 ─────────────────────────
+
+    /// <summary>
+    /// 「一键覆盖包」：把包里的 <c>HoYoShade</c> 整棵盖到 HoYoShade 根、
+    /// <c>OptiScaler</c> 盖到本地库根，然后让启动器的版本归档认下这批文件。
+    ///
+    /// <para>
+    /// 覆盖包是别人已经配好的一整套（ReShade 框架 + 滤镜 + 插件 + OptiScaler 构建 + 预设）。
+    /// </para>
+    ///
+    /// <para>
+    /// 包里有 <c>filelist.json</c> 就照清单装（目录名、落位、dll / OptiScaler / 插件的版本都由清单说了算）；
+    /// 没有清单的老包才退回按目录结构猜。清单是「这个包是什么」的唯一权威，猜只是兼容手段。
+    /// </para>
+    /// </summary>
+    private async Task<LocalPackageInstallResult> InstallOverlayAsync(string file, CancellationToken cancellationToken)
+    {
+        if (!Path.GetExtension(file).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException("覆盖包要的是 zip。");
+        }
+
+        if (_shadeRoot.Length == 0 && _optiscalerRoot.Length == 0)
+        {
+            throw new InvalidOperationException("还没定位到 HoYoShade / OptiScaler 目录，没法覆盖安装。");
+        }
+
+        string work = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+
+        try
+        {
+            string payload = Path.Combine(work, "payload");
+            ZipExtractor.ExtractToDirectory(file, payload);
+            string root = DescendSingleWrapper(payload);
+
+            OverlayManifest? manifest = OverlayManifest.Load(root);
+
+            var details = new List<string>();
+            var stuck = new List<string>();
+            string target = _shadeRoot.Length > 0 ? _shadeRoot : _optiscalerRoot;
+            int total = 0;
+
+            if (manifest is not null)
+            {
+                // 有清单就照清单装：目录名、装到哪儿、带的是什么版本，全由清单说了算
+                details.Add("按清单安装：" + manifest.DisplayName
+                            + (string.IsNullOrWhiteSpace(manifest.Version) ? string.Empty : " " + manifest.Version));
+
+                foreach ((string from, string to) in ResolveTargets(manifest))
+                {
+                    string source = Path.Combine(root, from.Replace('/', Path.DirectorySeparatorChar));
+
+                    if (!Directory.Exists(source))
+                    {
+                        details.Add($"清单里的 {from} 在包里没有，跳过");
+                        continue;
+                    }
+
+                    if (to == OverlayManifest.TargetSkip)
+                    {
+                        details.Add($"{from}：清单说不用装，跳过");
+                        continue;
+                    }
+
+                    string destination = DestinationOf(to);
+                    if (destination.Length == 0)
+                    {
+                        details.Add($"{from}：不认识的目标「{to}」，跳过");
+                        continue;
+                    }
+
+                    OverlayCopyResult copied = OverlayTree(source, destination, stuck);
+                    total += copied.Copied;
+                    details.Add($"{from} → {TargetNameOf(to)}：{copied.Copied} 个文件"
+                                + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
+                }
+            }
+            else
+            {
+                // 没有清单的老包：按目录结构猜（HoYoShade → 框架根，OptiScaler → 本地库根）
+                string? shadeSource = ResolveOverlayFolder(root, ShadeOverlayFolder, "ReShade64.dll");
+                if (shadeSource is not null && _shadeRoot.Length > 0)
+                {
+                    OverlayCopyResult copied = OverlayTree(shadeSource, _shadeRoot, stuck);
+                    total += copied.Copied;
+                    details.Add($"HoYoShade 框架覆盖 {copied.Copied} 个文件"
+                                + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
+                }
+
+                string? optiSource = ResolveOverlayFolder(root, OptiOverlayFolder, OptiScalerLibrary.StateFileName);
+                if (optiSource is not null && _optiscalerRoot.Length > 0)
+                {
+                    OverlayCopyResult copied = OverlayTree(optiSource, _optiscalerRoot, stuck);
+                    total += copied.Copied;
+                    details.Add($"OptiScaler 库覆盖 {copied.Copied} 个文件"
+                                + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
+                }
+            }
+
+            if (total == 0 && stuck.Count == 0)
+            {
+                throw new FileNotFoundException(
+                    $"包里没找到 {ShadeOverlayFolder} / {OptiOverlayFolder} 目录，也没有 {OverlayManifest.FileName} 清单。");
+            }
+
+            if (stuck.Count > 0)
+            {
+                details.Add("有文件被占用没换成（游戏或启动器正开着就会这样）：" + string.Join("、", stuck.Take(4)));
+            }
+
+            // 归档：让 DLL 页 / 插件页认下「盘上这份是哪个版本」
+            var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            details.AddRange(ArchiveRuntimeDlls(handled));
+
+            if (manifest is not null)
+            {
+                details.AddRange(ApplyManifestCatalog(manifest, handled));
+            }
+
+            details.AddRange(await ArchiveInstalledExtensionsAsync(cancellationToken));
+            details.Add("重启游戏生效");
+
+            OptiScalerBuild? selected = new OptiScalerLibrary(_optiscalerRoot).GetSelected();
+
+            return new LocalPackageInstallResult(
+                LocalPackageKind.Overlay,
+                manifest?.DisplayName ?? Path.GetFileNameWithoutExtension(file),
+                manifest?.Version ?? selected?.Version,
+                target,
+                details);
+        }
+        finally
+        {
+            HysxUtil.TryDeleteDirectory(work);
+        }
+    }
+
+    private sealed record OverlayCopyResult(int Copied, int Failed);
+
+    /// <summary>清单里的「从哪个目录盖到哪儿」；没写 targets 就按约定俗成的两个目录</summary>
+    private static IEnumerable<(string From, string To)> ResolveTargets(OverlayManifest manifest)
+    {
+        if (manifest.Targets.Count > 0)
+        {
+            foreach (OverlayManifestTarget written in manifest.Targets)
+            {
+                if (string.IsNullOrWhiteSpace(written.From))
+                {
+                    continue;
+                }
+
+                string to = NormalizeTarget(written.To);
+                if (to.Length == 0)
+                {
+                    continue;
+                }
+
+                yield return (written.From.Trim(), to);
+            }
+
+            yield break;
+        }
+
+        yield return (ShadeOverlayFolder, OverlayManifest.TargetShade);
+        yield return (OptiOverlayFolder, OverlayManifest.TargetOptiScaler);
+    }
+
+    /// <summary>目标代号归一化；认不出来返回空串（不认识的目标就不装，绝不乱盖）</summary>
+    private static string NormalizeTarget(string? to) => (to ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "shade" or "hoyoshade" or "hyshade" or "framework" => OverlayManifest.TargetShade,
+        "opti" or "optiscaler" => OverlayManifest.TargetOptiScaler,
+        "module" or "modules" => OverlayManifest.TargetModules,
+        "skip" or "ignore" or "none" => OverlayManifest.TargetSkip,
+        _ => string.Empty,
+    };
+
+    private string DestinationOf(string to) => to switch
+    {
+        OverlayManifest.TargetShade => _shadeRoot,
+        OverlayManifest.TargetOptiScaler => _optiscalerRoot,
+        OverlayManifest.TargetModules => _modulesRoot,
+        _ => string.Empty,
+    };
+
+    private static string TargetNameOf(string to) => to switch
+    {
+        OverlayManifest.TargetShade => "HoYoShade 框架",
+        OverlayManifest.TargetOptiScaler => "OptiScaler 库",
+        OverlayManifest.TargetModules => "模块目录",
+        _ => to,
+    };
+
+    /// <summary>
+    /// 按清单把 dll / OptiScaler 构建 / 插件的版本信息补齐。
+    ///
+    /// <para>
+    /// 盘上那份读得出 PE 版本就以盘上为准（<paramref name="handled"/> 里已经记下了）；
+    /// 读不出来（第三方 dll、被改过的、加了壳的）就照清单写的版本归档 ——
+    /// 这样「包里带的是哪个版本」不会丢，DLL 页也看得出盘上这份是什么。
+    /// </para>
+    /// </summary>
+    private List<string> ApplyManifestCatalog(OverlayManifest manifest, HashSet<string> handled)
+    {
+        var details = new List<string>();
+
+        foreach (OverlayManifestDll declared in manifest.Dlls)
+        {
+            if (string.IsNullOrWhiteSpace(declared.Family) || string.IsNullOrWhiteSpace(declared.Version))
+            {
+                continue;
+            }
+
+            DllFamily? family = DllComponentCatalog.FamilyOf(declared.Family);
+            if (family is null || handled.Contains(family.Id))
+            {
+                continue;
+            }
+
+            List<string> files = ResolveDeclaredDllFiles(declared, family);
+            if (files.Count == 0)
+            {
+                details.Add($"清单里的 {family.Id} {declared.Version} 在盘上没找到");
+                continue;
+            }
+
+            string declaredVersion = DllVersion.Normalize(declared.Version);
+
+            if (_cacheRoot.Length > 0 && new DllVersionStore(_cacheRoot).Archive(family.Id, declaredVersion, files) > 0)
+            {
+                handled.Add(family.Id);
+                details.Add($"{family.Id} {declaredVersion} 已归档（按清单）");
+            }
+        }
+
+        if (manifest.OptiScaler is { } opti
+            && !string.IsNullOrWhiteSpace(opti.SourceId)
+            && !string.IsNullOrWhiteSpace(opti.Version)
+            && _optiscalerRoot.Length > 0)
+        {
+            string buildDirectory = Path.Combine(
+                _optiscalerRoot,
+                OptiScalerLibrary.Sanitize(opti.SourceId),
+                OptiScalerLibrary.Sanitize(opti.Version));
+
+            if (Directory.Exists(buildDirectory))
+            {
+                if (!File.Exists(Path.Combine(buildDirectory, OptiScalerLibrary.BuildManifestName)))
+                {
+                    WriteBuildManifest(buildDirectory, opti.SourceId, opti.Version, null);
+                    details.Add($"OptiScaler {opti.Version} 已登记进本地库");
+                }
+
+                // 包里带了 state.json 就听包里的；没有才按清单补一个
+                if (opti.Select != false && string.IsNullOrWhiteSpace(ReadSelectedBuild()))
+                {
+                    WriteSelectedBuild(opti.SourceId + "/" + opti.Version);
+                    details.Add($"已把 OptiScaler {opti.Version} 设为当前启用");
+                }
+            }
+            else
+            {
+                details.Add($"清单里的 OptiScaler 构建 {opti.Version} 没落位，跳过登记");
+            }
+        }
+
+        if (manifest.Addons.Count > 0)
+        {
+            IEnumerable<string> names = manifest.Addons
+                .Select(a => string.IsNullOrWhiteSpace(a.Name) ? a.File : a.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Take(4);
+
+            details.Add($"{manifest.Addons.Count} 个插件：" + string.Join("、", names));
+        }
+
+        return details;
+    }
+
+    /// <summary>清单里声明的那条 dll 在盘上是哪个文件：先按写的路径找，找不到就按家族把 Addons 里那几个都收进来</summary>
+    private List<string> ResolveDeclaredDllFiles(OverlayManifestDll declared, DllFamily family)
+    {
+        string written = (declared.File ?? string.Empty).Replace('\\', '/').Trim().TrimStart('.', '/');
+
+        if (written.Length > 0)
+        {
+            // 带路径的按 HoYoShade 根算，纯文件名的就在 Addons 目录里
+            string path = written.Contains('/')
+                ? Path.Combine(_shadeRoot, written.Replace('/', Path.DirectorySeparatorChar))
+                : Path.Combine(_addonsDirectory, written);
+
+            if (File.Exists(path))
+            {
+                return [path];
+            }
+        }
+
+        if (!Directory.Exists(_addonsDirectory))
+        {
+            return [];
+        }
+
+        return
+        [
+            .. DllInstaller.Scan(_addonsDirectory)
+                .Where(d => DllInstaller.Matches(d.FileName, family))
+                .Select(d => Path.Combine(_addonsDirectory, d.FileName)),
+        ];
+    }
+
+    /// <summary>库根 state.json 里记的「当前启用」；没有 / 坏了返回 null</summary>
+    private string? ReadSelectedBuild()
+    {
+        try
+        {
+            string path = Path.Combine(_optiscalerRoot, OptiScalerLibrary.StateFileName);
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            OptiScalerState? state = JsonSerializer.Deserialize<OptiScalerState>(File.ReadAllText(path), _jsonOptions);
+            return string.IsNullOrWhiteSpace(state?.Selected) ? null : state.Selected;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>写库根 state.json（OptiScalerState 是库里的类型，直接序列化成同样的形状）</summary>
+    private void WriteSelectedBuild(string buildId)
+    {
+        Directory.CreateDirectory(_optiscalerRoot);
+        File.WriteAllText(
+            Path.Combine(_optiscalerRoot, OptiScalerLibrary.StateFileName),
+            JsonSerializer.Serialize(new OptiScalerState { Selected = buildId }, _jsonOptions));
+    }
+
+    /// <summary>zip 里可能多套了一层同名目录，往下钻；最多钻 3 层</summary>
+    private static string DescendSingleWrapper(string directory)
+    {
+        string current = directory;
+
+        for (int i = 0; i < 3; i++)
+        {
+            string[] dirs = Directory.GetDirectories(current);
+
+            if (dirs.Length != 1 || Directory.GetFiles(current).Length != 0)
+            {
+                break;
+            }
+
+            current = dirs[0];
+        }
+
+        return current;
+    }
+
+    /// <summary>找覆盖包里某一层：优先 <c>&lt;root&gt;\&lt;名字&gt;</c>，没有就认「内容直接铺在根上」</summary>
+    private static string? ResolveOverlayFolder(string root, string folderName, string markerFile)
+    {
+        string nested = Path.Combine(root, folderName);
+        if (Directory.Exists(nested))
+        {
+            return nested;
+        }
+
+        return File.Exists(Path.Combine(root, markerFile)) ? root : null;
+    }
+
+    /// <summary>
+    /// 把一棵目录盖到目标上：逐文件「临时文件 + Move 换 inode」。
+    ///
+    /// <para>
+    /// 直接 Copy 覆盖会保留目标 inode，指着它的硬链接（版本归档 / 每游戏插件包）内容会被一起改掉 ——
+    /// 老版本就白归档了。换 inode 之后被占用的文件会失败，所以逐个 catch 并记下来，不让整包失败。
+    /// </para>
+    /// </summary>
+    private static OverlayCopyResult OverlayTree(string source, string destination, List<string> failed)
+    {
+        Directory.CreateDirectory(destination);
+
+        int copied = 0;
+        int failures = 0;
+
+        foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(source, file);
+
+            // 账本 / 备份是我们自己的状态，包里的那份不要盖掉用户的
+            if (relative.Equals(ShadeHost.MetadataFolderName, StringComparison.OrdinalIgnoreCase)
+                || relative.StartsWith(ShadeHost.MetadataFolderName + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string target = Path.Combine(destination, relative);
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                string staged = target + ".hysx-new";
+                File.Copy(file, staged, overwrite: true);
+                File.Move(staged, target, overwrite: true);
+                copied++;
+            }
+            catch
+            {
+                failures++;
+
+                if (failed.Count < 16)
+                {
+                    failed.Add(relative);
+                }
+            }
+        }
+
+        return new OverlayCopyResult(copied, failures);
+    }
+
+    /// <summary>把盘上现存的运行时 dll 归一份档（<c>&lt;CacheRoot&gt;\dlls\&lt;family&gt;\&lt;version&gt;\</c>）</summary>
+    private List<string> ArchiveRuntimeDlls(HashSet<string> handled)
+    {
+        var details = new List<string>();
+
+        if (_cacheRoot.Length == 0 || !Directory.Exists(_addonsDirectory))
+        {
+            return details;
+        }
+
+        try
+        {
+            List<InstalledDll> installed = DllInstaller.Scan(_addonsDirectory);
+            var store = new DllVersionStore(_cacheRoot);
+
+            foreach (DllFamily family in DllComponentCatalog.Families)
+            {
+                string? version = DllInstaller.GetInstalledVersion(installed, family);
+                if (string.IsNullOrWhiteSpace(version))
+                {
+                    continue;
+                }
+
+                List<string> files =
+                [
+                    .. installed.Where(d => DllInstaller.Matches(d.FileName, family))
+                        .Select(d => Path.Combine(_addonsDirectory, d.FileName)),
+                ];
+
+                // PE 里读出来是 310,8,3,0 这种写法，归一成 310.8.3 —— 和 dll 清单里一个样式
+                string normalized = DllVersion.Normalize(version);
+
+                if (store.Archive(family.Id, normalized, files) > 0)
+                {
+                    handled.Add(family.Id);
+                    details.Add($"{family.Id} {normalized} 已归档");
+                }
+            }
+        }
+        catch
+        {
+            // 归档失败绝不能让覆盖安装失败
+        }
+
+        return details;
+    }
+
+    /// <summary>把账本里已装插件的当前版本归一份档 —— 覆盖包换了插件文件之后要重新归档</summary>
+    private async Task<List<string>> ArchiveInstalledExtensionsAsync(CancellationToken cancellationToken)
+    {
+        var details = new List<string>();
+
+        if (_shadeHost is null || _cacheRoot.Length == 0)
+        {
+            return details;
+        }
+
+        try
+        {
+            var store = new AddonVersionStore(_cacheRoot);
+            InstalledExtensionLedger ledger = await new InstalledExtensionStore(_shadeHost).LoadAsync(cancellationToken);
+
+            int archived = 0;
+            foreach (InstalledExtension record in ledger.Extensions)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                AddonArchiveResult result = store.Archive(_shadeHost, record);
+                if (result.Archived > 0 || result.Skipped > 0)
+                {
+                    archived++;
+                }
+            }
+
+            if (archived > 0)
+            {
+                details.Add($"已归档 {archived} 个插件的当前版本");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // 同上：归档失败不影响安装
+        }
+
+        return details;
     }
 
     // ───────────────────────── helpers ─────────────────────────

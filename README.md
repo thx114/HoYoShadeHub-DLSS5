@@ -39,6 +39,50 @@
 - `src/` 源码；`compile.ps1` 构建、`package.ps1` 打便携包（不需要 Visual Studio）；
 - **不放** ReShade / HoYoShade / 插件 / OptiScaler 的二进制 —— 那些由启动器按需下载（完整包除外，见下）。
 
+## 一键覆盖包（`filelist.json`）
+
+别人已经配好的一整套（ReShade 框架 + 滤镜 + 插件 + OptiScaler 构建 + 预设）打成一个 zip，
+在插件页点 **「本地安装…」**（或直接把 zip 拖进窗口）就能一键覆盖到当前 HoYoShade 上。
+包顶层放一个 `filelist.json` 就是**权威清单**，启动器照它装、照它归档：
+
+```json
+{
+  "hysxOverlay": 1,
+  "name": "星穹铁道 6 倍覆盖包",
+  "version": "1.1",
+  "game": "hkrpg",
+  "targets": [
+    { "from": "HoYoShade",  "to": "shade" },
+    { "from": "OptiScaler", "to": "optiscaler" }
+  ],
+  "dlls": [ { "family": "dlssnr", "file": "nvngx_dlssnr.dll", "version": "310.8.3.0" } ],
+  "optiscaler": { "sourceId": "mfg-ada", "version": "mfg-ada-0.1.5" },
+  "addons": [ { "file": "renodx-dlss5.addon64", "name": "DLSS 5 Neural Rendering" } ],
+  "files": [ { "path": "HoYoShade/ReShade64.dll", "size": 5592064 } ]
+}
+```
+
+| 字段 | 作用 |
+| --- | --- |
+| `hysxOverlay` | 格式版本，写 `1`（`schema` 也认）。**没有它启动器不会把这个包当覆盖包** |
+| `name` / `version` / `game` / `note` | 显示用，装完状态栏里就是这个名字 |
+| `targets` | 包里哪个目录盖到哪儿：`shade`（HoYoShade 框架）/ `optiscaler`（本地库）/ `modules` / `skip`（不装）。不写就默认 `HoYoShade` → shade、`OptiScaler` → optiscaler |
+| `dlls` | 运行时 dll：`family` 取 `dlssnr / streamline / dlss / dlssd / dlssg`，`file` 是 Addons 里的文件名（或相对 HoYoShade 根的路径），`version` 写清单版本。盘上 PE 读得出来就以盘上为准，读不出来（第三方 dll / 加过壳的）就用这个版本归档 |
+| `optiscaler` | 声明带的 OptiScaler 构建；包里没写 `build.json` / `state.json` 时启动器会补上，并按 `select`（默认 true）设成「当前启用」 |
+| `addons` | 插件列表，装完只说一句「带了这几个插件」 |
+| `files` | 文件清单（可选），给用户看清单 / 校验包完整性用 |
+
+装的时候：
+
+- 只**覆盖**包里有的文件，用户自己放的文件、`.hysx` 账本、缓存都不动；
+- 覆盖用的是「临时文件 + 换名」而不是直接覆盖字节，所以被占用的文件不会把版本归档的硬链接一起改坏；
+- 装完自动把盘点到的运行时 dll 版本、已装插件的当前版本**归一份档**（DLL 页 / 插件页的「版本」下拉里就有）；
+- 游戏或启动器开着的时候个别文件会换不动，状态栏会明说哪几个没换成。
+
+没有 `filelist.json` 的老包也能装：启动器按目录结构认（顶层 `HoYoShade/` + `OptiScaler/`，
+或者内容直接铺在根上）。启动器本体的包（根上有 `version.ini` / `app-<版本>/`）会被挡住，
+不会整包解到 OptiScaler 库里。
+
 ## 打包
 
 两种包，共用同一套源码，区别只在「自带不带 HoYoShade 框架」：

@@ -10,6 +10,26 @@ using HoYoShadeHub.Extensions.Services;
 using System.IO.Compression;
 using System.Text.Json;
 
+// 临时诊断入口：overlay-install <zip> <HoYoShade 根> <OptiScaler 根> <模块根> <缓存根> [临时目录]
+// 拿真包往一份「假装的安装目录」上盖一遍，验证识别 / 落位 / 归档都对
+if (args.Length >= 6 && args[0] == "overlay-install")
+{
+    if (args.Length >= 7)
+    {
+        TemporaryFolder.Override = args[6];
+    }
+
+    string probeAddons = Path.Combine(args[2], "reshade-shaders", "Addons");
+    Console.WriteLine("kind    = " + LocalPackageInstaller.DetectKind(args[1]));
+
+    LocalPackageInstallResult probeResult = await new LocalPackageInstaller(
+        args[3], probeAddons, args[4], null, args[2], null, args[5]).InstallAsync(args[1]);
+
+    Console.WriteLine("summary = " + probeResult.Summary);
+    Console.WriteLine("target  = " + probeResult.TargetPath);
+    return 0;
+}
+
 // 临时诊断入口：`-- localize-dump <addon 路径>`
 // 用真正的 AddonLocalizer 打一遍，然后把所有含中文的字符串打出来 —— 验证输出干不干净
 if (args.Length >= 2 && args[0] == "localize-dump")
@@ -2568,6 +2588,170 @@ finally
 Check(TemporaryFolder.Override == savedTempOverride, "测试完把 Override 还原");
 
 
+Console.WriteLine("== 35. 「一键覆盖包」的识别与安装（本地安装按钮） ==");
+
+// 识别：带整棵 HoYoShade / OptiScaler 的包是覆盖包，不能落到 OptiScaler / addon 分支去
+Check(LocalPackageInstaller.DetectKindFromEntries(
+        ["HoYoShade/ReShade64.dll", "HoYoShade/reshade-shaders/Addons/x.addon64", "OptiScaler/state.json"])
+      == LocalPackageKind.Overlay, "带 HoYoShade 框架 + OptiScaler/state.json → 认成覆盖包");
+Check(LocalPackageInstaller.DetectKindFromEntries(["HoYoShade/ReShade64.dll", "HoYoShade/ReShade.ini"])
+      == LocalPackageKind.Overlay, "只有 HoYoShade 框架也算覆盖包");
+Check(LocalPackageInstaller.DetectKindFromEntries(["OptiScaler/state.json", "OptiScaler/mfg-ada/v1/OptiScaler.dll"])
+      == LocalPackageKind.Overlay, "只有 OptiScaler 库（带 state.json）也算覆盖包");
+Check(LocalPackageInstaller.DetectKindFromEntries(["ReShade64.dll", "reshade-shaders/Addons/x.addon64"])
+      == LocalPackageKind.Overlay, "内容直接铺在根上（没套 HoYoShade 目录）也认");
+Check(LocalPackageInstaller.DetectKindFromEntries(["OptiScaler.dll", "OptiScaler.ini"])
+      == LocalPackageKind.OptiScaler, "OptiScaler 官方 release 包不受影响");
+Check(LocalPackageInstaller.DetectKindFromEntries(["foo.addon64"]) == LocalPackageKind.Addon,
+    "单个 addon 不受影响");
+Check(LocalPackageInstaller.DetectKindFromEntries(["module/version.dll"]) == LocalPackageKind.Module,
+    "模块包不受影响");
+Check(LocalPackageInstaller.DetectKindFromEntries(
+        ["version.ini", "app-1.3.9.1/HoYoShadeHub.exe", "HoYoShade/ReShade64.dll"])
+      == LocalPackageKind.AppPackage, "启动器完整包不会被当成覆盖包（否则整包解进 OptiScaler 库）");
+
+// 安装：铺一份「用户现有的」HoYoShade，再拿覆盖包盖上去
+string overlayWork = Path.Combine(root, "overlay");
+string overlayShade = Path.Combine(overlayWork, "HoYoShade");
+string overlayOpti = Path.Combine(overlayWork, "OptiScaler");
+string overlayModules = Path.Combine(overlayWork, "Modules");
+string overlayAddons = Path.Combine(overlayShade, "reshade-shaders", "Addons");
+string overlayCache = Path.Combine(overlayWork, "cache", "cache-root");
+Directory.CreateDirectory(overlayAddons);
+Directory.CreateDirectory(Path.Combine(overlayShade, ".hysx"));
+File.WriteAllText(Path.Combine(overlayShade, "ReShade64.dll"), "old");
+File.WriteAllText(Path.Combine(overlayShade, "keep.txt"), "keep");
+File.WriteAllText(Path.Combine(overlayAddons, "foo.addon64"), "old-addon");
+File.WriteAllText(Path.Combine(overlayShade, ".hysx", "installed.json"), "MINE");
+
+string overlayZip = Path.Combine(overlayWork, "星穹铁道6倍覆盖包_1.1.zip");
+using (ZipArchive zip = ZipFile.Open(overlayZip, ZipArchiveMode.Create))
+{
+    // 打包工具多套了一层同名目录 —— 安装器要能钻进去
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/HoYoShade/ReShade64.dll", "new");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/HoYoShade/reshade-shaders/Addons/foo.addon64", "new-addon");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/HoYoShade/.hysx/installed.json", "PACKED");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/OptiScaler/state.json", @"{ ""selected"": ""mfg-ada/v1"" }");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/OptiScaler/mfg-ada/v1/OptiScaler.dll", "dll");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/OptiScaler/mfg-ada/v1/build.json",
+        @"{ ""sourceId"": ""mfg-ada"", ""version"": ""v1"" }");
+    WriteZipText(zip, "星穹铁道6倍覆盖包_1.1/OptiScaler/presets/40-x6.ini", "preset");
+}
+
+Check(LocalPackageInstaller.DetectKind(overlayZip) == LocalPackageKind.Overlay, "真 zip 文件也认成覆盖包");
+
+LocalPackageInstallResult overlayResult = await new LocalPackageInstaller(
+    overlayOpti, overlayAddons, overlayModules, null, overlayShade, null, overlayCache).InstallAsync(overlayZip);
+
+Check(overlayResult.Kind == LocalPackageKind.Overlay, "装完报的类型是覆盖包");
+Check(overlayResult.Summary.StartsWith("[覆盖包]"), "状态栏文案带「覆盖包」：" + overlayResult.Summary);
+Check(File.ReadAllText(Path.Combine(overlayShade, "ReShade64.dll")) == "new", "HoYoShade 框架文件被盖成包里的版本");
+Check(File.ReadAllText(Path.Combine(overlayAddons, "foo.addon64")) == "new-addon", "addons 目录里的插件被盖新");
+Check(File.Exists(Path.Combine(overlayShade, "keep.txt")), "包里没有的文件不动（覆盖不是清空重来）");
+Check(File.ReadAllText(Path.Combine(overlayShade, ".hysx", "installed.json")) == "MINE",
+    "包里的 .hysx 不盖掉用户账本");
+Check(File.ReadAllText(Path.Combine(overlayOpti, "state.json")).Contains("mfg-ada/v1"),
+    "OptiScaler 库连 state.json 一起盖过去");
+Check(File.Exists(Path.Combine(overlayOpti, "mfg-ada", "v1", "OptiScaler.dll")), "OptiScaler 构建目录落位");
+Check(File.Exists(Path.Combine(overlayOpti, "presets", "40-x6.ini")), "OptiScaler 预设也进去");
+Check(new OptiScalerLibrary(overlayOpti).GetSelected()?.Id == "mfg-ada/v1",
+    "盖完启动器就认得出「当前启用」的是哪个构建");
+Check(!File.Exists(Path.Combine(overlayShade, "ReShade64.dll.hysx-new")), "临时 .hysx-new 文件没留下");
+
+// 归档：覆盖包里带着运行时 dll，装完要能进 <CacheRoot>/dlls/<family>/<version>/
+string sampleDll = Path.Combine(AppContext.BaseDirectory, "HoYoShadeHub.Extensions.dll");
+if (File.Exists(sampleDll))
+{
+    File.Copy(sampleDll, Path.Combine(overlayAddons, "nvngx_dlssnr.dll"), overwrite: true);
+
+    LocalPackageInstallResult archived = await new LocalPackageInstaller(
+        overlayOpti, overlayAddons, overlayModules, null, overlayShade, null, overlayCache).InstallAsync(overlayZip);
+
+    var dllArchive = new DllVersionStore(overlayCache);
+    Check(dllArchive.ListVersions("dlssnr").Count == 1,
+        "覆盖包装完，盘上这份运行时 dll 被归档（DLL 页才看得出是哪个版本）");
+    Check(archived.Summary.Contains("归档"), "状态栏里有归档结果：" + archived.Summary);
+}
+
+
+Console.WriteLine("== 36. 覆盖包清单 filelist.json：识别 / 落位 / dll 版本按清单归档 ==");
+
+Check(OverlayManifest.Parse("""{"hysxOverlay":1,"name":"x"}""")?.DisplayName == "x", "清单能解析出名字");
+Check(OverlayManifest.Parse("""{"schema":1}""")?.IsValid == true, "schema 写法也认");
+Check(OverlayManifest.Parse("""{"name":"x"}""") is null, "没写格式版本 → 不当成覆盖包清单");
+Check(OverlayManifest.Parse("not json") is null, "坏 json 不抛、当没有清单");
+Check(OverlayManifest.Parse(null) is null, "空内容 → null");
+Check(OverlayManifest.Load(Path.Combine(root, "no-such-dir")) is null, "目录不存在 → null");
+Check(LocalPackageInstaller.DetectKindFromEntries(["filelist.json", "随便/一个.bin"]) == LocalPackageKind.Overlay,
+    "顶层有 filelist.json 就是覆盖包（不用靠目录结构猜）");
+Check(LocalPackageInstaller.DetectKindFromEntries(["壳/filelist.json", "壳/x.bin"]) == LocalPackageKind.Overlay,
+    "多套了一层壳也认得出清单");
+Check(LocalPackageInstaller.DetectKindFromEntries(["filelist.json", "version.ini", "app-1.3.9.1/HoYoShadeHub.exe"])
+      == LocalPackageKind.AppPackage, "启动器本体包优先于覆盖包");
+
+// 按清单装：目录名随便起，落位 / dll 版本 / OptiScaler 选择全听清单的
+string mfWork = Path.Combine(root, "overlay-manifest");
+string mfShade = Path.Combine(mfWork, "HoYoShade");
+string mfOpti = Path.Combine(mfWork, "OptiScaler");
+string mfModules = Path.Combine(mfWork, "Modules");
+string mfAddons = Path.Combine(mfShade, "reshade-shaders", "Addons");
+string mfCache = Path.Combine(mfWork, "cache-root");
+Directory.CreateDirectory(mfAddons);
+
+string mfZip = Path.Combine(mfWork, "打包好的覆盖包.zip");
+string mfManifest = """
+{
+  "hysxOverlay": 1,
+  "name": "星穹铁道 6 倍覆盖包",
+  "version": "1.1",
+  "game": "hkrpg",
+  "targets": [
+    { "from": "framework", "to": "shade" },
+    { "from": "opti-lib", "to": "optiscaler" },
+    { "from": "docs", "to": "skip" }
+  ],
+  "dlls": [ { "family": "dlssnr", "file": "nvngx_dlssnr.dll", "version": "310.8.Lecram" } ],
+  "optiscaler": { "sourceId": "mfg-ada", "version": "mfg-ada-0.1.5" },
+  "addons": [ { "file": "foo.addon64", "name": "DLSS 5 Feed" } ],
+  "files": [ { "path": "framework/ReShade64.dll", "size": 3 } ]
+}
+""";
+using (ZipArchive zip = ZipFile.Open(mfZip, ZipArchiveMode.Create))
+{
+    WriteZipText(zip, "filelist.json", mfManifest);
+    WriteZipText(zip, "framework/ReShade64.dll", "new");
+    WriteZipText(zip, "framework/reshade-shaders/Addons/nvngx_dlssnr.dll", "not-a-pe-file");
+    WriteZipText(zip, "framework/reshade-shaders/Addons/foo.addon64", "addon");
+    WriteZipText(zip, "opti-lib/mfg-ada/mfg-ada-0.1.5/OptiScaler.dll", "dll");
+    WriteZipText(zip, "docs/README.txt", "should not be installed");
+}
+
+LocalPackageInstallResult mfResult = await new LocalPackageInstaller(
+    mfOpti, mfAddons, mfModules, null, mfShade, null, mfCache).InstallAsync(mfZip);
+
+Check(mfResult.Kind == LocalPackageKind.Overlay, "带清单的包按覆盖包装");
+Check(mfResult.DisplayName == "星穹铁道 6 倍覆盖包", "状态栏名字取清单里的：" + mfResult.DisplayName);
+Check(File.Exists(Path.Combine(mfShade, "ReShade64.dll")), "清单里 framework → shade 落位（目录名包自己起）");
+Check(File.Exists(Path.Combine(mfAddons, "foo.addon64")), "插件也落到 Addons");
+Check(File.Exists(Path.Combine(mfOpti, "mfg-ada", "mfg-ada-0.1.5", "OptiScaler.dll")), "opti-lib → OptiScaler 库落位");
+Check(File.Exists(Path.Combine(mfOpti, "mfg-ada", "mfg-ada-0.1.5", "build.json")),
+    "包里没写 build.json，清单声明了也会补上（否则库里看不见这个构建）");
+Check(!Directory.Exists(Path.Combine(mfShade, "docs")) && !File.Exists(Path.Combine(mfShade, "README.txt")),
+    "to=skip 的目录不装");
+Check(new DllVersionStore(mfCache).Has("dlssnr", "310.8.Lecram"),
+    "PE 读不出来的 dll 也照清单写的版本归档（310.8.Lecram）");
+Check(new OptiScalerLibrary(mfOpti).GetSelected()?.Id == "mfg-ada/mfg-ada-0.1.5",
+    "清单没关 select → 装完就选中这个构建");
+Check(mfResult.Summary.Contains("按清单安装"), "状态栏说明是按清单装的：" + mfResult.Summary);
+
+
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
+static void WriteZipText(ZipArchive zip, string entryName, string text)
+{
+    ZipArchiveEntry entry = zip.CreateEntry(entryName);
+    using var writer = new StreamWriter(entry.Open());
+    writer.Write(text);
+}
+
 return _failed == 0 ? 0 : 1;

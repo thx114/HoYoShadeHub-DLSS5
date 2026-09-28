@@ -2814,7 +2814,21 @@ public sealed partial class GlobalPluginPage : PageBase
     }
 
     /// <summary>
-    /// 本地安装：GitHub 原始 zip / 单个 addon / 模块 DLL 都收。
+    /// 本地包安装器：把当前 HoYoShade / OptiScaler / 缓存根都接上。
+    /// 覆盖包要往这些目录整棵盖，盖完还要把 dll / 插件的版本归档认下来。
+    /// </summary>
+    private LocalPackageInstaller CreateLocalPackageInstaller()
+        => new(
+            AppConfig.OptiScalerRootPath,
+            _manager?.Host.AddonsPath ?? string.Empty,
+            AppConfig.ModulesRootPath,
+            OptiScalerBuilds.Select(b => b.Build.Directory),
+            _manager?.Host.RootPath,
+            _manager?.Host,
+            AppConfig.CacheRoot);
+
+    /// <summary>
+    /// 本地安装：GitHub 原始 zip / 单个 addon / 模块 DLL / 一键覆盖包 都收。
     /// 自动识别类型，OptiScaler 缺的 dlssnr / streamline / dlssg 由安装器补齐。
     /// </summary>
     private async Task InstallLocalAsync()
@@ -2841,11 +2855,7 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
-        var installer = new LocalPackageInstaller(
-            AppConfig.OptiScalerRootPath,
-            _manager?.Host.AddonsPath ?? string.Empty,
-            AppConfig.ModulesRootPath,
-            OptiScalerBuilds.Select(b => b.Build.Directory));
+        LocalPackageInstaller installer = CreateLocalPackageInstaller();
 
         LocalPackageInstallResult result = await installer.InstallAsync(file);
 
@@ -2865,6 +2875,11 @@ public sealed partial class GlobalPluginPage : PageBase
                 break;
             case LocalPackageKind.Module:
                 RefreshModules();
+                break;
+            case LocalPackageKind.Overlay:
+                // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
+                await ReloadPluginDataAsync();
+                RefreshOptiScaler();
                 break;
         }
 
@@ -3297,11 +3312,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 return;
             }
 
-            var installer = new LocalPackageInstaller(
-                AppConfig.OptiScalerRootPath,
-                _manager?.Host.AddonsPath ?? string.Empty,
-                AppConfig.ModulesRootPath,
-                OptiScalerBuilds.Select(b => b.Build.Directory));
+            LocalPackageInstaller installer = CreateLocalPackageInstaller();
 
             LocalPackageInstallResult result = await installer.InstallAsync(file);
 
@@ -3321,6 +3332,11 @@ public sealed partial class GlobalPluginPage : PageBase
                     break;
                 case LocalPackageKind.Module:
                     RefreshModules();
+                    break;
+                case LocalPackageKind.Overlay:
+                    // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
+                    await ReloadPluginDataAsync();
+                    RefreshOptiScaler();
                     break;
             }
 
