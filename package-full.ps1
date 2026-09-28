@@ -145,6 +145,13 @@ try {
     Write-Host "HoYoShade 来源 : $shadeRoot" -ForegroundColor DarkGray
     Write-Host "配置           : $Configuration / $Architecture / $Version" -ForegroundColor DarkGray
 
+    $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+
+    # 复用输出目录时，先清掉上一步完整包添加的 HoYoShade 框架：内层 package.ps1 会把
+    # 输出目录里的所有内容打进「基础便携包」zip，不清的话第二次构建基础包从 180MB 肿到 235MB。
+    $staleShade = Join-Path $outDir "HoYoShade"
+    if (Test-Path $staleShade) { Remove-Item $staleShade -Recurse -Force }
+
     # 1) 基础便携包（app-<版本> + version.ini + HoYoShadeHub.exe）
     if (-not $SkipBaseBuild) {
         Write-Host "==> 先构建基础便携包" -ForegroundColor Cyan
@@ -152,7 +159,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "基础便携包构建失败（exit $LASTEXITCODE）" }
     }
 
-    $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
     if (-not (Test-Path (Join-Path $outDir "app-$Version"))) {
         throw "输出目录里没有 app-$Version（先别加 -SkipBaseBuild，或把 -Output 指对）：$outDir"
     }
