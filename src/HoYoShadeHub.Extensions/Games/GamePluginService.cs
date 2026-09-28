@@ -602,10 +602,11 @@ public sealed class GamePluginService
                 EnsureInterposerDlls();
             }
 
-            if (IsRenoDxDlss5Addon(addonFileName) && !Profile.IsDx11SourceNative())
+            if (IsRenoDxDlss5Addon(addonFileName) && Profile.GetDx11Source() is null)
             {
                 // RenoDX DLSS5 的呈现模式硬性要求 [RenoDX.DLSS5] DX11Source=native，
-                // 缺了进游戏插件就一直弹提示 —— 启用时顺手补上（随下面那次 Save 一起落盘）
+                // 键**从没写过**（老安装）时启用顺手补上（随下面那次 Save 一起落盘）。
+                // 注意条件是「键不存在」而不是「不是 native」—— 用户明确选的 foreign / 删键不能被这里盖掉。
                 Profile.SetDx11SourceNative(true);
             }
         }

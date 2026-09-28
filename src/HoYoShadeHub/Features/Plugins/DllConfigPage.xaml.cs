@@ -129,6 +129,7 @@ public sealed partial class DllConfigPage : PageBase
             _isWorking = false;
             ProgressBar_Overall.IsIndeterminate = false;
             ProgressBar_Overall.Visibility = Visibility.Collapsed;
+            TextBlock_Status.Text = string.Empty;   // 「正在读插件目录与组件清单…」别挂在底部不走
         }
     }
 

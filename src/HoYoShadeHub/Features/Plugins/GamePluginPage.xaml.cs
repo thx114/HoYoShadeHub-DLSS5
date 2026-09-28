@@ -942,7 +942,10 @@ public sealed partial class GamePluginPage : PageBase
                 card.RefreshHookPoint(card.IsRenoDxDlss5Main ? dlss5HookPoint : dlssHookPoint);
             }
 
-            // 卡片上的 DX11Source / EnableHooks 也跟 ini 对齐
+            // 卡片上的 DX11Source / EnableHooks 也跟 ini 对齐。
+            // 注意：这里**不再自动补写 DX11Source=native** —— 用户选 foreign / 默认（删键）后，
+            // 每次刷新都被断言回 native（「无法真正修改，一直回退」的元凶）。
+            // 启用时的补写挪到服务层启用流程里，且只认「键从没写过」的情况。
             int dx11Index = Dx11SourceToIndex(_plugins is { HasReShadeIni: true } plugins
                 ? plugins.GetDx11Source()
                 : null);
@@ -953,16 +956,6 @@ public sealed partial class GamePluginPage : PageBase
             {
                 card.RefreshDx11Source(dx11Index);
                 card.RefreshEnableHooks(enableHooks);
-            }
-
-            // RenoDX DLSS5 已启用但键缺失（老安装 / 键被清过）：自动补上，
-            // 免得进游戏插件一直弹「set DX11Source=native」的提示（用户反馈）
-            if (_plugins is { HasReShadeIni: true } pluginsAuto
-                && pluginsAuto.IsRenoDxDlss5AddonEnabled()
-                && !pluginsAuto.IsDx11SourceNative()
-                && pluginsAuto.SetDx11SourceNative(true))
-            {
-                TextBlock_Status.Text = "RenoDX DLSS5 已启用：自动补写 [RenoDX.DLSS5] DX11Source=native（呈现模式需要，进游戏不再提示）。";
             }
         }
         finally
