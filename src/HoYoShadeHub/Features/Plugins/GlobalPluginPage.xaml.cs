@@ -1177,27 +1177,32 @@ public sealed partial class GlobalPluginPage : PageBase
     /// </summary>
     private async void Button_LocalizeRow_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { DataContext: InstalledPluginVersionRow row }
-            || row.LocalizeTargetFile is null)
+        if (sender is not FrameworkElement { DataContext: InstalledPluginVersionRow row })
         {
+            await ShowMessageAsync("汉化", "界面状态没对上（拿不到这一行的信息），刷新一下页面再试。");
             return;
         }
 
-        if (row.IsLocalized)
+        if (row.LocalizeTargetFile is not { } target)
         {
-            await RestoreAddonFileAsync(row.LocalizeTargetFile);
+            await ShowMessageAsync("汉化",
+                $"版本 {row.Tag} 在盘上找不到对应的插件文件，没法汉化 / 还原。\n"
+                + "先把插件装上（或重装一次），再点这个按钮。");
+            return;
         }
-        else
-        {
-            await LocalizeAddonFileAsync(row.LocalizeTargetFile);
-        }
+
+        bool wasLocalized = row.IsLocalized;
+        string message = wasLocalized
+            ? await RestoreAddonFileAsync(target)
+            : await LocalizeAddonFileAsync(target);
 
         // 就地刷按钮文案；不重建列表（重建会把展开状态顶回去）
         row.RefreshLocalizeState();
+        await ShowMessageAsync(wasLocalized ? "还原结果" : "汉化结果", message);
     }
 
     /// <summary>汉化一个插件文件：按翻译表把英文界面文本原地换成中文（先自动备份，副本一起打）</summary>
-    private async Task LocalizeAddonFileAsync(string file)
+    private async Task<string> LocalizeAddonFileAsync(string file)
     {
         string fileName = Path.GetFileName(file);
         List<AddonI18nTable> tables = AddonLocalizer.LoadTables(I18nTableDirectory);
@@ -1205,10 +1210,9 @@ public sealed partial class GlobalPluginPage : PageBase
 
         if (table is null)
         {
-            ShowInfo("没有这个插件的翻译表",
-                $"{fileName} 还没有对应翻译表。可以自己往 {I18nTableDirectory} 放一个 json（和内置的 i18n.builtin.json 同格式，slug 填插件文件名前缀）。",
-                InfoBarSeverity.Warning);
-            return;
+            string noTable = $"{fileName} 还没有对应翻译表。可以自己往 {I18nTableDirectory} 放一个 json（和内置的 i18n.builtin.json 同格式，slug 填插件文件名前缀）。";
+            ShowInfo("没有这个插件的翻译表", noTable, InfoBarSeverity.Warning);
+            return noTable;
         }
 
         try
@@ -1243,22 +1247,24 @@ public sealed partial class GlobalPluginPage : PageBase
                 details.Add($"{target} → {one.Applied} 条");
             }
 
-            TextBlock_Status.Text = $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条（读取中：{string.Join("；", details)}）。重启游戏生效，已汉化时同位置点一下即还原";
-            ShowInfo("汉化完成", $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条。重启游戏生效。", InfoBarSeverity.Success);
+            string summary = $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条（{string.Join("；", details)}）。";
+            TextBlock_Status.Text = summary + "重启游戏生效，已汉化时同位置点一下即还原";
+            ShowInfo("汉化完成", summary + "重启游戏生效。", InfoBarSeverity.Success);
             _logger.LogInformation("Localize addon {File}: {Prefix}{Total} 条 / {Count} 份 → {Paths}", fileName, prefix, total, targets.Count, string.Join(" | ", targets));
+            return summary + "重启游戏生效。";
         }
         catch (Exception ex)
         {
             // 插件正被游戏加载时文件是锁着的，Move/替换会抛 IOException —— 提示清楚，别让用户以为点过了
-            ShowInfo("汉化失败",
-                $"{fileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。{ex.Message}",
-                InfoBarSeverity.Error);
+            string failed = $"{fileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。{ex.Message}";
+            ShowInfo("汉化失败", failed, InfoBarSeverity.Error);
             _logger.LogWarning(ex, "Localize addon {File} failed", fileName);
+            return failed;
         }
     }
 
     /// <summary>还原一个插件文件（shallow 扫得到的副本一起还原）；没备份的副本跳过</summary>
-    private async Task RestoreAddonFileAsync(string file)
+    private async Task<string> RestoreAddonFileAsync(string file)
     {
         string fileName = Path.GetFileName(file);
 
@@ -1302,22 +1308,47 @@ public sealed partial class GlobalPluginPage : PageBase
                 details.Add($"{Path.GetFileName(target)} → {one.Message}");
             }
 
-            TextBlock_Status.Text = details.Count > 0
-                ? $"{fileName}：已还原 {details.Count} 份（{string.Join("；", details)}）。重启游戏生效"
-                : $"{fileName}：没找到备份，没什么可还原的";
+            string done = details.Count > 0
+                ? $"{fileName}：已还原 {details.Count} 份成原版（{string.Join("；", details)}）。重启游戏生效。"
+                : $"{fileName}：没找到备份（可能已经还原过了）。重启游戏生效。";
+            TextBlock_Status.Text = done;
             ShowInfo(
                 details.Count > 0 ? "还原完成" : "没什么可还原的",
-                details.Count > 0
-                    ? $"{fileName}：已还原 {details.Count} 份成原版。重启游戏生效。"
-                    : $"{fileName}：没找到备份（可能已经还原过了）。重启游戏生效。",
+                done,
                 details.Count > 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+            return done;
         }
         catch (Exception ex)
         {
-            ShowInfo("还原失败",
-                $"{fileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。{ex.Message}",
-                InfoBarSeverity.Error);
+            string failed = $"{fileName} 写不进去，多半是插件正被游戏占用（先退出游戏再点一次）。\n{ex.Message}";
+            ShowInfo("还原失败", failed, InfoBarSeverity.Error);
             _logger.LogWarning(ex, "Restore addon {File} failed", fileName);
+            return "还原失败：" + failed;
+        }
+    }
+
+    /// <summary>弹一个内容对话框。汉化 / 还原的结果用它显示 —— InfoBar 在页面顶部，
+    /// 用户在长列表里点按钮根本看不见（反馈消失在视野外，看起来就是「点了没反应」）。</summary>
+    private async Task ShowMessageAsync(string title, string message)
+    {
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = title,
+                Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 420 },
+                CloseButtonText = "知道了",
+                DefaultButton = ContentDialogButton.Close,
+            };
+
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            // 已经有一个对话框开着之类：退回 InfoBar，别把异常抛到 async void 外面
+            _logger.LogDebug(ex, "Show message dialog failed");
+            ShowInfo(title, message, InfoBarSeverity.Informational);
         }
     }
 
