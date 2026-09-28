@@ -53,6 +53,9 @@
 ./package-full.ps1 -Version 1.3.9.1 -ShadeSource 'D:\APPS\HoYoShadeHub\HoYoShade'
 ```
 
+> **完整包不进 GitHub Release**：体积大、且内含 HoYoShade 第三方框架，只在本地构建、自行分发
+> （Release 上只放普通便携包）。
+
 完整包的内容与规则（`package-full.ps1` 头部注释里也有）：
 
 - 布局：`version.ini` + `HoYoShadeHub.exe` + `app-<版本>\` + `HoYoShade\`；
