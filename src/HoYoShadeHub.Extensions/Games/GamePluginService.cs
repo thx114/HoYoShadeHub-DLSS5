@@ -812,18 +812,21 @@ public sealed class GamePluginService
         return true;
     }
 
-    /// <summary>写 DX11Source：开 = native，关 = 删键（跟随插件默认）</summary>
-    public bool SetDx11SourceNative(bool enabled)
+    /// <summary>写 DX11Source：native / foreign，null = 删键（跟随插件默认）</summary>
+    public bool SetDx11Source(string? value)
     {
         if (Profile is null || !CanEditDx11Source())
         {
             return false;
         }
 
-        Profile.SetDx11SourceNative(enabled);
+        Profile.SetDx11Source(value);
         Profile.Save();
         return true;
     }
+
+    /// <summary>写 DX11Source：开 = native，关 = 删键（跟随插件默认）</summary>
+    public bool SetDx11SourceNative(bool enabled) => SetDx11Source(enabled ? "native" : null);
 
     /// <summary>[RenoDX.DLSS5] EnableHooks 是否已经打开（=1）</summary>
     public bool IsEnableHooksOn() => Profile?.IsEnableHooksOn() ?? false;

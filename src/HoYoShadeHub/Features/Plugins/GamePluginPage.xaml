@@ -272,11 +272,18 @@
 
                                         <!--  DX11Source：RenoDX DLSS5 的「呈现模式」要求 [RenoDX.DLSS5] DX11Source=native；
                                               只有 DLSS5 主插件显示（旧 RenoDX DLSS 插件没这个键）。开 = 写 native，关 = 删键回默认。  -->
-                                        <CheckBox Content="DX11Source=native（呈现模式）"
-                                                 IsChecked="{x:Bind Dx11SourceNative, Mode=TwoWay}"
-                                                 IsEnabled="{x:Bind CanEditDx11Source, Mode=OneWay}"
-                                                 ToolTipService.ToolTip="RenoDX DLSS5 呈现模式需要这个键：勾上写 DX11Source=native，取消就删键（回插件默认）。重启游戏生效"
-                                                 Visibility="{x:Bind Dx11SourceVisibility, Mode=OneWay}" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8"
+                                                   Visibility="{x:Bind Dx11SourceVisibility, Mode=OneWay}">
+                                            <TextBlock VerticalAlignment="Center" Text="DX11Source" />
+                                            <ComboBox MinWidth="170"
+                                                     SelectedIndex="{x:Bind Dx11Source, Mode=TwoWay}"
+                                                     IsEnabled="{x:Bind CanEditDx11Source, Mode=OneWay}"
+                                                     ToolTipService.ToolTip="RenoDX DLSS5 的呈现源。默认（不写键）= 跟随插件；native = 呈现模式要的；foreign = 外部源。重启游戏生效">
+                                                <ComboBoxItem Content="默认（不写键）" />
+                                                <ComboBoxItem Content="native（呈现模式）" />
+                                                <ComboBoxItem Content="foreign" />
+                                            </ComboBox>
+                                        </StackPanel>
 
                                         <!--  EnableHooks：游戏完全走 NVIDIA Streamline、addon 弹「NR 需要 Streamline 设置」时
                                               勾这个（写 [RenoDX.DLSS5] EnableHooks=1，重启游戏）。同样只有 DLSS5 主插件显示。  -->

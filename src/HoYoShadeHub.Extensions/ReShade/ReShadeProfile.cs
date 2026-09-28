@@ -599,24 +599,29 @@ public sealed class ReShadeProfile
         string.Equals(GetDx11Source(), Dx11SourceNative, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 开 = 写 <c>DX11Source=native</c>；关 = 删键（回到 addon 自己的默认，不硬编一个没见过的值）。
+    /// 写 DX11Source：<c>native</c> / <c>foreign</c>，null 或空 = 删键（回到 addon 自己的默认）。
     /// 顺手把老版本可能误写进 <c>[ADDON]</c> 的那份删掉。
     /// </summary>
-    public void SetDx11SourceNative(bool enabled)
+    public void SetDx11Source(string? value)
     {
-        if (enabled)
+        if (string.IsNullOrWhiteSpace(value))
         {
-            _ini.SetValue(Dlss5Section, Dx11SourceKey, Dx11SourceNative);
+            _ini.RemoveKey(Dlss5Section, Dx11SourceKey);
         }
         else
         {
-            _ini.RemoveKey(Dlss5Section, Dx11SourceKey);
+            _ini.SetValue(Dlss5Section, Dx11SourceKey, value);
         }
 
         // 旧段（旧插件用的 [RENODX-DLSS]）和 [ADDON] 里都不该有它；历史上可能被误写过，顺手清掉
         _ini.RemoveKey(RenoDlssSection, Dx11SourceKey);
         _ini.RemoveKey(AddonSection, Dx11SourceKey);
     }
+
+    /// <summary>
+    /// 开 = 写 <c>DX11Source=native</c>；关 = 删键（回到 addon 自己的默认，不硬编一个没见过的值）。
+    /// </summary>
+    public void SetDx11SourceNative(bool enabled) => SetDx11Source(enabled ? Dx11SourceNative : null);
 
     #endregion
 
