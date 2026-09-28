@@ -204,8 +204,6 @@ public sealed partial class GamePluginPage : PageBase
             TextBlock_IniPath.Text = entry.ReShadeIniPath is { } gameIni
                 ? (entry.HasReShadeIni ? "游戏目录：" + gameIni : "缺少：" + gameIni)
                 : "还不知道游戏目录（先「指定主程序…」）";
-            TextBlock_HookPointHint.Text = string.Empty;
-            TextBlock_HookPointHint.Visibility = Visibility.Collapsed;
 
             Button_CopyIni.IsEnabled = entry.ReShadeIniPath is not null && !entry.HasReShadeIni;
             Button_OpenGameFolder.IsEnabled = entry.GameDirectory is not null && Directory.Exists(entry.GameDirectory);
@@ -276,6 +274,8 @@ public sealed partial class GamePluginPage : PageBase
             {
                 VersionDispatchQueue = DispatcherQueue,
                 HookPointChanged = OnAddonHookPointChanged,
+                Dx11SourceChanged = OnAddonDx11SourceChanged,
+                EnableHooksChanged = OnAddonEnableHooksChanged,
                 FeedConfigChanged = OnAddonFeedConfigChanged,
             };
             ApplyAddonVersionChoice(item, versionStore, tagsByExtension);
@@ -283,7 +283,9 @@ public sealed partial class GamePluginPage : PageBase
                 item.IsRenoDxDlss5Main ? _plugins.GetDlss5HookPoint() : _plugins.GetHookPoint(),
                 feedConfig?.CreateDelay ?? Dlss5FeedConfig.DefaultCreateDelay,
                 feedConfig?.WarmupRebuild ?? Dlss5FeedConfig.DefaultWarmupRebuild,
-                feedConfig?.Path);
+                feedConfig?.Path,
+                item.IsRenoDxDlss5Main && _plugins.IsDx11SourceNative(),
+                item.IsRenoDxDlss5Main && _plugins.IsEnableHooksOn());
             Addons.Add(item);
         }
 
@@ -715,9 +717,50 @@ public sealed partial class GamePluginPage : PageBase
             ? $"「{item.Name}」的 HookPoint 已设为 off（盘上写 0，不是删键）。"
             : $"「{item.Name}」的 HookPoint 已设为 {value}。";
         WarnIfGameRunning();
+    }
 
-        // 右边「插件配置」里那份跟着同步（同一个键，两个入口不能打架）
-        UpdateHookPointUi();
+    /// <summary>卡片上的 DX11Source 开关：开 = 写 [RenoDX.DLSS5] DX11Source=native，关 = 删键回插件默认</summary>
+    private void OnAddonDx11SourceChanged(AddonItemViewModel item, bool value)
+    {
+        if (_plugins is null)
+        {
+            return;
+        }
+
+        if (_plugins.SetDx11SourceNative(value))
+        {
+            TextBlock_Status.Text = value
+                ? "已写入 [RenoDX.DLSS5] DX11Source=native（呈现模式需要）。重启游戏生效。"
+                : "已删掉 DX11Source 键（回插件默认）。重启游戏生效。";
+            WarnIfGameRunning();
+        }
+        else
+        {
+            TextBlock_Status.Text = "DX11Source 写不进去 —— 要么没有 ReShade.ini，要么插件没启用。";
+            item.RefreshDx11Source(_plugins.IsDx11SourceNative());
+        }
+    }
+
+    /// <summary>卡片上的 EnableHooks 开关：开 = 写 [RenoDX.DLSS5] EnableHooks=1（Streamline 挂钩），关 = 删键回默认</summary>
+    private void OnAddonEnableHooksChanged(AddonItemViewModel item, bool value)
+    {
+        if (_plugins is null)
+        {
+            return;
+        }
+
+        if (_plugins.SetEnableHooks(value))
+        {
+            TextBlock_Status.Text = value
+                ? "已写入 [RenoDX.DLSS5] EnableHooks=1（Streamline 挂钩）。重启游戏生效。"
+                : "已删掉 EnableHooks 键（回插件默认）。重启游戏生效。";
+            WarnIfGameRunning();
+        }
+        else
+        {
+            TextBlock_Status.Text = "EnableHooks 写不进去 —— 要么没有 ReShade.ini，要么插件没启用。";
+            item.RefreshEnableHooks(_plugins.IsEnableHooksOn());
+        }
     }
 
     /// <summary>
@@ -754,26 +797,31 @@ public sealed partial class GamePluginPage : PageBase
 
     private void UpdateHookPointUi()
     {
-        bool canEdit = _plugins is { HasReShadeIni: true } && _plugins.CanEditHookPoint();
         int dlssHookPoint = Math.Clamp(_plugins?.GetHookPoint() ?? 0, 0, 4);
         int dlss5HookPoint = Math.Clamp(_plugins?.GetDlss5HookPoint() ?? 0, 0, 4);
 
         _isApplying = true;
         try
         {
-            ComboBox_HookPoint.IsEnabled = canEdit;
-            ComboBox_HookPoint.SelectedIndex = dlssHookPoint;
-
-            // 需求2：卡片里那两份 HookPoint（DLSS / DLSS5）跟着一起对齐 ——
+            // 卡片里那两份 HookPoint（DLSS / DLSS5）跟着盘上对齐 ——
             // 游戏里插件自己会改这两个键，焦点回到启动器时得跟上
             foreach (AddonItemViewModel card in Addons)
             {
                 card.RefreshHookPoint(card.IsRenoDxDlss5Main ? dlss5HookPoint : dlssHookPoint);
             }
 
-            bool forceOff = CurrentGameId is { } gameId && AppConfig.GetForceHookOffOnLaunch(gameId.GameBiz);
-            CheckBox_ForceHookOff.IsChecked = forceOff;
-            CheckBox_ForceHookOff.IsEnabled = canEdit;
+            // 卡片上的 DX11Source / EnableHooks 勾选也跟 ini 对齐
+            bool dx11Native = _plugins is { HasReShadeIni: true } plugins
+                ? plugins.IsDx11SourceNative()
+                : false;
+            bool enableHooks = _plugins is { HasReShadeIni: true }
+                ? _plugins.IsEnableHooksOn()
+                : false;
+            foreach (AddonItemViewModel card in Addons)
+            {
+                card.RefreshDx11Source(dx11Native);
+                card.RefreshEnableHooks(enableHooks);
+            }
 
             // RenoDX DLSS5 已启用但键缺失（老安装 / 键被清过）：自动补上，
             // 免得进游戏插件一直弹「set DX11Source=native」的提示（用户反馈）
@@ -784,22 +832,11 @@ public sealed partial class GamePluginPage : PageBase
             {
                 TextBlock_Status.Text = "RenoDX DLSS5 已启用：自动补写 [RenoDX.DLSS5] DX11Source=native（呈现模式需要，进游戏不再提示）。";
             }
-
         }
         finally
         {
             _isApplying = false;
         }
-
-        TextBlock_HookPointHint.Text = canEdit
-            ? string.Empty
-            : _plugins is { HasReShadeIni: false }
-                ? "该游戏没有 ReShade.ini，改不了。"
-                : "当前不允许改：需要先装 RenoDX DLSS 或 RenoDX DLSS5 Super Anus。";
-
-        TextBlock_HookPointHint.Visibility = string.IsNullOrWhiteSpace(TextBlock_HookPointHint.Text)
-            ? Visibility.Collapsed
-            : Visibility.Visible;
     }
 
 
@@ -839,42 +876,6 @@ public sealed partial class GamePluginPage : PageBase
             : seconds <= 0
                 ? "HoYoShade / ReShade 注入：立即注入（不等）。"
                 : $"HoYoShade / ReShade 注入：等游戏起来 {seconds} 秒后再注入。";
-    }
-
-    /// <summary>「启动游戏时强制 off」：存到 AppConfig，启动/注入时生效</summary>
-    private void CheckBox_ForceHookOff_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isApplying || CurrentGameId is not { } gameId)
-        {
-            return;
-        }
-
-        bool value = CheckBox_ForceHookOff.IsChecked == true;
-        AppConfig.SetForceHookOffOnLaunch(gameId.GameBiz, value);
-        TextBlock_Status.Text = value
-            ? "已开启：以后从这里启动/注入这个游戏之前，会自动把 hook 点写成 0。"
-            : "已关闭：启动前不再动 hook 点。";
-    }
-
-    private void ComboBox_HookPoint_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_isApplying || _plugins is null)
-        {
-            return;
-        }
-
-        int value = Math.Clamp(ComboBox_HookPoint.SelectedIndex, 0, 4);
-        if (_plugins.SetHookPoint(value))
-        {
-            TextBlock_Status.Text = value == 0
-                ? "Hook Point 已设为 off（写的是 0，不是删键）。"
-                : $"Hook Point 已设为 {value}。";
-        }
-        else
-        {
-            TextBlock_Status.Text = "Hook Point 写不进去 —— 要么没有 ReShade.ini，要么没有满足前置条件的插件。";
-            UpdateHookPointUi();
-        }
     }
 
     #endregion
@@ -1340,11 +1341,36 @@ public partial class AddonItemViewModel : ObservableObject
         ? "[RenoDX.DLSS5] NRHookPoint"
         : "[RENODX-DLSS] DirectNeuralRenderingHookPoint";
 
+    /// <summary>
+    /// DX11Source（呈现模式）只跟 DLSS5 主插件有关：键写在 [RenoDX.DLSS5] 段，
+    /// 旧 RenoDX DLSS 插件没这个东西。
+    /// </summary>
+    public Visibility Dx11SourceVisibility =>
+        IsRenoDxDlss5Main ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>DX11Source 可点条件：插件启用 + 可改（门槛和 HookPoint 一致）</summary>
+    public bool CanEditDx11Source => CanToggle && Enabled && IsRenoDxDlss5Main;
+
+    /// <summary>
+    /// EnableHooks（[RenoDX.DLSS5] EnableHooks=1）：游戏完全走 NVIDIA Streamline 时，
+    /// 默认挂钩模式看不见 NR，addon 会弹「NR 需要 Streamline 设置」要求开这个 —— 也只有 DLSS5 主插件用得上。
+    /// </summary>
+    public Visibility EnableHooksVisibility =>
+        IsRenoDxDlss5Main ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool CanEditEnableHooks => CanToggle && Enabled && IsRenoDxDlss5Main;
+
     /// <summary>cfg 的完整路径（展开时显示出来，方便自己去改）</summary>
     public string FeedConfigPath { get; private set; } = string.Empty;
 
     [ObservableProperty]
     private int hookPoint;
+
+    [ObservableProperty]
+    private bool dx11SourceNative;
+
+    [ObservableProperty]
+    private bool enableHooks;
 
     [ObservableProperty]
     private double feedCreateDelay;
@@ -1355,11 +1381,17 @@ public partial class AddonItemViewModel : ObservableObject
     /// <summary>用户改了 HookPoint（页面写盘；写失败页面会调 <see cref="RefreshHookPoint"/> 拨回来）</summary>
     internal Action<AddonItemViewModel, int>? HookPointChanged { get; set; }
 
+    /// <summary>用户改了 DX11Source（页面写盘；写失败页面会调 <see cref="RefreshDx11Source"/> 拨回来）</summary>
+    internal Action<AddonItemViewModel, bool>? Dx11SourceChanged { get; set; }
+
+    /// <summary>用户改了 EnableHooks（页面写盘；写失败页面会调 <see cref="RefreshEnableHooks"/> 拨回来）</summary>
+    internal Action<AddonItemViewModel, bool>? EnableHooksChanged { get; set; }
+
     /// <summary>用户改了 Feed 的延迟（页面读这两个属性一起写，失败一起拨回来）</summary>
     internal Action<AddonItemViewModel>? FeedConfigChanged { get; set; }
 
     /// <summary>程序填专属配置的初值（不算用户改的）</summary>
-    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath)
+    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath, bool dx11SourceNative, bool enableHooks)
     {
         _suppress = true;
         try
@@ -1369,6 +1401,8 @@ public partial class AddonItemViewModel : ObservableObject
             FeedWarmupRebuild = feedWarmupRebuild;
             FeedConfigPath = feedConfigPath ?? string.Empty;
             HasFeedConfig = !string.IsNullOrWhiteSpace(feedConfigPath);
+            Dx11SourceNative = dx11SourceNative;
+            EnableHooks = enableHooks;
         }
         finally
         {
@@ -1388,6 +1422,34 @@ public partial class AddonItemViewModel : ObservableObject
         try
         {
             HookPoint = Math.Clamp(value, 0, 4);
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    /// <summary>跟盘上对齐 DX11Source（勾选框跟着 ini 走）</summary>
+    public void RefreshDx11Source(bool value)
+    {
+        _suppress = true;
+        try
+        {
+            Dx11SourceNative = value;
+        }
+        finally
+        {
+            _suppress = false;
+        }
+    }
+
+    /// <summary>跟盘上对齐 EnableHooks</summary>
+    public void RefreshEnableHooks(bool value)
+    {
+        _suppress = true;
+        try
+        {
+            EnableHooks = value;
         }
         finally
         {
@@ -1442,6 +1504,26 @@ public partial class AddonItemViewModel : ObservableObject
         }
 
         HookPointChanged?.Invoke(this, value);
+    }
+
+    partial void OnDx11SourceNativeChanged(bool value)
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        Dx11SourceChanged?.Invoke(this, value);
+    }
+
+    partial void OnEnableHooksChanged(bool value)
+    {
+        if (_suppress)
+        {
+            return;
+        }
+
+        EnableHooksChanged?.Invoke(this, value);
     }
 
     partial void OnFeedCreateDelayChanged(double value) => NotifyFeedConfigChanged();

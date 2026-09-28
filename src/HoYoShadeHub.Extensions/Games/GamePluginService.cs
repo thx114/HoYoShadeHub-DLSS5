@@ -825,5 +825,21 @@ public sealed class GamePluginService
         return true;
     }
 
+    /// <summary>[RenoDX.DLSS5] EnableHooks 是否已经打开（=1）</summary>
+    public bool IsEnableHooksOn() => Profile?.IsEnableHooksOn() ?? false;
+
+    /// <summary>写 EnableHooks：开 = 1（游戏全走 Streamline 时 addon 要的挂钩开关），关 = 删键（跟随插件默认）</summary>
+    public bool SetEnableHooks(bool enabled)
+    {
+        if (Profile is null || !CanEditDx11Source())
+        {
+            return false;
+        }
+
+        Profile.SetEnableHooks(enabled);
+        Profile.Save();
+        return true;
+    }
+
     #endregion
 }

@@ -144,6 +144,13 @@ internal sealed class GithubUpdateService
     /// <summary>
     /// 把 zip 解压到便携包根目录（overwrite）。装完 **要重启** 才生效 —— 新版本在 app-&lt;版本&gt;\ 里。
     /// </summary>
+    /// <remarks>
+    /// 两个历史坑都在这里兜底：
+    /// ① v1.3.8.x 的发布 zip 把所有条目套进了 <c>HoYoShadeHub/</c> 一层（package.ps1 的
+    /// <c>$entryPrefix</c> bug，已修）—— 直接解到根上会多出一个嵌套目录、根上的 version.ini
+    /// 原封不动，重启还是旧版本（「更新完没变化」的根因）。检测到套壳就把那层剥掉。
+    /// ② 同版本目录原地更新时，运行中的启动器占着旧 DLL —— 覆盖失败就把旧文件改名让位再写。
+    /// </remarks>
     public async Task ApplyAsync(string zipPath, CancellationToken cancellationToken = default)
     {
         string root = PortableRoot
@@ -161,8 +168,135 @@ internal sealed class GithubUpdateService
                 overwrite: true);
         }
 
-        await Task.Run(() => ZipFile.ExtractToDirectory(zipPath, root, overwriteFiles: true), cancellationToken);
-        _logger.LogInformation("GitHub update applied: {Zip} -> {Root}", zipPath, root);
+        string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        string? strip = null;
+        List<string> leftovers = [];
+
+        await Task.Run(() =>
+        {
+            using ZipArchive archive = ZipFile.OpenRead(zipPath);
+            strip = DetectWrapperPrefix(archive);
+
+            int failed = 0;
+            string firstError = string.Empty;
+
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string name = entry.FullName;
+                if (strip is not null)
+                {
+                    if (!name.StartsWith(strip, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;   // 套壳目录自身的条目
+                    }
+
+                    name = name[strip.Length..];
+                }
+
+                if (string.IsNullOrEmpty(name) || name.EndsWith('/'))
+                {
+                    continue;
+                }
+
+                string target = Path.Combine(root, name.Replace('/', Path.DirectorySeparatorChar));
+                string? dir = Path.GetDirectoryName(target);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                try
+                {
+                    ExtractOver(entry, target, stamp, leftovers);
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    if (firstError.Length == 0)
+                    {
+                        firstError = $"{Path.GetFileName(target)}: {ex.Message}";
+                    }
+                }
+            }
+
+            if (failed > 0)
+            {
+                throw new IOException($"有 {failed} 个文件写不进去（多半被别的程序占用，先关掉游戏/杀毒再试）。第一个：{firstError}");
+            }
+
+            // 能删掉的旧文件备份顺手清；被运行中程序占用的留给下次
+            foreach (string old in leftovers)
+            {
+                try { File.Delete(old); } catch { /* 占用中，算了 */ }
+            }
+        }, cancellationToken);
+
+        _logger.LogInformation(
+            "GitHub update applied: {Zip} -> {Root}（剥壳={Strip}，改名让位={Renamed}）",
+            zipPath, root, strip is not null, leftovers.Count);
+    }
+
+    /// <summary>覆盖解压一个条目；旧文件被运行中的程序占用时，先改名让位再写（改已加载的 DLL/EXE 也允许）。</summary>
+    private static void ExtractOver(ZipArchiveEntry entry, string target, string stamp, List<string>? leftovers)
+    {
+        try
+        {
+            entry.ExtractToFile(target, overwrite: true);
+            return;
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        string backup = target + ".old-" + stamp;
+        File.Move(target, backup, overwrite: true);
+        leftovers?.Add(backup);
+        entry.ExtractToFile(target, overwrite: true);
+    }
+
+    /// <summary>
+    /// 识别「多包一层」的 zip：根上没有 version.ini / 启动器 exe，所有条目都在同一个顶层目录里、
+    /// 且那一层里有 version.ini。返回要剥掉的前缀（如 <c>HoYoShadeHub/</c>），正常布局返回 null。
+    /// </summary>
+    private static string? DetectWrapperPrefix(ZipArchive archive)
+    {
+        string? top = null;
+
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            string first = entry.FullName.Split('/')[0];
+
+            if (first.Length == 0)
+            {
+                continue;
+            }
+
+            if (top is null)
+            {
+                top = first;
+            }
+            else if (!string.Equals(top, first, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;   // 根上有多个条目 = 正常布局
+            }
+        }
+
+        if (top is null
+            || top.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            || top.EndsWith(".ini", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string prefix = top + "/";
+        return archive.Entries.Any(e => e.FullName.Equals(prefix + "version.ini", StringComparison.OrdinalIgnoreCase))
+            ? prefix
+            : null;
     }
 
     /// <summary>用便携包启动器重启（跟 UpdateWindow.Restart 一个套路）</summary>

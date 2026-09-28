@@ -13,6 +13,9 @@
 - **OptiScaler**：全局插件里能下载社区 DLSS-NR 分支（wilsjo2 / NeuRotic / DLSS NR on AMD），**同一时间只启用一个**；
   启动器页勾上「启动 OptiScaler」，启动游戏时就把它注进游戏进程。
   （DLSS NR on AMD 只有它自己的安装程序：下载后会弹窗提醒，装到默认目录即可。）
+- **DLSS 组件变体识别**：dlssnr 族（50 系 / RTX40 / SF / Lecram）按记账 + 文件特征自动辨认，DLL 组件目录随版本分发。
+- **插件汉化**：RenoDX DLSS 插件的界面文本原地中文化（插件页「已安装版本」行一键打补丁 / 还原，带自动备份；
+  `renodx-dlss5` / dlss5-bridge 自带多语言，不做处理）。
 
 ## 下载与安装
 
@@ -33,7 +36,7 @@
 
 ## 仓库里有什么
 
-- `src/` 源码、`build-local.ps1` 本地构建脚本（不需要 Visual Studio 就能 publish）、`docs/` 文档；
+- `src/` 源码；`compile.ps1` 构建、`package.ps1` 打便携包（不需要 Visual Studio）；
 - **不放** ReShade / HoYoShade / 插件 / OptiScaler 的二进制 —— 那些由启动器按需下载。
 
 ## 许可与致谢
@@ -41,4 +44,3 @@
 - **HoYoShade Hub**：MIT，Copyright (c) 2025 哆啦D夢|DuolaD（见 [LICENSE](./LICENSE)）；本 fork 沿用 MIT。
 - **HoYoShade 框架**：BSD 3-Clause，Copyright (c) 2024 哆啦D夢|DuolaD。
 - 本项目基于 [Starward](https://github.com/Scighost/Starward)（MIT）二次开发；MiSans 字体版权归小米集团。
-- 第三方库清单见 [docs/ThirdParty.md](./docs/ThirdParty.md)。

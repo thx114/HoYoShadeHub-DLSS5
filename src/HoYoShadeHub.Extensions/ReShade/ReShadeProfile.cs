@@ -296,6 +296,12 @@ public sealed class ReShadeProfile
     /// <summary>DX11Source 打开时写的取值</summary>
     public const string Dx11SourceNative = "native";
 
+    /// <summary>
+    /// RenoDX DLSS5 的「NR 需要 Streamline 设置」：游戏完全走 NVIDIA Streamline 时，
+    /// 默认挂钩模式看不见 NR，addon 要求 <c>[RenoDX.DLSS5] EnableHooks=1</c> + 重启游戏。
+    /// </summary>
+    public const string EnableHooksKey = "EnableHooks";
+
     /// <summary>允许改 hook 点的插件 slug（用户明确要求的前置条件）</summary>
     public static readonly string[] HookPointCapableSlugs = ["renodx-dlss5-super-anus", "renodx-dlss"];
 
@@ -610,6 +616,33 @@ public sealed class ReShadeProfile
         // 旧段（旧插件用的 [RENODX-DLSS]）和 [ADDON] 里都不该有它；历史上可能被误写过，顺手清掉
         _ini.RemoveKey(RenoDlssSection, Dx11SourceKey);
         _ini.RemoveKey(AddonSection, Dx11SourceKey);
+    }
+
+    #endregion
+
+    #region EnableHooks（RenoDX DLSS5 走 Streamline 时的挂钩开关）
+
+    /// <summary>EnableHooks 的原始值；键不存在返回 null</summary>
+    public string? GetEnableHooks() => _ini.GetValue(Dlss5Section, EnableHooksKey)?.Trim();
+
+    /// <summary>是否已经打开（=1）。键不存在 / 值不是 1 都算关</summary>
+    public bool IsEnableHooksOn() =>
+        string.Equals(_ini.GetValue(Dlss5Section, EnableHooksKey)?.Trim(), "1", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 开 = 写 <c>EnableHooks=1</c>（addon 提示「NR 需要 Streamline 设置」时要的就是这个，写完重启游戏）；
+    /// 关 = 删键（回插件默认）。
+    /// </summary>
+    public void SetEnableHooks(bool enabled)
+    {
+        if (enabled)
+        {
+            _ini.SetValue(Dlss5Section, EnableHooksKey, "1");
+        }
+        else
+        {
+            _ini.RemoveKey(Dlss5Section, EnableHooksKey);
+        }
     }
 
     #endregion

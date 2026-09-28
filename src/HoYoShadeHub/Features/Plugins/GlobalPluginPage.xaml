@@ -322,20 +322,7 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind StatusText}"
                                                            TextWrapping="Wrap" />
-                                                <!--  汉化开关：只对「有翻译表的插件文件」显示（内置表现在只剩 renodx-dlss；
-                                                      dlss5 系列自带多语言，不显示这个按钮）。已汉化时点一下 = 从备份还原。  -->
-                                                <Button MinWidth="0"
-                                                        Padding="8,3"
-                                                        HorizontalAlignment="Left"
-                                                        Click="Button_LocalizeAddon_Click"
-                                                        ToolTipService.ToolTip="{x:Bind LocalizeButtonTooltip, Mode=OneWay}"
-                                                        Visibility="{x:Bind CanLocalizeVisibility}">
-                                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon FontSize="13" Glyph="&#xE8C1;" />
-                                                        <TextBlock FontSize="12" Text="{x:Bind LocalizeButtonText, Mode=OneWay}" />
-                                                    </StackPanel>
-                                                </Button>
-                                                <!--  已安装版本（每行：左侧竖条 + 重装 + 删除），摆在「全部版本」下拉上面  -->
+                                                <!--  已安装版本（每行：左侧竖条 + 重装 + 汉化 + 删除），摆在「全部版本」下拉上面  -->
                                                 <ItemsControl ItemsSource="{x:Bind InstalledVersionRows}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate x:DataType="local:InstalledPluginVersionRow">
@@ -361,6 +348,16 @@
                                                                         Style="{StaticResource CatalogRowButtonStyle}"
                                                                         ToolTipService.ToolTip="用这个 tag 重装（覆盖共享目录里当前生效的那份）">
                                                                     <TextBlock FontSize="12" Text="重装" />
+                                                                </Button>
+                                                                <!--  汉化开关（只对有翻译表的版本显示，现在 = renodx-dlss 一族；
+                                                                      dlss5 系列自带多语言）。已汉化时点一下 = 从备份还原。  -->
+                                                                <Button MinWidth="0"
+                                                                        Padding="8,2"
+                                                                        Click="Button_LocalizeRow_Click"
+                                                                        Style="{StaticResource CatalogRowButtonStyle}"
+                                                                        ToolTipService.ToolTip="{x:Bind LocalizeButtonTooltip, Mode=OneWay}"
+                                                                        Visibility="{x:Bind CanLocalizeVisibility}">
+                                                                    <TextBlock FontSize="12" Text="{x:Bind LocalizeButtonText, Mode=OneWay}" />
                                                                 </Button>
                                                                 <Button MinWidth="0"
                                                                         Padding="8,2"

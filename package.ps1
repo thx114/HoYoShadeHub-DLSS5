@@ -172,10 +172,13 @@ try {
         -ArgumentList @($zipFs, [System.IO.Compression.ZipArchiveMode]::Create)
 
     $prefixLen = $outDir.TrimEnd('\').Length + 1
-    $entryPrefix = (Split-Path $outDir -Leaf) + '/'
 
+    # 注意：条目名**必须**相对 $outDir（version.ini / app-<版本>/... 在 zip 根上）。
+    # 之前这里给条目名强加了输出目录的叶子名（HoYoShadeHub/），整个包被套进一层 —— 解压后
+    # 根上的 version.ini 原封不动，启动器照旧启动旧 app-<版本>，用户「更新完还是旧版本」
+    # （v1.3.8.x 的包都中了招，GithubUpdateService.ApplyAsync 现在对这种包做了兼容剥壳）。
     Get-ChildItem -Path $outDir -Recurse -File | ForEach-Object {
-        $entryName = $entryPrefix + $_.FullName.Substring($prefixLen).Replace('\', '/')
+        $entryName = $_.FullName.Substring($prefixLen).Replace('\', '/')
         $entry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
         $entry.LastWriteTime = $_.LastWriteTime
         $entryStream = $entry.Open()

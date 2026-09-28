@@ -270,6 +270,22 @@
                                                       Text="{x:Bind HookPointKeyHint, Mode=OneWay}" />
                                         </StackPanel>
 
+                                        <!--  DX11Source：RenoDX DLSS5 的「呈现模式」要求 [RenoDX.DLSS5] DX11Source=native；
+                                              只有 DLSS5 主插件显示（旧 RenoDX DLSS 插件没这个键）。开 = 写 native，关 = 删键回默认。  -->
+                                        <CheckBox Content="DX11Source=native（呈现模式）"
+                                                 IsChecked="{x:Bind Dx11SourceNative, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind CanEditDx11Source, Mode=OneWay}"
+                                                 ToolTipService.ToolTip="RenoDX DLSS5 呈现模式需要这个键：勾上写 DX11Source=native，取消就删键（回插件默认）。重启游戏生效"
+                                                 Visibility="{x:Bind Dx11SourceVisibility, Mode=OneWay}" />
+
+                                        <!--  EnableHooks：游戏完全走 NVIDIA Streamline、addon 弹「NR 需要 Streamline 设置」时
+                                              勾这个（写 [RenoDX.DLSS5] EnableHooks=1，重启游戏）。同样只有 DLSS5 主插件显示。  -->
+                                        <CheckBox Content="EnableHooks=1（Streamline 挂钩）"
+                                                 IsChecked="{x:Bind EnableHooks, Mode=TwoWay}"
+                                                 IsEnabled="{x:Bind CanEditEnableHooks, Mode=OneWay}"
+                                                 ToolTipService.ToolTip="游戏完全走 NVIDIA Streamline、插件提示「NR 需要 Streamline 设置 / 请在 [RenoDX.DLSS5] 设置 EnableHooks=1」时勾上；取消 = 删键回默认。重启游戏生效"
+                                                 Visibility="{x:Bind EnableHooksVisibility, Mode=OneWay}" />
+
                                         <!--  需求4：LoadFromDllMain 属于专属配置，搬进展开区（RenoDX DLSS 也补上了）  -->
                                         <CheckBox Content="LoadFromDllMain"
                                                  IsChecked="{x:Bind LoadFromDllMain, Mode=TwoWay}"
@@ -310,33 +326,6 @@
                                   TextWrapping="Wrap" />
                         <!--  「N 个插件，启用 M 个」：原来在页面最底部，现在提到这儿（配置栏第一屏）  -->
                         <TextBlock x:Name="TextBlock_AddonSummary"
-                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                  Style="{ThemeResource CaptionTextBlockStyle}"
-                                  TextWrapping="Wrap"
-                                  Visibility="Collapsed" />
-
-                        <MenuFlyoutSeparator Margin="0,4,0,0" />
-
-                        <!--  插件配置（目前只有 hook 点）。
-                             注入模式不在这儿 —— 它是启动相关的东西，放在启动器页开始游戏按钮左边。  -->
-                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="插件配置" />
-                        <!--  HookPoint 标签和下拉框横向并排（竖着摆会白占一行高度）  -->
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock VerticalAlignment="Center" Text="HookPoint" />
-                            <ComboBox x:Name="ComboBox_HookPoint" MinWidth="140" SelectionChanged="ComboBox_HookPoint_SelectionChanged">
-                                <ComboBoxItem Content="off" />
-                                <ComboBoxItem Content="1" />
-                                <ComboBoxItem Content="2" />
-                                <ComboBoxItem Content="3" />
-                                <ComboBoxItem Content="4" />
-                            </ComboBox>
-                        </StackPanel>
-                        <CheckBox x:Name="CheckBox_ForceHookOff"
-                                 Checked="CheckBox_ForceHookOff_Changed"
-                                 Content="启动游戏时强制 off"
-                                 ToolTipService.ToolTip="勾上后，每次从这里启动/注入这个游戏之前，先把 hook 点写成 0（免得忘了改回来导致游戏起不来）"
-                                 Unchecked="CheckBox_ForceHookOff_Changed" />
-                        <TextBlock x:Name="TextBlock_HookPointHint"
                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                   Style="{ThemeResource CaptionTextBlockStyle}"
                                   TextWrapping="Wrap"
