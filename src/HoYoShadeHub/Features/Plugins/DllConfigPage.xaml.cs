@@ -178,6 +178,11 @@ public sealed partial class DllConfigPage : PageBase
             {
                 vm.SelectedVersion = previous;
             }
+            else if (family.PreferredVersion is { } preferred && vm.Versions.Contains(preferred))
+            {
+                // 没有历史选择：streamline 默认挑首选版（2.14.0.0）—— 别拿清单第一条（新版包缺 sl.interposer.dll）
+                vm.SelectedVersion = preferred;
+            }
 
             // 需求6：把归档里这一类 dll 装过的版本铺出来（每行一个删除）
             try
@@ -262,9 +267,17 @@ public sealed partial class DllConfigPage : PageBase
             toInstall.Add(nr);
         }
 
-        if (status.MissingRecommended.Count > 0 && _catalog.Of("streamline").FirstOrDefault() is { } sl)
+        // Streamline 缺了也是红（必需级）。**别拿清单第一条** —— 那是最新版，
+        // 2.14.1.0 起的包里已经没有 sl.interposer.dll，装了等于白装。优先 2.14.0.0。
+        DllFamily? slFamily = DllComponentCatalog.FamilyOf("streamline");
+        var slVersions = _catalog.Of("streamline");
+        bool slMissing = status.MissingRequired.Concat(status.MissingRecommended)
+            .Any(r => r.Files.Contains("sl.interposer.dll", StringComparer.OrdinalIgnoreCase));
+        if (slMissing && slVersions.Count > 0)
         {
-            toInstall.Add(sl);
+            toInstall.Add(
+                slVersions.FirstOrDefault(c => string.Equals(c.Version, slFamily?.PreferredVersion, StringComparison.OrdinalIgnoreCase))
+                ?? slVersions[0]);
         }
 
         if (toInstall.Count == 0)

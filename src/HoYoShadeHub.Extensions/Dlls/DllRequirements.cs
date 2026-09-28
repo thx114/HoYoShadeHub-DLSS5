@@ -62,10 +62,13 @@ public static class DlssDllRequirements
         DllRequirementLevel.Required,
         "DLSS5 的神经渲染运行时（nvngx_dlssnr.dll）");
 
-    /// <summary>Streamline —— 缺了可能不出画面（但不至于加载不了）</summary>
+    /// <summary>
+    /// Streamline —— 标成必需（红）：新版 Streamline SDK 的运行时包已经不带 sl.interposer.dll，
+    /// 缺了游戏内插件大概率不可用，用户要求按缺必需处理并给一键修复。
+    /// </summary>
     public static readonly DllRequirement Streamline = new(
         ["sl.interposer.dll", "sl.dlss_nr.dll"],
-        DllRequirementLevel.Recommended,
+        DllRequirementLevel.Required,
         "Streamline 运行时（sl.interposer.dll / sl.dlss_nr.dll）");
 
     public static bool IsDlss5(IEnumerable<string>? tags) =>

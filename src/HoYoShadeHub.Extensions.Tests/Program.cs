@@ -1319,7 +1319,7 @@ AddonDllStatus noDll = AddonDllChecker.CheckFiles(["renodx-dlss5-super-anus.addo
 Check(noDll.Severity == 2 && noDll.Summary.Contains("nvngx_dlssnr.dll"), $"没有 nvngx_dlssnr.dll → 标红（{noDll.Summary}）");
 
 AddonDllStatus noSl = AddonDllChecker.CheckFiles(["a.addon64", "nvngx_dlssnr.dll"], ["dlss5"]);
-Check(noSl.Severity == 1 && noSl.Summary.Contains("sl.interposer.dll"), $"有 dlssnr 但没 streamline → 标黄（{noSl.Summary}）");
+Check(noSl.Severity == 2 && noSl.Summary.Contains("sl.interposer.dll"), $"有 dlssnr 但没 streamline → 也标红（{noSl.Summary}）");
 
 AddonDllStatus allDll = AddonDllChecker.CheckFiles(["nvngx_dlssnr.dll", "sl.interposer.dll", "sl.dlss_nr.dll"], ["dlss5"]);
 Check(allDll.IsOk && allDll.Severity == 0, "三件套齐 → 没问题");

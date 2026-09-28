@@ -17,7 +17,8 @@ public sealed record DllFamily(
     string DisplayName,
     string FilePattern,
     DllRequirementLevel Level,
-    string Note);
+    string Note,
+    string? PreferredVersion = null);
 
 /// <summary>拉清单的结果</summary>
 public sealed record DllCatalog(
@@ -55,8 +56,9 @@ public static class DllComponentCatalog
     [
         new("dlssnr", "DLSS5 神经渲染运行时", "nvngx_dlssnr.dll", DllRequirementLevel.Required,
             "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"),
-        new("streamline", "Streamline 运行时", "sl.*.dll", DllRequirementLevel.Recommended,
-            "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。"),
+        new("streamline", "Streamline 运行时", "sl.*.dll", DllRequirementLevel.Required,
+            "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。\n注意：2.14.1.0 起的包里已经没有 sl.interposer.dll，默认装 2.14.0.0。",
+            PreferredVersion: "2.14.0.0"),
         new("dlss", "DLSS 超分", "nvngx_dlss.dll", DllRequirementLevel.Recommended,
             "普通 DLSS 超分用的运行时。"),
         new("dlssd", "光线重建", "nvngx_dlssd.dll", DllRequirementLevel.Recommended,

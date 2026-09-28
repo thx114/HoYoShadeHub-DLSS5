@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Messaging;
+using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
@@ -383,13 +384,11 @@ public sealed partial class GamePluginPage : PageBase
     {
         string? hostAddons = _host?.AddonsPath;
 
-        // 这个游戏用的就是专属插件目录（每游戏插件包）—— 正常状态，不劝人指回
+        // 这个游戏用的就是专属插件目录（每游戏插件包）—— 正常状态：什么都不用提示
+        //（用户要求去掉这条长文案，给插件卡片列表腾地方；「指回当前 HoYoShade」也不适用于这种目录）
         if (GameAddonPack.IsPackDirectory(addonDirectory))
         {
-            TextBlock_PathHint.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
-            TextBlock_PathHint.Text = $"这个游戏用的是专属插件目录（{addonDirectory}）{DescribePackSelections(addonDirectory)}；" +
-                                      "上面的红/黄标就是按它算的，其它游戏不受影响。";
-            TextBlock_PathHint.Visibility = Visibility.Visible;
+            TextBlock_PathHint.Visibility = Visibility.Collapsed;
             Button_AlignIni.Visibility = Visibility.Collapsed;
             return;
         }
@@ -777,6 +776,108 @@ public sealed partial class GamePluginPage : PageBase
         {
             TextBlock_Status.Text = "EnableHooks 写不进去 —— 要么没有 ReShade.ini，要么插件没启用。";
             item.RefreshEnableHooks(_plugins.IsEnableHooksOn());
+        }
+    }
+
+    /// <summary>
+    /// 卡片上的「修复」：缺哪个家族就弹哪个的版本清单（Streamline 默认选 2.14.0.0 ——
+    /// 新版包里已经没有 sl.interposer.dll），下载装进插件目录，装完就地把红横幅刷掉。
+    /// </summary>
+    private async void Button_FixDll_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: AddonItemViewModel card } || _plugins is null)
+        {
+            return;
+        }
+
+        string familyId = card.MissingDllFiles.Any(f => string.Equals(f, "nvngx_dlssnr.dll", StringComparison.OrdinalIgnoreCase))
+            ? "dlssnr"
+            : "streamline";
+        DllFamily? family = DllComponentCatalog.FamilyOf(familyId);
+        if (family is null)
+        {
+            return;
+        }
+
+        var catalog = await DllComponentCatalog.LoadAsync();
+        IReadOnlyList<DllComponent> versions = catalog.Of(familyId);
+        if (versions.Count == 0)
+        {
+            TextBlock_Status.Text = "拉不到组件清单（多半是网络不通），稍后再试一次。";
+            return;
+        }
+
+        var combo = new ComboBox { MinWidth = 260, SelectedIndex = 0 };
+        foreach (DllComponent component in versions)
+        {
+            combo.Items.Add(component.Version + (component.Version == family.PreferredVersion ? "  ← 推荐" : string.Empty));
+        }
+
+        int preferred = versions
+            .Select((component, index) => (component, index))
+            .FirstOrDefault(pair => string.Equals(pair.component.Version, family.PreferredVersion, StringComparison.OrdinalIgnoreCase)).index;
+        combo.SelectedIndex = preferred < 0 ? 0 : preferred;
+
+        var hint = new TextBlock
+        {
+            Text = family.Id == "streamline"
+                ? "选一个 Streamline 运行时版本装进插件目录。2.14.1.0 起的包里已经没有 sl.interposer.dll，所以默认给你选 2.14.0.0。"
+                : "选一个版本装进插件目录。",
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 320,
+        };
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(hint);
+        panel.Children.Add(combo);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "修复 " + family.DisplayName,
+            Content = panel,
+            PrimaryButtonText = "下载并安装",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary || combo.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        DllComponent chosen = versions[combo.SelectedIndex];
+        TextBlock_Status.Text = $"正在下载 {family.DisplayName} {chosen.Version}…";
+        try
+        {
+            var progress = new Progress<DownloadProgress>(p =>
+                TextBlock_Status.Text = $"正在下载 {chosen.Version}… "
+                    + (p.Percent is { } percent ? $"{percent:F0}%（" : string.Empty)
+                    + $"{p.BytesReceived / 1024d / 1024d:F1} MB）");
+
+            DllInstallResult install = await DllInstaller.InstallAsync(_plugins.AddonDirectory, chosen, progress);
+            if (!install.Ok)
+            {
+                TextBlock_Status.Text = "安装失败：" + install.Error;
+                return;
+            }
+
+            AppConfig.SetInstalledDllVariant(family.Id, chosen.Version);
+            AppConfig.SetInstalledDllVariantSize(family.Id, DllInstaller.GetInstalledSize(DllInstaller.Scan(_plugins.AddonDirectory), family));
+
+            // 就地刷红横幅：拿盘上最新状态按文件名对回卡片
+            foreach (GameAddonState state in _plugins.GetAddons())
+            {
+                Addons.FirstOrDefault(a => string.Equals(a.FileName, state.FileName, StringComparison.OrdinalIgnoreCase))
+                    ?.RefreshDllStatus(state.DllStatus);
+            }
+
+            TextBlock_Status.Text = $"已装好 {family.DisplayName} {chosen.Version}（重启游戏生效）。";
+            _logger.LogInformation("DLL fixed from card: {Family} {Version}", family.Id, chosen.Version);
+        }
+        catch (Exception ex)
+        {
+            TextBlock_Status.Text = "修复失败：" + ex.Message;
+            _logger.LogWarning(ex, "Fix DLL from card failed");
         }
     }
 
@@ -1254,6 +1355,10 @@ public partial class AddonItemViewModel : ObservableObject
         // 缺 dll 的标记（红 = 缺必需，黄 = 缺建议）
         DllSeverity = state.DllStatus.Severity;
         DllStatusText = state.DllStatus.Summary;
+        MissingDllFiles = state.DllStatus.MissingRequired.Concat(state.DllStatus.MissingRecommended)
+            .SelectMany(r => r.Files)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var parts = new List<string>();
         parts.Add(string.IsNullOrWhiteSpace(state.Version) ? "版本未知" : "版本 " + state.Version);
@@ -1618,11 +1723,35 @@ public partial class AddonItemViewModel : ObservableObject
     }
 
     /// <summary>0 = 没问题，1 = 缺建议（黄），2 = 缺必需（红）</summary>
-    public int DllSeverity { get; }
+    public int DllSeverity { get; private set; }
 
-    public string DllStatusText { get; }
+    public string DllStatusText { get; private set; } = string.Empty;
 
     public bool HasMissingDll => DllSeverity > 0;
+
+    /// <summary>缺的那些 dll 文件名（红黄合起来），修复弹窗用它判断该补哪个家族</summary>
+    public IReadOnlyList<string> MissingDllFiles { get; private set; } = [];
+
+    /// <summary>缺件时显示「修复」按钮</summary>
+    public Visibility HasMissingDllVisibility =>
+        HasMissingDll ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>修复安装之后用盘上最新状态刷这一行（红横幅跟着变绿/消失）</summary>
+    internal void RefreshDllStatus(AddonDllStatus status)
+    {
+        DllSeverity = status.Severity;
+        DllStatusText = status.Summary;
+        MissingDllFiles = status.MissingRequired.Concat(status.MissingRecommended)
+            .SelectMany(r => r.Files)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        OnPropertyChanged(nameof(DllSeverity));
+        OnPropertyChanged(nameof(DllStatusText));
+        OnPropertyChanged(nameof(DllRequiredVisibility));
+        OnPropertyChanged(nameof(DllRecommendedVisibility));
+        OnPropertyChanged(nameof(HasMissingDll));
+        OnPropertyChanged(nameof(HasMissingDllVisibility));
+    }
 
     public Visibility DllRequiredVisibility => DllSeverity >= 2 ? Visibility.Visible : Visibility.Collapsed;
 

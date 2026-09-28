@@ -137,6 +137,13 @@
                                                    Visibility="{x:Bind DllRecommendedVisibility, Mode=OneWay}">
                                                 <TextBlock FontSize="11" Text="{x:Bind DllStatusText, Mode=OneWay}" />
                                             </Border>
+                                            <!--  修复：缺件弹窗选版本（Streamline 默认 2.14.0.0 —— 新版包里没有 sl.interposer.dll）  -->
+                                            <Button MinWidth="0"
+                                                    Padding="8,2"
+                                                    Click="Button_FixDll_Click"
+                                                    Content="修复"
+                                                    FontSize="11"
+                                                    Visibility="{x:Bind HasMissingDllVisibility, Mode=OneWay}" />
                                         </StackPanel>
 
                                         <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -395,11 +402,14 @@
             </Border>
         </Grid>
 
+        <!--  底部状态栏（用户要求移除，给插件卡片列表留满高度）：控件保留 Collapsed，
+              代码里几十处 TextBlock_Status 写入不用动；Row 3 高度随之归零  -->
         <TextBlock x:Name="TextBlock_Status"
                   Grid.Row="3"
                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                   Style="{ThemeResource CaptionTextBlockStyle}"
-                  TextWrapping="Wrap" />
+                  TextWrapping="Wrap"
+                  Visibility="Collapsed" />
     </Grid>
 
 </sf:PageBase>
