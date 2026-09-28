@@ -4524,11 +4524,19 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
     private string? _localizeTargetFile;
 
     /// <summary>
-    /// 这一行对应的盘上插件文件。**不能拿版本 tag 去对文件名** —— RHI 归档 tag 是
-    /// <c>renodx-dlss-SF-26.0927.2125</c> 这种，而盘上文件名是 <c>renodx-dlss.addon64</c>
-    /// （包机制刻意保持文件名一致，ini 条目才匹配得上），tag 在文件名里永远找不到。
-    /// 按「家族」匹配：文件和这一行的 tag 得选出**同一张翻译表**（= 同一个可汉化插件家族），
-    /// 候选从共享目录到各游戏专属包目录都找。找不到就不显示「汉化」按钮。
+    /// 这一行**这个版本**对应的盘上插件文件。
+    ///
+    /// <para>
+    /// 优先用版本归档里这一版的那份（&lt;缓存&gt;\plugins\&lt;扩展&gt;\&lt;tag&gt;\reshade-shaders\Addons）：
+    /// 汉化 / 还原都得按版本走。以前统一指向「盘上活的那份」，结果是所有版本行共用一个文件 ——
+    /// 点一个版本三行全变「已汉化」，而且汉化的是归档副本、状态却看活文件，按钮永远不翻转（用户报过）。
+    /// </para>
+    ///
+    /// <para>
+    /// 归档里没有这一版（老版本没归档 / 只有盘上那份）时才退回盘上的活文件（活动宿主 → 各游戏专属包）。
+    /// 文件名对不上 tag 是正常的：盘上名字固定是 <c>renodx-dlss.addon64</c>，所以按「家族」认
+    /// （文件和 tag 选中同一张翻译表）。找不到就不显示「汉化」按钮。
+    /// </para>
     /// </summary>
     public string? LocalizeTargetFile
         => _localizeTargetFile ??= FindTargetFile();
@@ -4548,6 +4556,14 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
                 rowTableSlug,
                 StringComparison.OrdinalIgnoreCase);
 
+        // 1) 这一版自己的归档副本（版本级状态靠它，别用共用的活文件）
+        string? archived = AddonLocalizationJob.FindVersionFile(Tag, SameFamily);
+        if (archived is not null)
+        {
+            return archived;
+        }
+
+        // 2) 没归档才退回盘上活的那份
         string? shared = Owner.GlobalAddonFiles.FirstOrDefault(SameFamily);
         if (shared is not null)
         {

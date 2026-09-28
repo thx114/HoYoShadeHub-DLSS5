@@ -204,6 +204,49 @@ internal sealed class AddonLocalizationJob
     }
 
     /// <summary>
+    /// 这个版本 tag 在**版本归档**里的插件文件（用谓词挑文件名；这类版本没归档就返回 null）。
+    /// </summary>
+    public static string? FindVersionFile(
+        string? versionTag,
+        Func<string, bool> match,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(versionTag))
+        {
+            return null;
+        }
+
+        string marker = Path.DirectorySeparatorChar + versionTag + Path.DirectorySeparatorChar;
+
+        foreach (string directory in AddonDirectories(cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!directory.Contains(marker, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(directory))
+                {
+                    if (match(file))
+                    {
+                        return file;
+                    }
+                }
+            }
+            catch
+            {
+                // 目录读不了就当这类版本没归档
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 两份文件是不是同一份（逐字节比）。**同名不同版本只能这样认** ——
     /// 归档 / 包目录里的插件文件名都保持规范名（renodx-dlss.addon64），版本信息只在目录名和内容里。
     /// </summary>
@@ -504,6 +547,17 @@ internal sealed class AddonLocalizationJob
                     restored++;
                     done.Add(Path.GetFileName(path));
                     Forget(path);
+
+                    // 备份已拷回原文件、使命完成 —— 删掉它。
+                    // 不删的话「已汉化」的判定（有备份就算）永远为真，行上的按钮会卡在「已汉化·还原」。
+                    try
+                    {
+                        File.Delete(result.BackupPath);
+                    }
+                    catch (IOException)
+                    {
+                        // 删不掉就留着，只是按钮文案还停在那儿
+                    }
                 }
             }
             catch (Exception ex)
