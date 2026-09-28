@@ -633,6 +633,43 @@ internal sealed class AddonLocalizationJob
                     entries += result.Applied;
                     Logger.LogInformation("重新汉化 {Path}：{Message}", path, result.Message);
                 }
+
+                // 同一版本的**其它副本**也补一遍：游戏实际读哪一份由它的 ReShade.ini 决定
+                //（每游戏专属包 / HoYoShade 自己的 reshade-shaders），启动时可能被覆盖回原版 ——
+                // 只修记账里那一条路径不够（用户实测：汉化了，进游戏还是英文）。
+                // 版本对齐靠备份内容：备份 = 第一次汉化前的原版，和它逐字节相同就是同一个版本、且还没打。
+                string? versionOriginal = AddonLocalizer.BackupPathOf(path, GlobalPluginPage.I18nBackupDirectory);
+
+                if (versionOriginal is null)
+                {
+                    continue;
+                }
+
+                foreach (string directory in AddonDirectories(cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string candidate = Path.Combine(directory, Path.GetFileName(path));
+
+                    if (!File.Exists(candidate)
+                        || string.Equals(candidate, path, StringComparison.OrdinalIgnoreCase)
+                        || AddonLocalizer.SelectTable(tables, Path.GetFileName(candidate)) is null
+                        || !SameContent(candidate, versionOriginal))
+                    {
+                        continue;
+                    }
+
+                    AddonLocalizeResult extra = await Task.Run(
+                        () => AddonLocalizer.Apply(candidate, table, GlobalPluginPage.I18nBackupDirectory),
+                        cancellationToken);
+
+                    if (extra.Applied > 0)
+                    {
+                        Remember(candidate);
+                        files++;
+                        entries += extra.Applied;
+                        Logger.LogInformation("启动前补打同版本副本 {Path}：{Message}", candidate, extra.Message);
+                    }
+                }
             }
             catch (Exception ex)
             {

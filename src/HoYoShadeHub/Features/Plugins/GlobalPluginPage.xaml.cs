@@ -4615,14 +4615,27 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
 
     private bool? _isLocalized;
 
-    /// <summary>这个版本是不是汉化状态：记账里有、或盘上留有备份（老算法打的那批也留了备份）</summary>
+    /// <summary>
+    /// 这个版本是不是汉化状态：有备份**而且**盘上那份跟备份内容不一样（= 补丁确实还在）。
+    /// 只看「有没有备份」不行 —— HoYoShade 启动时会把插件覆盖回原版，备份还留着，
+    /// 按钮就会一直显示「已汉化·还原」而实际是英文（用户实测报过）。
+    /// </summary>
     public bool IsLocalized
     {
         get
         {
-            _isLocalized ??= LocalizeTargetFile is not null && (
-                AddonLocalizationJob.Load().Contains(LocalizeTargetFile, StringComparer.OrdinalIgnoreCase)
-                || AddonLocalizer.BackupPathOf(LocalizeTargetFile, GlobalPluginPage.I18nBackupDirectory) is not null);
+            if (_isLocalized is null)
+            {
+                string? file = LocalizeTargetFile;
+                string? backup = file is null
+                    ? null
+                    : AddonLocalizer.BackupPathOf(file, GlobalPluginPage.I18nBackupDirectory);
+
+                _isLocalized = file is not null
+                    && backup is not null
+                    && !AddonLocalizationJob.SameContent(file, backup);
+            }
+
             return _isLocalized.Value;
         }
     }

@@ -3612,6 +3612,9 @@ public sealed partial class GameLauncherPage : PageBase
             if (i18nNote is not null)
             {
                 _logger.LogInformation("Addon i18n before launch: {Note}", i18nNote);
+                // 也弹一条：用户要能看见「启动前确实把中文补回去了（包 / 共享目录副本都补了）」，
+                // 不然进了游戏还是英文根本不知道卡在哪一步。
+                InAppToast.MainWindow?.Success("插件汉化", i18nNote + "。", 6000);
             }
 
             // 一个 HoYoShade 都没勾：**不要**默认注 HoYoShade（用户报过「没勾也被注入了 HoYoShade」）。
