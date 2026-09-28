@@ -1118,6 +1118,7 @@ Fsr2TranslationMode=2
         bool inLibraries = false;
         bool changed = false;
         bool found = false;
+        int librariesHeader = -1;
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -1125,6 +1126,7 @@ Fsr2TranslationMode=2
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
             {
                 inLibraries = string.Equals(trimmed, "[Libraries]", StringComparison.OrdinalIgnoreCase);
+                if (inLibraries) librariesHeader = i;
                 continue;
             }
 
@@ -1156,7 +1158,19 @@ Fsr2TranslationMode=2
 
         if (!found)
         {
-            return false;
+            var updated = lines.ToList();
+            if (librariesHeader >= 0)
+            {
+                updated.Insert(librariesHeader + 1, $"OptiDllPath = {wanted}");
+            }
+            else
+            {
+                updated.Add("");
+                updated.Add("[Libraries]");
+                updated.Add($"OptiDllPath = {wanted}");
+            }
+            lines = updated.ToArray();
+            changed = true;
         }
 
         if (changed)
