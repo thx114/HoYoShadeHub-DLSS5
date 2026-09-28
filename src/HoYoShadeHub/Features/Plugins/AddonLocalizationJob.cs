@@ -1,5 +1,7 @@
 using HoYoShadeHub.Extensions.I18n;
+using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
+using HoYoShadeHub.Extensions.Services;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -148,16 +150,18 @@ internal sealed class AddonLocalizationJob
     /// 所以汉化时把所有能便宜找到的副本都打上（浅层目录里叫 HoYoShade 的，最多往下 5 层）。
     /// </summary>
     /// <summary>
-    /// 找副本要扫所有固定盘（深度 5），十几秒很正常 —— 全程可取消（界面上那个「停止」按钮靠它）。
+    /// 同一个插件的其它副本 —— **只用启动器自己管的固定位置**（活动宿主 / 版本归档 / 每游戏插件包），
+    /// 几次目录探测就走完。老实现是「扫所有固定盘、深度 5、找叫 HoYoShade 的目录」：十几秒，
+    /// 而且找到的多半是用户早就没在用的旧副本。
     /// </summary>
     public static List<string> FindCopies(string fileName, CancellationToken cancellationToken = default)
     {
         List<string> copies = [];
 
-        foreach (string root in CandidateRoots(cancellationToken))
+        foreach (string directory in AddonDirectories(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string path = Path.Combine(root, "reshade-shaders", "Addons", fileName);
+            string path = Path.Combine(directory, fileName);
 
             if (File.Exists(path) && !copies.Contains(path, StringComparer.OrdinalIgnoreCase))
             {
@@ -168,61 +172,118 @@ internal sealed class AddonLocalizationJob
         return copies;
     }
 
-    private static IEnumerable<string> CandidateRoots(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 所有可能装着这个插件的 Addons 目录（都按固定位置拼，不遍历磁盘）：
+    /// <list type="bullet">
+    /// <item>活动宿主：&lt;用户数据目录&gt; 下的 HoYoShade / reshade-shaders / Addons（用户手动指定过的也算）</item>
+    /// <item>版本归档：缓存目录下的 plugins / &lt;扩展&gt; / &lt;tag&gt; / reshade-shaders / Addons ——「重装」就是从这儿拷的</item>
+    /// <item>每游戏专属包：缓存目录下的 games / &lt;游戏&gt; / Addons —— 游戏实际加载的那份</item>
+    /// </list>
+    /// </summary>
+    private static IEnumerable<string> AddonDirectories(CancellationToken cancellationToken = default)
     {
-        if (!string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1) 活动宿主 + 常规候选（HoYoShade / OpenHoYoShade / 手动指定根）—— 只做目录探测
+        var extraRoots = new List<string>();
+        if (!string.IsNullOrWhiteSpace(PluginHostLocator.ManualShadeRoot))
         {
-            yield return Path.Combine(AppConfig.UserDataFolder, "HoYoShade");
+            extraRoots.Add(PluginHostLocator.ManualShadeRoot!);
         }
 
-        foreach (DriveInfo drive in DriveInfo.GetDrives())
+        foreach (ShadeHost host in ShadeHostLocator.EnumerateCandidates(AppConfig.UserDataFolder, extraRoots))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (drive.DriveType != DriveType.Fixed || !drive.IsReady)
+            if (!string.IsNullOrWhiteSpace(host.AddonsPath) && seen.Add(host.AddonsPath))
+            {
+                yield return host.AddonsPath;
+            }
+        }
+
+        // 目录在、但没装 ReShade64.dll 的（只导入了插件那种）不算「有效宿主」，
+        // 上面那圈会跳过 —— 插件副本照样在这儿，所以再按目录存在与否补一遍。
+        var plainRoots = new List<string?>
+        {
+            ShadeHostLocator.GetDefaultRoot(AppConfig.UserDataFolder),
+            ShadeHostLocator.GetDefaultRoot(AppConfig.UserDataFolder, ShadeHostKind.OpenHoYoShade),
+            PluginHostLocator.ManualShadeRoot,
+        };
+
+        foreach (string? root in plainRoots)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(root))
             {
                 continue;
             }
 
-            foreach (string dir in ShallowDirectories(drive.RootDirectory.FullName, 5, cancellationToken))
+            string addons = Path.Combine(root, "reshade-shaders", "Addons");
+
+            if (Directory.Exists(addons) && seen.Add(addons))
             {
-                if (string.Equals(Path.GetFileName(dir), "HoYoShade", StringComparison.OrdinalIgnoreCase))
+                yield return addons;
+            }
+        }
+
+        string cacheRoot = AppConfig.CacheRoot;
+
+        if (string.IsNullOrWhiteSpace(cacheRoot))
+        {
+            yield break;
+        }
+
+        // 2) 版本归档：缓存目录下的 plugins / <扩展> / <tag> / reshade-shaders / Addons
+        string archiveRoot = new AddonVersionStore(cacheRoot).RootPath;
+
+        if (archiveRoot.Length > 0 && Directory.Exists(archiveRoot))
+        {
+            foreach (string extensionDir in SafeDirectories(archiveRoot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                foreach (string versionDir in SafeDirectories(extensionDir))
                 {
-                    yield return dir;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string addons = Path.Combine(versionDir, "reshade-shaders", "Addons");
+
+                    if (Directory.Exists(addons) && seen.Add(addons))
+                    {
+                        yield return addons;
+                    }
+                }
+            }
+        }
+
+        // 3) 每游戏专属包：<缓存>games<游戏>Addons
+        string gamesRoot = GameAddonPack.GamesRoot(cacheRoot);
+
+        if (gamesRoot.Length > 0 && Directory.Exists(gamesRoot))
+        {
+            foreach (string gameDir in SafeDirectories(gamesRoot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string addons = Path.Combine(gameDir, GameAddonPack.AddonsFolderName);
+
+                if (Directory.Exists(addons) && seen.Add(addons))
+                {
+                    yield return addons;
                 }
             }
         }
     }
 
-    private static IEnumerable<string> ShallowDirectories(string root, int depth, CancellationToken cancellationToken = default)
+    /// <summary>列子目录；权限 / 占用之类失败就当空，不往上抛</summary>
+    private static IEnumerable<string> SafeDirectories(string path)
     {
-        if (depth <= 0)
-        {
-            yield break;
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        IEnumerable<string> children;
-
         try
         {
-            children = Directory.EnumerateDirectories(root);
+            return Directory.EnumerateDirectories(path);
         }
         catch
         {
-            yield break;
-        }
-
-        foreach (string child in children)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return child;
-
-            foreach (string nested in ShallowDirectories(child, depth - 1, cancellationToken))
-            {
-                yield return nested;
-            }
+            return [];
         }
     }
 
@@ -235,15 +296,7 @@ internal sealed class AddonLocalizationJob
         List<AddonI18nTable> tables = AddonLocalizer.LoadTables(GlobalPluginPage.I18nTableDirectory);
         List<string> targets = [];
 
-        List<string> directories = [];
-
-        foreach (string root in CandidateRoots(cancellationToken))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            directories.Add(Path.Combine(root, "reshade-shaders", "Addons"));
-        }
-
-        foreach (string directory in directories)
+        foreach (string directory in AddonDirectories(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -334,10 +387,8 @@ internal sealed class AddonLocalizationJob
         }
 
         // 记账可能丢过（换过用户数据目录、手工删过记账）：目录里有备份的也算上
-        foreach (string root in CandidateRoots())
+        foreach (string directory in AddonDirectories())
         {
-            string directory = Path.Combine(root, "reshade-shaders", "Addons");
-
             if (!Directory.Exists(directory))
             {
                 continue;

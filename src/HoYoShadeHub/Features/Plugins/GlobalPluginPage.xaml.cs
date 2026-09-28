@@ -1288,7 +1288,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
             // 同一份插件在别的 HoYoShade 目录里可能还有副本（便携版 / 默认装各一份），
             // 游戏读哪一份取决于它用哪个启动器 —— 所以一起打上。
-            progress?.Report($"正在找 {fileName} 的副本（要扫所有固定盘，可能十几秒）…");
+            progress?.Report($"正在找 {fileName} 的副本（活动目录 / 版本归档 / 各游戏插件包）…");
             TextBlock_Status.Text = $"正在找 {fileName} 的副本…";
             List<string> copies = await Task.Run(
                 () => AddonLocalizationJob.FindCopies(fileName, cancellationToken),
@@ -1343,7 +1343,7 @@ public sealed partial class GlobalPluginPage : PageBase
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report($"正在找 {fileName} 的副本（要扫所有固定盘，可能十几秒）…");
+            progress?.Report($"正在找 {fileName} 的副本（活动目录 / 版本归档 / 各游戏插件包）…");
             List<string> targets = await Task.Run(() =>
             {
                 List<string> copies = AddonLocalizationJob.FindCopies(fileName, cancellationToken);
