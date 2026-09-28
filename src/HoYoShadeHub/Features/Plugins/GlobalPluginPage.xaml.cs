@@ -4351,11 +4351,53 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
 
     /// <summary>
     /// 这一行对应的盘上插件文件：文件名里带这个 tag 才找得到。
-    /// 找不到（用户改过名的老版本、还没装的归档行）就不显示「汉化」按钮。
+    /// 共享目录没有这份（插件只活在某个游戏的专属包目录里）就到各游戏包的 Addons 下找 ——
+    /// 汉化/还原都作用在找出来的那份上。找不到（用户改过名的老版本、还没装的归档行）就不显示「汉化」按钮。
     /// </summary>
     public string? LocalizeTargetFile
-        => _localizeTargetFile ??= Owner.GlobalAddonFiles
+        => _localizeTargetFile ??= FindTargetFile();
+
+    private string? FindTargetFile()
+    {
+        string? shared = Owner.GlobalAddonFiles
             .FirstOrDefault(f => Path.GetFileName(f).Contains(Tag, StringComparison.OrdinalIgnoreCase));
+        if (shared is not null)
+        {
+            return shared;
+        }
+
+        // 各游戏的专属包目录（&lt;CacheRoot&gt;\games\&lt;key&gt;\Addons）里找同名家族的文件
+        string gamesRoot = GameAddonPack.GamesRoot(AppConfig.CacheRoot);
+        if (gamesRoot.Length == 0 || !Directory.Exists(gamesRoot))
+        {
+            return null;
+        }
+
+        try
+        {
+            foreach (string packDir in Directory.EnumerateDirectories(gamesRoot))
+            {
+                string addons = Path.Combine(packDir, GameAddonPack.AddonsFolderName);
+                if (!Directory.Exists(addons))
+                {
+                    continue;
+                }
+
+                string? hit = Directory.EnumerateFiles(addons)
+                    .FirstOrDefault(f => Path.GetFileName(f).Contains(Tag, StringComparison.OrdinalIgnoreCase));
+                if (hit is not null)
+                {
+                    return hit;
+                }
+            }
+        }
+        catch
+        {
+            // 枚举包目录失败就当没有，按钮照旧隐藏
+        }
+
+        return null;
+    }
 
     private static List<AddonI18nTable>? _localizeTables;
 
