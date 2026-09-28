@@ -1244,6 +1244,7 @@ public sealed partial class GlobalPluginPage : PageBase
             }
 
             TextBlock_Status.Text = $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条（读取中：{string.Join("；", details)}）。重启游戏生效，已汉化时同位置点一下即还原";
+            ShowInfo("汉化完成", $"{prefix}汉化 {targets.Count} 份副本、共 {total} 条。重启游戏生效。", InfoBarSeverity.Success);
             _logger.LogInformation("Localize addon {File}: {Prefix}{Total} 条 / {Count} 份 → {Paths}", fileName, prefix, total, targets.Count, string.Join(" | ", targets));
         }
         catch (Exception ex)
@@ -1285,12 +1286,31 @@ public sealed partial class GlobalPluginPage : PageBase
 
                 AddonLocalizeResult one = await Task.Run(() => AddonLocalizer.Restore(target, I18nBackupDirectory));
                 AddonLocalizationJob.Forget(target);
+                // 备份已经拷回原文件、使命完成 —— 删掉它，不然「已汉化」的判定（有备份就算）永远为真，
+                // 按钮永远停在「已汉化·还原」，用户看起来就是「点了没反应」。
+                if (one.BackupPath is not null)
+                {
+                    try
+                    {
+                        File.Delete(one.BackupPath);
+                    }
+                    catch (IOException)
+                    {
+                        // 删不掉就留着，只是按钮文案还停在那儿
+                    }
+                }
                 details.Add($"{Path.GetFileName(target)} → {one.Message}");
             }
 
             TextBlock_Status.Text = details.Count > 0
                 ? $"{fileName}：已还原 {details.Count} 份（{string.Join("；", details)}）。重启游戏生效"
                 : $"{fileName}：没找到备份，没什么可还原的";
+            ShowInfo(
+                details.Count > 0 ? "还原完成" : "没什么可还原的",
+                details.Count > 0
+                    ? $"{fileName}：已还原 {details.Count} 份成原版。重启游戏生效。"
+                    : $"{fileName}：没找到备份（可能已经还原过了）。重启游戏生效。",
+                details.Count > 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
         }
         catch (Exception ex)
         {
