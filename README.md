@@ -37,7 +37,31 @@
 ## 仓库里有什么
 
 - `src/` 源码；`compile.ps1` 构建、`package.ps1` 打便携包（不需要 Visual Studio）；
-- **不放** ReShade / HoYoShade / 插件 / OptiScaler 的二进制 —— 那些由启动器按需下载。
+- **不放** ReShade / HoYoShade / 插件 / OptiScaler 的二进制 —— 那些由启动器按需下载（完整包除外，见下）。
+
+## 打包
+
+两种包，共用同一套源码，区别只在「自带不带 HoYoShade 框架」：
+
+```powershell
+# 1) 普通便携包：只有启动器，用户自己装 HoYoShade（约 180 MB）
+./package.ps1 -Version 1.3.9.1
+
+# 2) 完整包：启动器 + HoYoShade 框架（ReShade64.dll / inject.exe / 预置 / 精简滤镜与材质），
+#    插件目录留空（约 235 MB）；HoYoShade 来源默认自动找，可用 -ShadeSource 指定
+./package-full.ps1 -Version 1.3.9.1
+./package-full.ps1 -Version 1.3.9.1 -ShadeSource 'D:\APPS\HoYoShadeHub\HoYoShade'
+```
+
+完整包的内容与规则（`package-full.ps1` 头部注释里也有）：
+
+- 布局：`version.ini` + `HoYoShadeHub.exe` + `app-<版本>\` + `HoYoShade\`；
+- 自带 `HoYoShade` 框架本体、`Presets`、`InjectResource`（字体）、`LauncherResource`；
+- **滤镜 / 材质只带必要的那套**（源目录里本来就是精简集：Shaders 42 个、Textures 5 个），
+  想再精简就传 `-ShaderAllowList` / `-TextureAllowList`（一行一个通配符）；
+- **插件目录 `reshade-shaders\Addons` 留空**（插件由用户在启动器里按需装）；
+- 不打包用户状态（`.hysx\installed.json`、`.hysx\backup`、日志、截图）；
+- `ReShade.ini` 里的绝对路径会改写成相对路径（源机 `D:\...` 在别人机器上不存在）。
 
 ## 许可与致谢
 
