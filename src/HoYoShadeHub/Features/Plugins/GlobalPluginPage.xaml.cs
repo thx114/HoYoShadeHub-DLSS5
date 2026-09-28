@@ -460,6 +460,9 @@ public sealed partial class GlobalPluginPage : PageBase
                 _allModuleDownloads = [];
                 TextBlock_TargetPath.Text = "未找到 HoYoShade 目录";
                 ShowInfo("没有可管理的 HoYoShade 目录", reason, InfoBarSeverity.Warning);
+                // 原因写进日志：首进页面解析失败 vs 目录真不存在，看日志就能区分，
+                // 不用再让用户复述弹窗内容（之前完整包首进页面解析瞬败，日志里一点痕迹没有）。
+                _logger.LogWarning("Plugin host resolve failed: {Reason}", reason);
                 TextBlock_Status.Text = string.Empty;
                 ApplyFilter();
                 return;
@@ -2818,14 +2821,27 @@ public sealed partial class GlobalPluginPage : PageBase
     /// 覆盖包要往这些目录整棵盖，盖完还要把 dll / 插件的版本归档认下来。
     /// </summary>
     private LocalPackageInstaller CreateLocalPackageInstaller()
-        => new(
+    {
+        // 别直接用页面自己的 _manager：首进页面时异步刷新可能还没跑完（或当时解析失败），
+        // _manager 还是 null —— 这时点「本地安装…」会被误判成「没装 HoYoShade」
+        // （实测：完整包首进页面就导覆盖包，guard 误报；刷新一次后同一目录又能解析）。
+        // 安装前单独解析一次，拿当前真实状态。
+        string resolveReason = string.Empty;
+        ExtensionManagerService? manager = _manager ?? PluginHostLocator.ResolveManager(out resolveReason);
+        if (manager is null)
+        {
+            _logger.LogWarning("本地安装前解析 HoYoShade 目录失败：{Reason}", resolveReason);
+        }
+
+        return new(
             AppConfig.OptiScalerRootPath,
-            _manager?.Host.AddonsPath ?? string.Empty,
+            manager?.Host.AddonsPath ?? string.Empty,
             AppConfig.ModulesRootPath,
             OptiScalerBuilds.Select(b => b.Build.Directory),
-            _manager?.Host.RootPath,
-            _manager?.Host,
+            manager?.Host.RootPath,
+            manager?.Host,
             AppConfig.CacheRoot);
+    }
 
     /// <summary>
     /// 本地包装完之后统一收尾：按类型刷新对应界面，并把「装了什么、装到哪儿」写进日志。

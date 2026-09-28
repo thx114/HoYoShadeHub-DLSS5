@@ -576,8 +576,10 @@ public sealed class LocalPackageInstaller
             {
                 throw new InvalidOperationException(
                     "这个覆盖包里有 HoYoShade 那一半（ReShade 框架 / 滤镜 / 插件），"
-                    + "但本机还没装 HoYoShade、没定位到它的目录，没地方落。"
-                    + "先到「启动器」页装一次 HoYoShade，再导入这个包；"
+                    + "但启动器现在没定位到 HoYoShade 的目录，没地方落。\n\n"
+                    + "· 完整包 / 便携包（包里自带 HoYoShade\\ 目录）：多半是首进页面时启动器还没找到它 —— "
+                    + "刷新一次插件页，或点页面上的「指定目录」直接指到 <包目录>\\HoYoShade，再导入；\n"
+                    + "· 本机确实没装过：先到「启动器」页装一次 HoYoShade 框架，再导入这个包。\n\n"
                     + "现在导进去只有 OptiScaler 那一半生效，插件和运行时 dll（nvngx_dlssnr / sl.*）都不会有。");
             }
 
