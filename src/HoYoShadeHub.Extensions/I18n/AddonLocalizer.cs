@@ -142,7 +142,10 @@ public static class AddonLocalizer
         return tables;
     }
 
-    /// <summary>文件名（或 slug）该用哪张表：slug 前缀匹配，取最长的那个</summary>
+    /// <summary>slug 前缀后面紧跟字母 / 数字 = 其实是另一个插件（renodx-dlss 不能吃掉 renodx-dlss5）</summary>
+    private static bool IsSlugContinuation(char c) => char.IsLetterOrDigit(c);
+
+    /// <summary>文件名（或 slug）该用哪张表：slug 前缀匹配（边界 = 后面不许紧跟字母数字），取最长的那个</summary>
     public static AddonI18nTable? SelectTable(IEnumerable<AddonI18nTable> tables, string addonFileName)
     {
         string slug = AddonFileInfo.Parse(addonFileName)?.Slug ?? Path.GetFileNameWithoutExtension(addonFileName);
@@ -156,7 +159,10 @@ public static class AddonLocalizer
                 continue;
             }
 
-            if (slug.StartsWith(table.Slug, StringComparison.OrdinalIgnoreCase) && table.Slug.Length > bestLength)
+            // 边界检查：renodx-dlss 是 renodx-dlss5-super-anus 的前缀，但后者是自带多语言的另一个插件，不能错配
+            if (slug.StartsWith(table.Slug, StringComparison.OrdinalIgnoreCase)
+                && table.Slug.Length > bestLength
+                && (slug.Length == table.Slug.Length || !IsSlugContinuation(slug[table.Slug.Length])))
             {
                 best = table;
                 bestLength = table.Slug.Length;

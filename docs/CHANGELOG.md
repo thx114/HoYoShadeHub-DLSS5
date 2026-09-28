@@ -3,6 +3,23 @@
 > 便携包版本号 = 发布用的号；括号里是对应开发实例 `app-<ver>`。
 > 更细的「问题 → 根因 → 改法」见 [GAMES-AND-INJECT.md](./GAMES-AND-INJECT.md)。
 
+## 未发版 · 汉化入口挪进插件卡片配置 + 内置翻译表只留 renodx-dlss
+
+- **汉化入口挪位置**：从设置里的实验性功能 + 卡片头部隐藏按钮 → **已装插件卡片的展开配置里**，
+  一个「汉化」开关按钮：没汉化过点一下打补丁（先自动备份），已汉化显示「已汉化 · 点击还原」。
+  按钮只对「盘上文件能匹配到翻译表」的插件显示 —— 现在 = renodx-dlss 一家。
+- **内置翻译表裁剪**：`i18n.builtin.json` 从 3 张表（renodx-dlss5 / renodx-dlss / dlss5-bridge）
+  裁到 **1 张 renodx-dlss** —— dlss5 系列插件自带多语言，不再打补丁。
+- **前缀匹配补边界检查**：`SelectTable` 的 slug 前缀匹配原来会把 `renodx-dlss5-*` 错配到
+  `renodx-dlss` 的表（前者是后者的字符串前缀！）—— 现在 slug 后面紧跟字母 / 数字就不算匹配。
+- 顺手的坑：卡片模板（InstalledPluginList）的 x:DataType 一直是 `PluginItemViewModel`，
+  之前那两颗隐藏按钮按 `AddonFileItemViewModel` 写的 —— 就算显示出来点了也没反应（cast 永远失败），
+  死代码已删。x:Bind 到不存在的成员会让 XamlCompiler **静默 exit 1**（MSB3073、output.json 无诊断）。
+- 启动前重打（ReapplyAsync）：记账里表已删除的条目顺手清掉（老 dlss5 条目不再每次启动白扫）；
+  以前打过 dlss5 补丁的，用「设置 → 实验性功能 → 还原插件汉化」一次性还原。
+- 设置里的全量「汉化插件 / 还原插件汉化」（实验性）保留，现在只影响 renodx-dlss。
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 580 / FAIL 0**（+1 边界用例）。
+
 ## 未发版 · 全部卡片展开 / 收起动画（全局插件页 6 个列表 + 插件页统一实现）
 
 - **修：全局插件页的卡片展开 / 收起没有动画，兄弟卡片也不跟着动**（OptiScaler 构建 / 源、模块、

@@ -322,6 +322,19 @@
                                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                                            Text="{x:Bind StatusText}"
                                                            TextWrapping="Wrap" />
+                                                <!--  汉化开关：只对「有翻译表的插件文件」显示（内置表现在只剩 renodx-dlss；
+                                                      dlss5 系列自带多语言，不显示这个按钮）。已汉化时点一下 = 从备份还原。  -->
+                                                <Button MinWidth="0"
+                                                        Padding="8,3"
+                                                        HorizontalAlignment="Left"
+                                                        Click="Button_LocalizeAddon_Click"
+                                                        ToolTipService.ToolTip="{x:Bind LocalizeButtonTooltip, Mode=OneWay}"
+                                                        Visibility="{x:Bind CanLocalizeVisibility}">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <FontIcon FontSize="13" Glyph="&#xE8C1;" />
+                                                        <TextBlock FontSize="12" Text="{x:Bind LocalizeButtonText, Mode=OneWay}" />
+                                                    </StackPanel>
+                                                </Button>
                                                 <!--  已安装版本（每行：左侧竖条 + 重装 + 删除），摆在「全部版本」下拉上面  -->
                                                 <ItemsControl ItemsSource="{x:Bind InstalledVersionRows}">
                                                     <ItemsControl.ItemTemplate>
@@ -474,29 +487,6 @@
                                                               OffContent="全局关"
                                                               OnContent="全局开"
                                                               ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64  .addon64x）" />
-                                                <!--  汉化 / 还原这个插件文件（已按用户要求隐藏，入口挪到设置里的实验性功能）  -->
-                                                <Button MinWidth="0"
-                                                        Padding="8,3"
-                                                        VerticalAlignment="Center"
-                                                        Visibility="Collapsed"
-                                                        Click="Button_LocalizeAddon_Click"
-                                                            ToolTipService.ToolTip="用翻译表把这行插件界面里的英文文本原地换成中文">
-                                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon FontSize="13" Glyph="&#xE8C1;" />
-                                                        <TextBlock FontSize="12" Text="汉化" />
-                                                    </StackPanel>
-                                                </Button>
-                                                <Button MinWidth="0"
-                                                        Padding="8,3"
-                                                        VerticalAlignment="Center"
-                                                        Click="Button_RestoreAddon_Click"
-                                                        Visibility="Collapsed"
-                                                        ToolTipService.ToolTip="从备份还原成原版插件">
-                                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon FontSize="13" Glyph="&#xE7A7;" />
-                                                        <TextBlock FontSize="12" Text="还原" />
-                                                    </StackPanel>
-                                                </Button>
                                                 <Button MinWidth="0"
                                                         Padding="8,3"
                                                         VerticalAlignment="Center"

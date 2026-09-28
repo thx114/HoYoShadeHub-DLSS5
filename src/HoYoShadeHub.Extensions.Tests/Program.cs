@@ -1701,10 +1701,13 @@ Check(!OptiScalerRuntime.RemoveFsrBridgeAutoload(null, out _), "目录传空也�
 
 Console.WriteLine("-- 插件汉化（整条覆盖式原地替换 + 备份 / 还原）--");
 AddonI18nDocument builtinTable = AddonLocalizer.LoadBuiltin();
-Check(builtinTable.Tables.Count >= 3, $"内置翻译表至少 3 个插件族，实际 {builtinTable.Tables.Count}");
-AddonI18nTable? dlssTable = AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss5-super-anus(1.0.8.18).addon64");
-Check(dlssTable?.Slug == "renodx-dlss5", $"renodx-dlss5-super-anus 选到 renodx-dlss5 那张表（实际 {dlssTable?.Slug}）");
-Check(AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss(9.17.12).addon64")?.Slug == "renodx-dlss", "renodx-dlss 不会错选到 dlss5 那张表");
+// 2026-09-28：内置表只保留 renodx-dlss 一张 —— renodx-dlss5 / dlss5-bridge 自带多语言，不再打补丁
+Check(builtinTable.Tables.Count == 1 && builtinTable.Tables[0].Slug == "renodx-dlss", $"内置翻译表只剩 renodx-dlss 一张（实际 {builtinTable.Tables.Count} 张）");
+AddonI18nTable? noDlss5Table = AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss5-super-anus(1.0.8.18).addon64");
+Check(noDlss5Table is null, "renodx-dlss5 自带多语言，没有表、不再汉化");
+Check(AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss(9.17.12).addon64")?.Slug == "renodx-dlss", "renodx-dlss 能选到自己那张表");
+Check(AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss_SF_1.0.0.addon64")?.Slug == "renodx-dlss", "renodx-dlss_SF（下划线分隔）也算 renodx-dlss");
+Check(AddonLocalizer.SelectTable(builtinTable.Tables, "renodx-dlss.addon64")?.Slug == "renodx-dlss", "裸 renodx-dlss 精确匹配");
 Check(AddonLocalizer.SelectTable(builtinTable.Tables, "some-other-thing.addon64") is null, "别的插件没有表就不汉化");
 Check(AddonLocalizer.AlgorithmVersion >= 2, $"补丁算法有版本号，旧补丁过的文件才知道要还原重打（实际 v{AddonLocalizer.AlgorithmVersion}）");
 

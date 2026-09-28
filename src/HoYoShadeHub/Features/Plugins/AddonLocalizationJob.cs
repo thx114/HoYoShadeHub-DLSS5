@@ -413,6 +413,8 @@ internal sealed class AddonLocalizationJob
 
             if (table is null)
             {
+                // 翻译表没了（dlss5 系列自带多语言后删表）：从记账里清掉，别每次启动都白扫
+                Forget(path);
                 skipped++;
                 continue;
             }

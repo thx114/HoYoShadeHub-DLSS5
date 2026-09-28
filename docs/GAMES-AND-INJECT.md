@@ -2642,3 +2642,47 @@ ClearValue 只清本地值、**不会触发重推**；要么显式 SetValue 终�
 - 文件：`Features/ViewHost/MotionAnimations.cs`（+PlayAreaExpand/PlayItemAreaExpand/FindDescendantByName）、
   `Features/Plugins/GamePluginPage.xaml.cs`（删私有实现）、
   `Features/Plugins/GlobalPluginPage.xaml(.cs)`。\n
+
+### 49 汉化入口挪进插件卡片配置 + 内置翻译表只留 renodx-dlss
+
+用户要求：「汉化插件改到该插件卡片的配置中去；目前应该只支持一个 dlss 插件；那个 dlss5 自带汉化了不用了。」
+
+**翻译表裁剪**：`HoYoShadeHub.Extensions/Resources/i18n.builtin.json` 从 3 张表裁到 1 张
+（只留 `renodx-dlss`；`renodx-dlss5`、`dlss5-bridge` 自带多语言，删表不再打补丁），note 里注明原因。
+
+**前缀匹配补边界检查（删表引出来的真 bug）**：`SelectTable` 的 slug 匹配是 `StartsWith`，而
+`renodx-dlss5-super-anus` 就是 `renodx-dlss` 的字符串前缀 —— 以前两张表都在时靠「取最长」
+侥幸正确，dlss5 表一删，dlss5 系文件会错配到 dlss 表被打补丁。修法：slug 匹配后紧跟
+字母 / 数字 = 另一个插件，不匹配（`renodx-dlss5-*` → null；`renodx-dlss(*`、`renodx-dlss_*`、
+精确 `renodx-dlss` → 命中）。补了 4 条测试用例。
+
+**入口挪进卡片配置**（`GlobalPluginPage.xaml` 已装插件卡片的展开配置区）：
+- `PluginItemViewModel` 新增 `CanLocalize / CanLocalizeVisibility / IsLocalized /
+  LocalizeButtonText / LocalizeButtonTooltip / RefreshLocalizeState()`，翻译表按 VM 实例懒加载缓存。
+- 按钮 `Visibility="{x:Bind CanLocalizeVisibility}"`：盘上文件（`GlobalAddonFiles`）任一文件名
+  匹配到翻译表才显示；文案/提示随 `IsLocalized`（记账里有 或 磁盘有备份）在
+  「汉化」/「已汉化 · 点击还原」之间切。
+- 点击行为合成一个开关：`Button_LocalizeAddon_Click` → `IsLocalized` ? `RestoreAddonAsync` :
+  `LocalizeAddonAsync`（两个方法按 `GlobalAddonFiles` 逐文件走原来的 备份→副本→Apply 流程，
+  `FindCopies` 的跨 HoYoShade 目录副本一起打 / 一起还原）。操作完只 `RefreshLocalizeState()`
+  就地刷新 —— **不重建列表**（重建会把刚展开的卡片顶回去）。
+- 卡片头部原来那两颗 `Visibility="Collapsed"` 的隐藏按钮删掉。
+
+**踩坑记录（两个都值钱）**：
+1. 已装插件卡片模板（`InstalledPluginList` 的 `DataTemplate`）的 `x:DataType` 一直是
+   `PluginItemViewModel`；上一代隐藏按钮的处理器却按 `AddonFileItemViewModel` 写 cast ——
+   显示出来也永远 early-return，纯死代码。`AddonFileItemViewModel` 是「目录没匹配到条目的
+   孤儿文件」列表（`OrphanAddonFiles`）的 VM。
+2. **x:Bind 到 x:DataType 上不存在的成员 = XamlCompiler 静默 exit 1**：只报 MSB3073，
+   `obj\...\output.json` 的 `MSBuildLogEntries` 里只有 perf 标记没有诊断。定位靠
+   「这次动了哪几处 XAML」排查；平时 CS 错误优先、没有 CS 再查 XAML 良构性和绑定成员。
+
+**记账清理**：`AddonLocalizationJob.ReapplyAsync`（启动游戏前重打）里，`SelectTable` 落空的
+记账条目顺手 `Forget` —— 以前打过 dlss5 补丁的账本条目不再每次启动白扫（补丁文件留在原地，
+用户要还原走「设置 → 实验性功能 → 还原插件汉化」，那个是全量的）。设置页的全量
+汉化 / 还原按钮保留，现在实际只影响 renodx-dlss。
+
+- 验证：x64 Release **0 错误**；扩展自测 **PASS 580 / FAIL 0**（+1 边界用例）。
+- 文件：`Features/Plugins/GlobalPluginPage.xaml(.cs)`、`Features/Plugins/AddonLocalizationJob.cs`、
+  `HoYoShadeHub.Extensions/I18n/AddonLocalizer.cs`、
+  `HoYoShadeHub.Extensions/Resources/i18n.builtin.json`、`HoYoShadeHub.Extensions.Tests/Program.cs`。\n
