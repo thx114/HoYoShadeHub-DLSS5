@@ -219,6 +219,13 @@ try {
     $addonFiles = @(Get-ChildItem -Path (Join-Path $target "reshade-shaders\Addons") -Recurse -File -ErrorAction SilentlyContinue)
     if ($addonFiles.Count -gt 0) { throw "插件目录必须为空，但现在有 $($addonFiles.Count) 个文件。" }
 
+    # 完整包永远带「真便携」标记：缓存 / 配置 / 日志全留在包内不碰 C: 盘，
+    # 自带 HoYoShade 也必须是包目录当用户数据目录才能被认出来。
+    # （内层 package.ps1 不带 -PortableLocal 时还会主动删掉标记，所以这里自己写。）
+    $markerPath = Join-Path $outDir ".portable"
+    Write-Host "==> 写入真便携标记 => $markerPath" -ForegroundColor Cyan
+    Set-Content -Path $markerPath -Value "portable-local=1" -Encoding UTF8
+
     # 7) 打 zip
     $zipDir = Join-Path $repoRoot "build/release"
     New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
