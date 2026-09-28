@@ -4350,23 +4350,37 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
     private string? _localizeTargetFile;
 
     /// <summary>
-    /// 这一行对应的盘上插件文件：文件名里带这个 tag 才找得到。
-    /// 共享目录没有这份（插件只活在某个游戏的专属包目录里）就到各游戏包的 Addons 下找 ——
-    /// 汉化/还原都作用在找出来的那份上。找不到（用户改过名的老版本、还没装的归档行）就不显示「汉化」按钮。
+    /// 这一行对应的盘上插件文件。**不能拿版本 tag 去对文件名** —— RHI 归档 tag 是
+    /// <c>renodx-dlss-SF-26.0927.2125</c> 这种，而盘上文件名是 <c>renodx-dlss.addon64</c>
+    /// （包机制刻意保持文件名一致，ini 条目才匹配得上），tag 在文件名里永远找不到。
+    /// 按「家族」匹配：文件和这一行的 tag 得选出**同一张翻译表**（= 同一个可汉化插件家族），
+    /// 候选从共享目录到各游戏专属包目录都找。找不到就不显示「汉化」按钮。
     /// </summary>
     public string? LocalizeTargetFile
         => _localizeTargetFile ??= FindTargetFile();
 
     private string? FindTargetFile()
     {
-        string? shared = Owner.GlobalAddonFiles
-            .FirstOrDefault(f => Path.GetFileName(f).Contains(Tag, StringComparison.OrdinalIgnoreCase));
+        // 这一行（按它的 tag）属于哪个可汉化家族；没表的家族连按钮都不该出现
+        string? rowTableSlug = AddonLocalizer.SelectTable(LocalizeTables, Tag)?.Slug;
+        if (rowTableSlug is null)
+        {
+            return null;
+        }
+
+        bool SameFamily(string file) =>
+            string.Equals(
+                AddonLocalizer.SelectTable(LocalizeTables, Path.GetFileName(file))?.Slug,
+                rowTableSlug,
+                StringComparison.OrdinalIgnoreCase);
+
+        string? shared = Owner.GlobalAddonFiles.FirstOrDefault(SameFamily);
         if (shared is not null)
         {
             return shared;
         }
 
-        // 各游戏的专属包目录（&lt;CacheRoot&gt;\games\&lt;key&gt;\Addons）里找同名家族的文件
+        // 共享目录没有这份（插件只活在某个游戏的专属包目录里）→ 到各游戏包的 Addons 下找
         string gamesRoot = GameAddonPack.GamesRoot(AppConfig.CacheRoot);
         if (gamesRoot.Length == 0 || !Directory.Exists(gamesRoot))
         {
@@ -4383,8 +4397,7 @@ public sealed partial class InstalledPluginVersionRow : ObservableObject
                     continue;
                 }
 
-                string? hit = Directory.EnumerateFiles(addons)
-                    .FirstOrDefault(f => Path.GetFileName(f).Contains(Tag, StringComparison.OrdinalIgnoreCase));
+                string? hit = Directory.EnumerateFiles(addons).FirstOrDefault(SameFamily);
                 if (hit is not null)
                 {
                     return hit;
