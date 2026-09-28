@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
@@ -34,7 +35,7 @@ internal sealed class AddonLocalizationJob
 
     /// <summary>记了哪些插件被汉化过（存绝对路径：同一份插件可能有好几个 HoYoShade 目录）</summary>
     public static string StatePath => string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
-        ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-i18n", "localized.json")
+        ? Path.Combine(TemporaryFolder.Path, "HoYoShadeHub-i18n", "localized.json")
         : Path.Combine(AppConfig.UserDataFolder, ".hysx", "i18n", "localized.json");
 
     private static readonly JsonSerializerOptions _stateJson = new()

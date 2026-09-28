@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Security.Principal;
+using HoYoShadeHub.Core;
 using Vanara.PInvoke;
 
 namespace HoYoShadeHub.RPC;
@@ -29,6 +30,52 @@ internal static class AppConfig
 
 
     public static bool IsAppInRemovableStorage { get; private set; }
+
+
+    /// <summary>
+    /// 「真便携」：缓存 / 日志落在便携目录内部，不写 C: 盘。与
+    /// <c>HoYoShadeHub.AppConfig.IsPortableLocal</c> 同一套规则（RPC 程序集拿不到 Extensions，
+    /// 所以这里是同一份判定的副本）。无界面子进程（rpc / playtime）必须跟着主程序走同一个目录，
+    /// 否则又会开出两份缓存。
+    /// </summary>
+    public static bool IsPortableLocal { get; private set; }
+
+
+    /// <summary>「真便携」标记文件名：放在便携根目录（<c>HoYoShadeHub.exe</c> 旁边）</summary>
+    private const string PortableMarkerFileName = ".portable";
+
+
+    /// <summary>有没有 .portable 标记 / 环境变量 HYSHADE_PORTABLE_LOCAL=1（同 Extensions 的实现）</summary>
+    private static bool IsPortableLocalEnabled(string? portableRoot)
+    {
+        try
+        {
+            string? flag = Environment.GetEnvironmentVariable("HYSHADE_PORTABLE_LOCAL")?.Trim();
+            if (!string.IsNullOrEmpty(flag) &&
+                (flag.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                 flag.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                 flag.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                 flag.Equals("on", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+        catch { }
+
+        if (string.IsNullOrWhiteSpace(portableRoot))
+        {
+            return false;
+        }
+
+        try
+        {
+            return File.Exists(Path.Combine(portableRoot, PortableMarkerFileName));
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
 
     public static string CacheFolder { get; private set; }
@@ -84,6 +131,11 @@ internal static class AppConfig
             HoYoShadeHubLauncherExecutePath = launcherExe;
         }
 
+        if (IsPortable)
+        {
+            IsPortableLocal = IsAppInRemovableStorage || IsPortableLocalEnabled(parentFolder);
+        }
+
         if (IsAppInRemovableStorage && IsPortable)
         {
             CacheFolder = Path.Combine(parentFolder!, ".cache");
@@ -91,6 +143,11 @@ internal static class AppConfig
         else if (IsAppInRemovableStorage)
         {
             CacheFolder = Path.Combine(Path.GetPathRoot(AppContext.BaseDirectory)!, ".HoYoShadeHubCache");
+        }
+        else if (IsPortable && IsPortableLocal)
+        {
+            // 真便携：跟主程序同一个 <便携根>\.cache
+            CacheFolder = Path.Combine(parentFolder!, ".cache");
         }
         else if (IsPortable)
         {
@@ -100,6 +157,12 @@ internal static class AppConfig
         {
             CacheFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HoYoShadeHub");
         }
+        // 真便携：临时文件（下载中的 zip / 解压中间文件）也放进便携目录，不写 C: 盘
+        if (IsPortableLocal && !string.IsNullOrWhiteSpace(CacheFolder))
+        {
+            TemporaryFolder.Override = Path.Combine(CacheFolder, "temp");
+        }
+
         Directory.CreateDirectory(CacheFolder);
         LogFolder = ResolveLogFolder();
         Directory.CreateDirectory(LogFolder);

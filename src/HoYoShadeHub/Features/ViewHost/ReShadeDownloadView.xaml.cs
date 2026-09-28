@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Messaging;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoShade;
 using HoYoShadeHub.Core.Networking;
 using HoYoShadeHub.Features.RPC;
@@ -959,7 +960,7 @@ public sealed partial class ReShadeDownloadView : UserControl
             IsDownloading = true;
 
             // Create temporary directory for extraction
-            string tempDir = Path.Combine(Path.GetTempPath(), "ReShadeImport_" + Guid.NewGuid().ToString("N"));
+            string tempDir = Path.Combine(TemporaryFolder.Path, "ReShadeImport_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
 
             try

@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -41,7 +42,7 @@ internal sealed class CatalogNameStore
         if (string.IsNullOrWhiteSpace(root))
         {
             // 没有用户数据目录时退到临时目录，至少不要让页面开不起来
-            return new CatalogNameStore(Path.Combine(Path.GetTempPath(), "hysx-catalog-names.json"));
+            return new CatalogNameStore(Path.Combine(TemporaryFolder.Path, "hysx-catalog-names.json"));
         }
 
         return new CatalogNameStore(Path.Combine(root, ".hysx", "catalog-names.json"));

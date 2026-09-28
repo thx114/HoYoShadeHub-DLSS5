@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using Microsoft.Extensions.Logging;
 using SharpSevenZip;
 using System;
@@ -178,7 +179,7 @@ public class HoYoShadeInstallService
             await Task.Run(() =>
             {
                 // Extract to a temporary directory first
-                string tempExtractPath = Path.Combine(Path.GetTempPath(), $"HoYoShade_Extract_{Guid.NewGuid()}");
+                string tempExtractPath = Path.Combine(TemporaryFolder.Path, $"HoYoShade_Extract_{Guid.NewGuid()}");
                 _logger.LogInformation("Created temporary extraction directory: {TempPath}", tempExtractPath);
                 
                 try
@@ -731,7 +732,7 @@ public class HoYoShadeInstallService
             _logger.LogInformation("    Download URL: {Url}", downloadUrl);
 
             // Download to temp file
-            string downloadPath = Path.Combine(Path.GetTempPath(), "ReShadeSetupDownload.tmp");
+            string downloadPath = Path.Combine(TemporaryFolder.Path, "ReShadeSetupDownload.tmp");
             if (File.Exists(downloadPath))
             {
                 try { File.Delete(downloadPath); } catch { }
@@ -789,7 +790,7 @@ public class HoYoShadeInstallService
             _logger.LogInformation("    Download complete, extracting...");
 
             // Extract archive
-            string tempPath = Path.Combine(Path.GetTempPath(), "ReShadeSetup");
+            string tempPath = Path.Combine(TemporaryFolder.Path, "ReShadeSetup");
             string tempPathEffects = null;
             string tempPathTextures = null;
             
@@ -927,7 +928,7 @@ public class HoYoShadeInstallService
             _logger.LogInformation(">>> Downloading addon: {Addon}", addon.Name);
             _logger.LogInformation("    Download URL: {Url}", downloadUrl);
 
-            string downloadPath = Path.Combine(Path.GetTempPath(), "ReShadeSetupDownload.tmp");
+            string downloadPath = Path.Combine(TemporaryFolder.Path, "ReShadeSetupDownload.tmp");
             if (File.Exists(downloadPath))
             {
                 try { File.Delete(downloadPath); } catch { }
@@ -994,7 +995,7 @@ public class HoYoShadeInstallService
             // If not a direct addon file, extract archive
             if (ext != ".addon" && ext != ".addon32" && ext != ".addon64")
             {
-                tempPath = Path.Combine(Path.GetTempPath(), "reshade-addons");
+                tempPath = Path.Combine(TemporaryFolder.Path, "reshade-addons");
                 
                 if (Directory.Exists(tempPath))
                 {

@@ -3322,7 +3322,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         string backupRoot = string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
-            ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-game-dll-backup")
+            ? Path.Combine(TemporaryFolder.Path, "HoYoShadeHub-game-dll-backup")
             : Path.Combine(AppConfig.UserDataFolder, ".hysx", "game-dll-backup");
 
         OptiScalerRuntime.GameDlssgSwapResult swap = OptiScalerRuntime.ReplaceGameDlssg(gameDirectory, unlockDll, backupRoot);

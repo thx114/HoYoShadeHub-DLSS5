@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Models;
 using System.Diagnostics;
@@ -198,7 +199,7 @@ public sealed class OptiScalerDownloader
             return FindInLibrary(library, source.Id, tag);
         }
 
-        string workRoot = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.OptiScaler", Guid.NewGuid().ToString("N"));
+        string workRoot = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.OptiScaler", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(workRoot);
 
         try

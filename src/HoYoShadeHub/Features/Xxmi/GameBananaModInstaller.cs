@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
@@ -149,7 +150,7 @@ internal sealed class GameBananaModInstaller
         {
             extension = ".zip";
         }
-        string zipPath = Path.Combine(Path.GetTempPath(), $"gamebanana_{request.ModId}_{request.FileId}{extension}");
+        string zipPath = Path.Combine(TemporaryFolder.Path, $"gamebanana_{request.ModId}_{request.FileId}{extension}");
 
         _logger.LogInformation("Downloading GameBanana mod {ModId} from {Url}", request.ModId, url);
 

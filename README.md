@@ -66,6 +66,30 @@
 - 不打包用户状态（`.hysx\installed.json`、`.hysx\backup`、日志、截图）；
 - `ReShade.ini` 里的绝对路径会改写成相对路径（源机 `D:\...` 在别人机器上不存在）。
 
+### 「真便携」包（`-PortableLocal`）
+
+普通便携包默认仍然把**缓存**放在 `%LOCALAPPDATA%\HoYoShadeHub`（webview / 缩略图 / 更新包）。
+想要一个「解压到任何地方都不碰 C: 盘」的包，加 `-PortableLocal`：
+
+```powershell
+./package.ps1 -Version 1.3.9.1 -PortableLocal
+```
+
+它只是在包根多写一个 `.portable` 标记文件；主程序看到这个标记就把下面这些全部留在包内：
+
+| 内容 | 普通便携包 | 真便携包（有 `.portable`） |
+| --- | --- | --- |
+| `config.ini` | `<包根>\config.ini` | 同左 |
+| 用户数据 / 数据库 | `<包根>\`（便携根） | 同左 |
+| 缓存（webview / 缩略图 / 更新包 / github-cache） | `%LOCALAPPDATA%\HoYoShadeHub` | `<包根>\.cache\` |
+| 临时文件（下载中的 zip、解压中间文件、汉化/更新/dll 备份） | `%TEMP%` | `<包根>\.cache\temp\` |
+| 数据库自动备份 | `%LOCALAPPDATA%\HoYoShadeHub\DatabaseBackup` | `<包根>\.cache\DatabaseBackup\` |
+| 日志 | `<包根>\log\` | 同左 |
+
+也可以不重新打包，直接在已有便携包的根目录放一个空文件 `.portable`
+（或设环境变量 `HYSHADE_PORTABLE_LOCAL=1`）达到同样效果。
+**默认不带标记** —— 老用户升级上来缓存目录不会突然搬家（看起来像「数据丢了」）。
+
 ## 许可与致谢
 
 - **HoYoShade Hub**：MIT，Copyright (c) 2025 哆啦D夢|DuolaD（见 [LICENSE](./LICENSE)）；本 fork 沿用 MIT。

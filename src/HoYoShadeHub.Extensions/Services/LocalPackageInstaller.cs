@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Archives;
 using System.Text.Json;
@@ -182,7 +183,7 @@ public sealed class LocalPackageInstaller
     /// </summary>
     private async Task<LocalPackageInstallResult> InstallAddonAsync(string file, CancellationToken cancellationToken)
     {
-        string work = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+        string work = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
 
         try
@@ -265,7 +266,7 @@ public sealed class LocalPackageInstaller
 
             Directory.CreateDirectory(target);
 
-            string extract = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+            string extract = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);
@@ -368,7 +369,7 @@ public sealed class LocalPackageInstaller
 
             Directory.CreateDirectory(target);
 
-            string extract = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+            string extract = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);

@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Models;
 using System.IO.Compression;
@@ -75,7 +76,7 @@ public sealed class ExtensionPackageFetcher
         ArgumentNullException.ThrowIfNull(manifest);
         ExtensionSource source = manifest.Source;
 
-        string workRoot = Path.Combine(Path.GetTempPath(), "HoYoShadeHub.Extensions", $"{Sanitize(manifest.Id)}-{Guid.NewGuid():N}");
+        string workRoot = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Extensions", $"{Sanitize(manifest.Id)}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workRoot);
 
         try

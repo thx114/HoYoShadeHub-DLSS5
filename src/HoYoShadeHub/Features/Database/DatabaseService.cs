@@ -193,7 +193,10 @@ internal static class DatabaseService
             return;
 #endif
 #pragma warning disable CS0162 // 检测到无法访问的代码
-            string folder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"HoYoShadeHub\DatabaseBackup");
+            // 真便携版：自动备份也留在便携目录里（不然每次启动都往 C: 写一份 7z）
+            string folder = AppConfig.IsPortableLocal && !string.IsNullOrWhiteSpace(AppConfig.CacheFolder)
+                ? Path.Combine(AppConfig.CacheFolder, "DatabaseBackup")
+                : Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"HoYoShadeHub\DatabaseBackup");
 #pragma warning restore CS0162 // 检测到无法访问的代码
             Directory.CreateDirectory(folder);
             string file = Path.Combine(folder, $"HoYoShadeHubDatabase_AutoBackup_{DateTime.Now:yyyyMMdd_HHmmss}.db");

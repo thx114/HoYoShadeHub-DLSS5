@@ -1160,7 +1160,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
     /// <summary>汉化备份目录：&lt;用户数据目录&gt;.hysxi18n-backup</summary>
     internal static string I18nBackupDirectory => string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
-        ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-i18n-backup")
+        ? Path.Combine(TemporaryFolder.Path, "HoYoShadeHub-i18n-backup")
         : Path.Combine(AppConfig.UserDataFolder, ".hysx", AddonLocalizer.BackupFolderName);
 
     /// <summary>用户 / 远端翻译表目录：&lt;用户数据目录&gt;.hysxi18n</summary>

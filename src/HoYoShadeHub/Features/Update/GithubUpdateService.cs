@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Services;
 using Microsoft.Extensions.Logging;
@@ -77,7 +78,7 @@ internal sealed class GithubUpdateService
     /// <summary>zip 与 version.ini 备份放这儿：&lt;用户数据目录&gt;\.hysx\update-backup</summary>
     public static string BackupDirectory
         => string.IsNullOrWhiteSpace(AppConfig.UserDataFolder)
-            ? Path.Combine(Path.GetTempPath(), "HoYoShadeHub-update-backup")
+            ? Path.Combine(TemporaryFolder.Path, "HoYoShadeHub-update-backup")
             : Path.Combine(AppConfig.UserDataFolder, ".hysx", "update-backup");
 
     /// <summary>仓库里所有能装的版本（新 → 旧），带「当前 / 比当前新 / 比当前旧」标注</summary>

@@ -83,7 +83,7 @@ public class EchFallbackHttpMessageHandler : DelegatingHandler
         if (request.Method == HttpMethod.Post && request.Content != null)
         {
             string postData = await request.Content.ReadAsStringAsync(cancellationToken);
-            tempFile = Path.Combine(Path.GetTempPath(), $"curl_post_{Guid.NewGuid():N}.json");
+            tempFile = Path.Combine(TemporaryFolder.Path, $"curl_post_{Guid.NewGuid():N}.json");
             await File.WriteAllTextAsync(tempFile, postData, Encoding.UTF8, cancellationToken);
             
             if (request.Content.Headers.ContentType != null)

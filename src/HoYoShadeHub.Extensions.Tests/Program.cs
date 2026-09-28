@@ -1,4 +1,5 @@
 
+using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.I18n;
@@ -2505,6 +2506,66 @@ Check(RtxHdrCoexistence.Evaluate(null, null) == RtxHdrVerdict.UnknownToggleWitho
     "两边都读不到 → 不报问题（绝不猜一个值吓人）");
 Check(RtxHdrCoexistence.Evaluate(true, false) != RtxHdrVerdict.EnabledWithSystemHdr,
     "失效判定不会被当成「生效」");
+
+
+Console.WriteLine("== 33. 「真便携」标记 / 环境变量开关 ==");
+string portableRoot = Path.Combine(root, "portable-root");
+Directory.CreateDirectory(portableRoot);
+Check(!PortableDataFolderScope.HasPortableMarker(portableRoot), "没有 .portable 标记 → 不认");
+Check(!PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "没标记没环境变量 → 默认不是真便携（老用户缓存不搬家）");
+File.WriteAllText(Path.Combine(portableRoot, PortableDataFolderScope.PortableMarkerFileName), "");
+Check(PortableDataFolderScope.HasPortableMarker(portableRoot), "放了 .portable 就认");
+Check(PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "放了 .portable → 真便携开着");
+Check(!PortableDataFolderScope.HasPortableMarker(Path.Combine(root, "no-such-portable")), "目录不存在 → false（不抛）");
+Check(!PortableDataFolderScope.HasPortableMarker(null), "null 根 → false");
+Check(!PortableDataFolderScope.HasPortableMarker("  "), "空白根 → false");
+Check(!PortableDataFolderScope.IsPortableLocalEnabled(null), "null 根 + 没环境变量 → false");
+File.Delete(Path.Combine(portableRoot, PortableDataFolderScope.PortableMarkerFileName));
+Check(!PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "标记删掉 → 回到默认（关）");
+Environment.SetEnvironmentVariable(PortableDataFolderScope.PortableLocalEnvironmentVariable, "1");
+Check(PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量 =1 → 真便携开着（没标记文件也认）");
+Environment.SetEnvironmentVariable(PortableDataFolderScope.PortableLocalEnvironmentVariable, "TRUE");
+Check(PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量 =TRUE → 认（大小写不敏感）");
+Environment.SetEnvironmentVariable(PortableDataFolderScope.PortableLocalEnvironmentVariable, "0");
+Check(!PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量 =0 → 不算真值");
+Environment.SetEnvironmentVariable(PortableDataFolderScope.PortableLocalEnvironmentVariable, "banana");
+Check(!PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量 =banana → 不算真值");
+File.WriteAllText(Path.Combine(portableRoot, PortableDataFolderScope.PortableMarkerFileName), "");
+Check(PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量 =0 但标记在 → 还是真便携（标记兜底）");
+Environment.SetEnvironmentVariable(PortableDataFolderScope.PortableLocalEnvironmentVariable, null);
+Check(PortableDataFolderScope.IsPortableLocalEnabled(portableRoot), "环境变量清掉、标记还在 → 仍真便携");
+
+
+Console.WriteLine("== 34. 临时目录统一入口（真便携 → 便携目录内；否则就是 %TEMP%） ==");
+string? savedTempOverride = TemporaryFolder.Override;
+try
+{
+    TemporaryFolder.Override = null;
+    Check(TemporaryFolder.Path.TrimEnd(Path.DirectorySeparatorChar)
+          == Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), "没设 Override 时就是系统 %TEMP%（行为没变）");
+
+    string localTemp = Path.Combine(root, "portable-temp");
+    TemporaryFolder.Override = localTemp;
+    string resolvedTemp = TemporaryFolder.Path;
+    Check(Directory.Exists(localTemp), "设了 Override，取 Path 时自动把目录建出来");
+    Check(resolvedTemp.StartsWith(localTemp, StringComparison.OrdinalIgnoreCase), "Path 指到便携目录里");
+    Check(resolvedTemp.EndsWith(Path.DirectorySeparatorChar), "结尾带分隔符（Path.Combine 才拼得对）");
+    Check(Path.Combine(TemporaryFolder.Path, "x.zip").StartsWith(localTemp, StringComparison.OrdinalIgnoreCase),
+        "Path.Combine 拼出来的文件落在便携目录里，不会跑到 %TEMP%");
+
+    TemporaryFolder.Override = "   ";
+    Check(TemporaryFolder.Path.TrimEnd(Path.DirectorySeparatorChar)
+          == Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), "传空白 → 回到系统 %TEMP%（不把空白当目录名）");
+
+    TemporaryFolder.Override = null;
+    Check(TemporaryFolder.Path.TrimEnd(Path.DirectorySeparatorChar)
+          == Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar), "传 null → 回到系统 %TEMP%");
+}
+finally
+{
+    TemporaryFolder.Override = savedTempOverride;
+}
+Check(TemporaryFolder.Override == savedTempOverride, "测试完把 Override 还原");
 
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");

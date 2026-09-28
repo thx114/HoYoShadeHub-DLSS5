@@ -1,3 +1,4 @@
+using HoYoShadeHub.Core;
 using System.Diagnostics;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Services;
@@ -120,7 +121,7 @@ public static class DllInstaller
 
             Directory.CreateDirectory(addonsDirectory);
 
-            tempZip = Path.Combine(Path.GetTempPath(), $"hysx-dll-{Guid.NewGuid():N}.zip");
+            tempZip = Path.Combine(TemporaryFolder.Path, $"hysx-dll-{Guid.NewGuid():N}.zip");
 
             var downloader = new DownloadService();
             await downloader.DownloadToFileAsync(component.Url, tempZip, expectedSha256: null, progress, cancellationToken, pauseToken);

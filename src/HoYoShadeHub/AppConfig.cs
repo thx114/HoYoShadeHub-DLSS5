@@ -74,6 +74,15 @@ public static class AppConfig
                 InstallType = HoYoShadeHub.RPC.Update.Metadata.InstallType.Setup;
             }
 
+            // 「真便携」：便携目录里放了 .portable 标记（或设了 HYSHADE_PORTABLE_LOCAL=1）时，
+            // 缓存 / config.ini / 数据库备份 / GitHub 缓存全部留在便携目录内，完全不碰 C: 盘。
+            // 可移动盘本来就落在 .cache，这里只是把「固定盘也想真便携」这条路补上。
+            if (IsPortable)
+            {
+                IsPortableLocal = IsAppInRemovableStorage
+                    || HoYoShadeHub.Extensions.Services.PortableDataFolderScope.IsPortableLocalEnabled(parentFolder);
+            }
+
             if (IsAppInRemovableStorage && IsPortable)
             {
                 CacheFolder = Path.Combine(parentFolder!, ".cache");
@@ -83,6 +92,12 @@ public static class AppConfig
             {
                 CacheFolder = Path.Combine(Path.GetPathRoot(AppContext.BaseDirectory)!, ".HoYoShadeHubCache");
                 ConfigPath = Path.Combine(CacheFolder, "config.ini");
+            }
+            else if (IsPortable && IsPortableLocal)
+            {
+                // 真便携：缓存也在便携目录里（webview / thumb / update / github-cache 全跟着走）
+                CacheFolder = Path.Combine(parentFolder!, ".cache");
+                ConfigPath = Path.Combine(parentFolder!, "config.ini");
             }
             else if (IsPortable)
             {
@@ -104,6 +119,16 @@ public static class AppConfig
             Directory.CreateDirectory(LogFolder);
             var webviewFolder = Path.Combine(CacheFolder, "webview");
             Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", webviewFolder, EnvironmentVariableTarget.Process);
+
+            // 真便携：GitHub 发布信息缓存默认在 %LOCALAPPDATA%\HoYoShadeHub\github-cache（Extensions 层
+            // 拿不到 AppConfig），这里显式改到便携目录里，免得留一条 C: 的写路径。
+            // 真便携：下载中的 zip / 解压中间文件 / 各种备份的临时目录也放进便携目录，
+            // 不再往 %TEMP%（C: 盘）写，也不会读到那儿残留的中间文件。
+            if (IsPortableLocal && !string.IsNullOrWhiteSpace(CacheFolder))
+            {
+                HoYoShadeHub.Extensions.Services.GithubReleaseResolver.CacheDirectory = Path.Combine(CacheFolder, "github-cache");
+                TemporaryFolder.Override = Path.Combine(CacheFolder, "temp");
+            }
 
             using WindowsIdentity identity = WindowsIdentity.GetCurrent();
             WindowsPrincipal principal = new WindowsPrincipal(identity);
@@ -331,6 +356,14 @@ public static class AppConfig
 
 
     public static bool IsAppInRemovableStorage { get; private set; }
+
+
+    /// <summary>
+    /// 「真便携」：缓存 / 配置 / 数据库备份全在便携目录内部，一个字节都不写 C: 盘。
+    /// 由便携根目录里的 <c>.portable</c> 标记（或环境变量 <c>HYSHADE_PORTABLE_LOCAL=1</c>）打开，
+    /// 规则见 <see cref="HoYoShadeHub.Extensions.Services.PortableDataFolderScope.IsPortableLocalEnabled"/>。
+    /// </summary>
+    public static bool IsPortableLocal { get; private set; }
 
 
     public static CultureInfo SystemCulture { get; private set; }
@@ -575,8 +608,10 @@ public static class AppConfig
                                                   .Enrich.FromLogContext()
                                                   .CreateLogger();
             Log.Information($"Welcome to HoYoShadeHub v{AppVersion}\r\nSystem: {Environment.OSVersion}\r\nCommand Line: {Environment.CommandLine}");
-            Log.Information("UserDataFolder: {folder} (source: {source}, portable: {portable})",
-                UserDataFolder ?? "(null)", UserDataFolderSource ?? "(unknown)", IsPortable);
+            Log.Information("UserDataFolder: {folder} (source: {source}, portable: {portable}, portableLocal: {portableLocal})",
+                UserDataFolder ?? "(null)", UserDataFolderSource ?? "(unknown)", IsPortable, IsPortableLocal);
+            Log.Information("CacheFolder: {cache}; Config: {config}; Log: {log}",
+                CacheFolder ?? "(null)", ConfigPath ?? "(null)", LogFolder ?? "(null)");
             Log.Information("Database: {database} (error: {error})",
                 DatabaseService.DatabasePath ?? "(not initialized)", DatabaseService.InitializationError ?? "(none)");
 

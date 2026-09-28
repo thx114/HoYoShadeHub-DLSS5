@@ -33,6 +33,11 @@
 .EXAMPLE
     .\package.ps1 -Version 1.3.6 -Architecture ARM64
     构建 ARM64 版本。
+
+.EXAMPLE
+    .\package.ps1 -Version 1.3.9.1 -PortableLocal
+    「真便携」包：包根多一个 .portable 标记，缓存 / config.ini / 数据库备份全在包内（<包根>\.cache），
+    一个字节都不写 C: 盘。不传这个开关就是老行为（缓存仍然走 %LOCALAPPDATA%\HoYoShadeHub）。
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -51,7 +56,11 @@ param(
     [string] $DotNet,
 
     # 打包后跳过 zip 完整性校验
-    [switch] $SkipVerify
+    [switch] $SkipVerify,
+
+    # 「真便携」：包根写入 .portable 标记 —— 主程序据此把缓存 / config.ini / 数据库备份全部
+    # 留在便携目录内。默认关闭（老用户升级不上来缓存目录突然搬家）
+    [switch] $PortableLocal
 )
 
 $ErrorActionPreference = "Stop"
@@ -147,6 +156,17 @@ try {
 
     # 不打包 config.ini：解压覆盖旧客户端时需保留用户已有配置。
     Remove-Item (Join-Path $outDir "config.ini") -Force -ErrorAction SilentlyContinue
+
+    # 「真便携」标记：<包根>\.portable。主程序 AppConfig 看到它就把 CacheFolder / ConfigPath /
+    # 数据库自动备份 / github 缓存全部指到包内（.cache），不再碰 %LOCALAPPDATA%。见 PortableDataFolderScope。
+    $markerPath = Join-Path $outDir ".portable"
+    if ($PortableLocal) {
+        Write-Host "==> 写入真便携标记 => $markerPath" -ForegroundColor Cyan
+        Set-Content -Path $markerPath -Value "portable-local=1" -Encoding UTF8
+    }
+    else {
+        Remove-Item $markerPath -Force -ErrorAction SilentlyContinue
+    }
 
     # 清掉同一输出目录里历史版本的 app-*：否则它们会被一起塞进 zip（实测每发一版 zip 就大出 175MB，
     # 1.3.8.5 那个包因此涨到 877MB，而 1.3.8.1 只有 180MB）。
