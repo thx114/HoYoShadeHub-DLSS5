@@ -324,6 +324,12 @@ public sealed class ReShadeProfile
         _ini.Save(FilePath);
     }
 
+    /// <summary>读任意节的任意键（引导器这类跨段逻辑用；类型化的访问器优先）</summary>
+    public string? GetValue(string section, string key) => _ini.GetValue(section, key);
+
+    /// <summary>写任意节的任意键（键不存在就插到节末尾，节不存在就新建）</summary>
+    public void SetValue(string section, string key, string value) => _ini.SetValue(section, key, value);
+
     /// <summary>[ADDON] AddonPath —— 插件真身所在目录</summary>
     public string? AddonPath => _ini.GetValue(AddonSection, "AddonPath")?.Trim().TrimEnd('\\', '/');
 

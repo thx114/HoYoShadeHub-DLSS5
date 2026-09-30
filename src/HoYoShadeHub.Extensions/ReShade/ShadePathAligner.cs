@@ -27,10 +27,18 @@ public sealed record ShadePathAlignResult(IReadOnlyList<string> ChangedKeys, str
 /// 只动「长得像 HoYoShade 根目录」的那几个键，而且只把根前缀换掉：
 /// </para>
 /// <list type="bullet">
-/// <item>相对路径（<c>.\reshade-shaders\Addons</c>）不动 —— 它本来就跟着 ReShade DLL 走，永远是对的；</item>
 /// <item>指向别处、不带 HoYoShade 特征目录的路径不动（比如用户自己指定的插件目录）；</item>
 /// <item>其余键、注释、顺序、[RENODX-*] 那些调好的参数原样保留。</item>
 /// </list>
+///
+/// <para>
+/// 相对路径要分两种：<b>宿主根目录里那份 ini</b> 的相对路径跟着 ReShade DLL 走，永远是对的，不动；
+/// 但<b>游戏目录里那份 ini</b> 的相对路径（<c>.\reshade-shaders\Addons</c> 这种，完整包把绝对路径
+/// 改写成相对后从模板复制过来就会有）会按 ini 所在目录解析、落到游戏目录下去 —— 那里根本没有
+/// reshade-shaders，插件全加载不到（用户截图：提示条报「指向游戏目录\reshade-shaders\Addons」，
+/// 按钮却说「不用改」）。这种相对路径解析结果在宿主根目录之外、且带 HoYoShade 特征目录段的，
+/// 改写成当前根目录下的绝对路径。
+/// </para>
 /// </summary>
 public static class ShadePathAligner
 {
@@ -74,6 +82,7 @@ public static class ShadePathAligner
         }
 
         string root = TrimSeparators(shadeRoot.Trim());
+        string iniDir = TrimSeparators(Path.GetDirectoryName(Path.GetFullPath(gameIniPath))!);
         IniDocument ini = IniDocument.Load(gameIniPath);
         List<string> changed = [];
         string? previousRoot = null;
@@ -109,7 +118,7 @@ public static class ShadePathAligner
                 continue;
             }
 
-            string aligned = AlignValue(value, root, ref previousRoot);
+            string aligned = AlignValue(value, root, iniDir, ref previousRoot);
             if (string.Equals(aligned, value, StringComparison.Ordinal))
             {
                 continue;
@@ -137,7 +146,7 @@ public static class ShadePathAligner
         }
 
         string? ignored = null;
-        return AlignValue(value, TrimSeparators(shadeRoot.Trim()), ref ignored);
+        return AlignValue(value, TrimSeparators(shadeRoot.Trim()), iniDir: null, ref ignored);
     }
 
     /// <summary>从一条绝对路径里反推 HoYoShade 根目录；认不出来返回 null</summary>
@@ -173,7 +182,7 @@ public static class ShadePathAligner
         return null;
     }
 
-    private static string AlignValue(string value, string root, ref string? previousRoot)
+    private static string AlignValue(string value, string root, string? iniDir, ref string? previousRoot)
     {
         string[] parts = value.Split(',');
         bool any = false;
@@ -187,14 +196,39 @@ public static class ShadePathAligner
                 continue;
             }
 
-            string? oldRoot = RootOf(part);
+            string trimmed = part.Trim();
+
+            // 相对路径：宿主根目录里那份 ini 的相对路径永远是对的（跟 DLL 走），不动；
+            // 游戏目录里那份 ini 的相对路径会按 ini 所在目录解析 —— 落在宿主根之外、
+            // 又带 HoYoShade 特征目录段（.\reshade-shaders\Addons 这种）的，改成根下绝对路径
+            if (!Path.IsPathFullyQualified(trimmed))
+            {
+                // 去掉开头的 "./" 再认特征段（".\reshade-shaders\Addons" 的段前是点不是分隔符）
+                string cleaned = trimmed;
+                while (cleaned.StartsWith("./", StringComparison.Ordinal) || cleaned.StartsWith(".\\", StringComparison.Ordinal))
+                {
+                    cleaned = cleaned[2..];
+                }
+
+                if (iniDir is not null
+                    && HasAnchorSegment(cleaned)
+                    && TryResolveOutsideRoot(cleaned, iniDir, root, out string absolute))
+                {
+                    parts[i] = absolute;
+                    any = true;
+                }
+
+                continue;
+            }
+
+            string? oldRoot = RootOf(trimmed);
             if (oldRoot is null || PathsEqual(oldRoot, root))
             {
                 continue;
             }
 
             previousRoot ??= oldRoot;
-            parts[i] = root + part.Trim()[oldRoot.Length..];
+            parts[i] = root + trimmed[oldRoot.Length..];
             any = true;
         }
 
@@ -211,6 +245,60 @@ public static class ShadePathAligner
 
     private static bool PathsEqual(string a, string b) =>
         string.Equals(TrimSeparators(a.Trim()), TrimSeparators(b.Trim()), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>这条相对路径里有没有 HoYoShade 特征目录段（<c>reshade-shaders</c> / <c>Presets</c> …）。
+    /// 段在开头也算（<c>IndexOfSegment</c> 只服务绝对路径，开头一律返回 miss，这里单独写）</summary>
+    private static bool HasAnchorSegment(string path)
+    {
+        foreach (string anchor in RootAnchors)
+        {
+            int from = 0;
+            while ((from = path.IndexOf(anchor, from, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                int after = from + anchor.Length;
+                bool right = after >= path.Length || path[after] == '\\' || path[after] == '/';
+                bool left = from == 0 || path[from - 1] == '\\' || path[from - 1] == '/';
+
+                if (left && right)
+                {
+                    return true;
+                }
+
+                from++;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 把游戏 ini 里的相对路径按 ini 所在目录解析；解析结果落在宿主根目录之外时，
+    /// 给出「当前根目录 + 原相对路径」的绝对路径。
+    /// </summary>
+    private static bool TryResolveOutsideRoot(string relativePath, string iniDir, string root, out string absolute)
+    {
+        absolute = string.Empty;
+
+        try
+        {
+            string resolved = TrimSeparators(Path.GetFullPath(Path.Combine(iniDir, relativePath)));
+            bool outside = !resolved.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase)
+                           && !PathsEqual(resolved, root);
+
+            if (!outside)
+            {
+                return false;
+            }
+
+            string tail = relativePath.Trim().TrimStart('.', '\\', '/');
+            absolute = root + "\\" + tail;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static string TrimSeparators(string path) => path.TrimEnd('\\', '/');
 

@@ -208,52 +208,23 @@ public sealed partial class GamePluginPage : PageBase
     /// </summary>
     private void AutoFixGameIni(GameEntry entry)
     {
-        if (_host is null || entry.ReShadeIniPath is not { } ini)
-        {
-            return;
-        }
-
         try
         {
-            if (!File.Exists(ini))
+            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, _host);
+            if (result.Failed)
             {
-                if (File.Exists(_host.ReShadeIniPath))
-                {
-                    File.Copy(_host.ReShadeIniPath, ini);
-                    _logger.LogInformation("Auto-created game ReShade.ini: {Template} -> {Ini}", _host.ReShadeIniPath, ini);
-                }
-
-                return;   // 新复制的模板本来就指向当前宿主，无需再对齐
-            }
-
-            string? addonDir = ReShadeProfile.Load(ini).ResolveAddonDirectory();
-
-            // 专属插件包 / 宿主根目录内的子目录：正常状态，不算「指错了」
-            if (GameAddonPack.IsPackDirectory(addonDir) || IsInsideHostRoot(addonDir, _host.RootPath))
-            {
+                _logger.LogWarning("Auto-fix game ReShade.ini failed for {Game}", entry.DisplayName);
                 return;
             }
 
-            string? hostAddons = _host.AddonsPath;
-            if (string.IsNullOrWhiteSpace(addonDir) || string.IsNullOrWhiteSpace(hostAddons))
+            if (result.CreatedFromTemplate)
             {
-                return;
+                _logger.LogInformation("Auto-created game ReShade.ini from template for {Game}", entry.DisplayName);
             }
-
-            bool differs = !string.Equals(
-                addonDir.TrimEnd('\\', '/'),
-                hostAddons.TrimEnd('\\', '/'),
-                StringComparison.OrdinalIgnoreCase);
-            if (!differs)
+            if (result.Aligned)
             {
-                return;
-            }
-
-            ShadePathAlignResult align = ShadePathAligner.Align(ini, _host);
-            if (align.Changed)
-            {
-                _logger.LogInformation("Auto-aligned game ReShade.ini {Ini}: {Old} -> {New} ({Keys})",
-                    ini, align.PreviousRoot, _host.RootPath, string.Join(", ", align.ChangedKeys));
+                _logger.LogInformation("Auto-aligned game ReShade.ini for {Game}: {Keys}",
+                    entry.DisplayName, string.Join(", ", result.AlignKeys));
             }
         }
         catch (Exception ex)

@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Logging;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Features.PlayTime;
+using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Helpers;
 using System;
 using System.Collections.Generic;
@@ -197,7 +199,7 @@ internal partial class GameLauncherService
         }
         else
         {
-            _logger.LogWarning("config.ini not found: {path}", config);
+            _logger.LogDebug("config.ini not found: {path}", config);
             return null;
         }
     }
@@ -392,6 +394,7 @@ internal partial class GameLauncherService
             {
                 throw new Exception($"Game is running: {existingProcess.ProcessName}.exe ({existingProcess.Id}).");
             }
+            EnsureGameIniReady(gameId);
             string? exe = null, arg = null, verb = null;
             if (Directory.Exists(installPath))
             {
@@ -488,6 +491,42 @@ internal partial class GameLauncherService
 
 
 
+
+    /// <summary>
+    /// 启动前把这个游戏自己的 ReShade.ini 收拾到可注入状态（缺了从模板补、指错宿主拉回、
+    /// 预生成第二个 runtime 的 ReShade2.ini 并把教程标记成已完成，免得每次启动弹欢迎窗口）。
+    /// 失败只记日志，不挡启动。
+    /// </summary>
+    private void EnsureGameIniReady(GameId gameId)
+    {
+        try
+        {
+            var discovery = GameCatalog.CreateService();
+            GameEntry? entry = GameCatalog.GetOrCreate(discovery, gameId);
+            if (entry?.ReShadeIniPath is null)
+            {
+                return;
+            }
+
+            var host = PluginHostLocator.Resolve(out _);
+            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, host);
+            if (result.Failed)
+            {
+                _logger.LogWarning("Bootstrap game ReShade.ini failed for {Game}", gameId);
+            }
+            else if (result.ChangedAnything)
+            {
+                _logger.LogInformation(
+                    "Bootstrapped game ReShade.ini for {Game}: template={Template}, tutorial={Tutorial}, secondary={Secondary}, aligned={Aligned} ({Keys})",
+                    gameId, result.CreatedFromTemplate, result.TutorialMarkedDone, result.CreatedSecondary,
+                    result.Aligned, string.Join(", ", result.AlignKeys));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Bootstrap game ReShade.ini for {Game}", gameId);
+        }
+    }
 
     /// <summary>
     /// 修改游戏安装目录

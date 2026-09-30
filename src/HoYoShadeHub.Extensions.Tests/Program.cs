@@ -1547,7 +1547,12 @@ Check(alignedProfile.ResolveAddonDirectory() == Path.Combine(shadeRoot, "reshade
 
 string iniText = File.ReadAllText(gameIniPath);
 Check(iniText.Contains(shadeRoot + @"\reshade-shaders\Shaders\**"), "EffectSearchPaths 换成了当前根");
-Check(iniText.Contains(@".\reshade-shaders\Shaders\**"), "相对路径那条原样留着（它跟着 DLL 走，本来就是对的）");
+// 游戏目录 ini 里的相对路径按 ini 所在目录解析 = 游戏目录下，那里没有 reshade-shaders ——
+// 必须改写到当前根下（以前原样留着 → 提示条报不一致、按钮却说「不用改」）
+Check(!iniText.Contains(@".\reshade-shaders\Shaders\**"), "游戏 ini 里的相对搜索路径不再原样留着");
+Check(iniText.IndexOf("reshade-shaders\\Shaders\\**", StringComparison.OrdinalIgnoreCase) >= 0
+      && iniText.Split(shadeRoot + @"\reshade-shaders\Shaders\**").Length - 1 == 1,
+    "相对那条被改写到当前根，且和绝对那条去重成一条");
 Check(iniText.Contains("DirectNeuralRenderingHookPoint=4"), "[RENODX-DLSS] 里调好的参数没被动");
 Check(iniText.Contains("DisabledAddons=RenoDX DLSS@renodx-dlss5-super-anus.addon64"), "每个游戏的插件开关没被动");
 Check(iniText.Contains(@"IntermediateCachePath=C:\Users\me\AppData\Local\Temp\ReShade"), "跟 HoYoShade 无关的路径没被动");
@@ -1593,6 +1598,37 @@ Check(!afterAlign.Contains("ProgramData"), "Seri 的路径被改写成当前根�
 Check(afterAlign.Split(shadeRoot + @"\reshade-shaders\Shaders\**").Length - 1 == 1, "当前根的搜索路径只剩一条（去重生效）");
 Check(!ShadePathAligner.Align(seriIni, shadeRoot).Changed, "修完再对齐是幂等的");
 try { Directory.Delete(Path.GetDirectoryName(seriIni)!, true); } catch { }
+
+// 用户截图那个 case：完整包把绝对路径改写成相对，模板复制到游戏目录后 AddonPath 变成相对路径，
+// 按 ini 所在目录解析落到游戏目录\reshade-shaders\Addons（不存在）——
+// 提示条报「指向游戏目录」，对齐器却跳过相对路径 → 点「指回」弹「不用改」，死锁
+string relativeIni = Path.Combine(root, "relative-game", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(relativeIni)!);
+File.WriteAllLines(relativeIni, [
+    "[ADDON]",
+    @"AddonPath=.\reshade-shaders\Addons",
+]);
+
+ShadePathAlignResult relativeAligned = ShadePathAligner.Align(relativeIni, shadeRoot);
+Check(relativeAligned.ChangedKeys.Contains("[ADDON] AddonPath"), "游戏 ini 的相对 AddonPath 被指回当前根");
+Check(ReShadeProfile.Load(relativeIni).ResolveAddonDirectory() == Path.Combine(shadeRoot, "reshade-shaders", "Addons"),
+    "改完后插件页算出来的目录就是当前 HoYoShade");
+Check(!ShadePathAligner.Align(relativeIni, shadeRoot).Changed, "改完再对齐是幂等的");
+try { Directory.Delete(Path.GetDirectoryName(relativeIni)!, true); } catch { }
+
+// 反过来：宿主根目录里那份 ini 的相对路径跟着 DLL 走，永远是对的 —— 不动
+string hostIni = Path.Combine(shadeRoot, "ReShade.ini");
+Directory.CreateDirectory(shadeRoot);
+string hostIniBackup = File.Exists(hostIni) ? File.ReadAllText(hostIni) : string.Empty;
+File.WriteAllLines(hostIni, [
+    "[ADDON]",
+    @"AddonPath=.\reshade-shaders\Addons",
+    "",
+    "[GENERAL]",
+    @"EffectSearchPaths=.\reshade-shaders\Shaders\**",
+]);
+Check(!ShadePathAligner.Align(hostIni, shadeRoot).Changed, "宿主 ini 里的相对路径不动");
+if (hostIniBackup.Length > 0) { File.WriteAllText(hostIni, hostIniBackup); } else { File.Delete(hostIni); }
 
 Console.WriteLine("== 25. OptiScaler 本地库（下载 / 单选 / 删除）==");
 string optiRoot = Path.Combine(userDataFolder, "OptiScaler");
@@ -2877,6 +2913,53 @@ foreach (string input in new[]
 File.Delete(minimalIni);
 Check(!OptiScalerRuntime.EnsureConfigDllPath(minimalBuild), "missing INI not fabricated");
 Check(!OptiScalerRuntime.EnsureConfigDllPath(Path.Combine(root, "absent-build")), "missing build not fabricated");
+
+Console.WriteLine("== 启动前引导：游戏 ReShade.ini 缺失 / 教程标记 / 第二个 runtime 的 ReShade2.ini ==");
+string bootHostRoot = Path.Combine(root, "bootstrap-host");
+Directory.CreateDirectory(Path.Combine(bootHostRoot, "reshade-shaders", "Addons"));
+File.WriteAllText(Path.Combine(bootHostRoot, "ReShade64.dll"), "fake");
+File.WriteAllText(Path.Combine(bootHostRoot, "ReShade.ini"),
+    "[ADDON]\r\nAddonPath=" + Path.Combine(bootHostRoot, "reshade-shaders", "Addons") + "\\\r\n\r\n[OVERLAY]\r\nTutorialProgress=0\r\n");
+var bootHost = new ShadeHost(bootHostRoot);
+
+// ① ini 缺失：从模板复制 + 教程标 4 + 预生成 ReShade2.ini
+string bootGameDir = Path.Combine(root, "bootstrap-game");
+Directory.CreateDirectory(bootGameDir);
+File.WriteAllText(Path.Combine(bootGameDir, "StarRail.exe"), "fake");
+var bootEntry = new GameEntry("test:bootstrap", "引导测试") { ExePath = Path.Combine(bootGameDir, "StarRail.exe") };
+
+GameIniBootstrapResult boot1 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(boot1.CreatedFromTemplate && boot1.TutorialMarkedDone && boot1.CreatedSecondary,
+    "缺失时：复制模板 + 教程标完成 + 预生成 ReShade2.ini");
+Check(File.Exists(Path.Combine(bootGameDir, "ReShade.ini")), "主 ini 已创建");
+Check(ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("OVERLAY", "TutorialProgress") == "4", "主 ini 教程标记 = 4");
+Check(File.Exists(Path.Combine(bootGameDir, "ReShade2.ini")), "ReShade2.ini 已预生成");
+Check(ReShadeProfile.Load(Path.Combine(bootGameDir, "ReShade2.ini")).GetValue("OVERLAY", "TutorialProgress") == "4",
+    "ReShade2.ini 带上教程标记");
+
+// ② 再跑一遍：什么都不动（幂等）
+GameIniBootstrapResult boot2 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(!boot2.ChangedAnything && !boot2.Failed, "第二次 Ensure 什么都不改");
+
+// ③ ReShade2.ini 被用户删了 → 重新预生成；主 ini 里的用户改动不被抹掉
+File.Delete(Path.Combine(bootGameDir, "ReShade2.ini"));
+ReShadeProfile bootProfile3 = ReShadeProfile.Load(bootEntry.ReShadeIniPath!);
+bootProfile3.SetValue("GENERAL", "PresetPath", "X:\\custom.ini");
+bootProfile3.Save();
+GameIniBootstrapResult boot3 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(boot3.CreatedSecondary && !boot3.CreatedFromTemplate, "只补 ReShade2.ini");
+Check(ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("GENERAL", "PresetPath") == "X:\\custom.ini",
+    "主 ini 用户配置不被覆盖");
+
+// ④ 没有宿主（host = null）时：已有 ini 仍收拾教程标记，缺 ini 则报 MissingTemplate
+GameIniBootstrapResult boot4 = GameIniBootstrap.Ensure(bootEntry, null);
+Check(!boot4.Failed && !boot4.CreatedFromTemplate, "host = null 也安全");
+var orphanDir = Path.Combine(root, "bootstrap-orphan");
+Directory.CreateDirectory(orphanDir);
+File.WriteAllText(Path.Combine(orphanDir, "StarRail.exe"), "fake");
+var orphanEntry = new GameEntry("test:orphan", "无宿主") { ExePath = Path.Combine(orphanDir, "StarRail.exe") };
+GameIniBootstrapResult boot5 = GameIniBootstrap.Ensure(orphanEntry, null);
+Check(boot5.MissingTemplate && !File.Exists(orphanEntry.ReShadeIniPath!), "没宿主且没 ini → MissingTemplate，不硬造");
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
