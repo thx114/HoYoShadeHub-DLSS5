@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Hosting;
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace HoYoShadeHub.Features.Xxmi;
 
@@ -33,15 +34,49 @@ namespace HoYoShadeHub.Features.Xxmi;
 internal static class BackdropBlur
 {
     /// <summary>
+    /// 模糊效果的 <see cref="CompositionEffectFactory"/> 按 <see cref="Compositor"/> + 半径缓存。
+    /// GridView 滚动时卡片反复 Loaded，每次都重新编译一遍 GaussianBlur effect
+    /// 既慢又会堆积大量 factory；同一 compositor + 半径只编译一次。
+    /// </summary>
+    private static readonly ConditionalWeakTable<Compositor, FactoryCache> Factories = new();
+
+    private sealed class FactoryCache
+    {
+        public CompositionEffectFactory? Radius22 { get; set; }
+    }
+
+    private static CompositionEffectFactory GetFactory(Compositor compositor, float blurRadius)
+    {
+        FactoryCache cache = Factories.GetValue(compositor, _ => new FactoryCache());
+
+        if (cache.Radius22 is { } cached)
+        {
+            return cached;
+        }
+
+        var blur = new GaussianBlurEffect
+        {
+            Name = "Blur",
+            BlurAmount = blurRadius,
+            BorderMode = EffectBorderMode.Hard,
+            Optimization = EffectOptimization.Balanced,
+            Source = new CompositionEffectSourceParameter("backdrop"),
+        };
+
+        return cache.Radius22 = compositor.CreateEffectFactory(blur);
+    }
+
+    /// <summary>
     /// 把 <paramref name="target"/> 背后的内容做高斯模糊。元素的 <c>Background</c> 负责染色。
+    /// 返回是否成功挂上；<b>失败或之后 Unloaded 都要允许调用方再 Apply 一次</b>。
     /// </summary>
     /// <param name="target">要变成模糊层的元素（通常是个 Border）</param>
     /// <param name="blurRadius">模糊半径，越大越糊（12~28 比较自然）</param>
-    public static void Apply(FrameworkElement target, float blurRadius = 22f)
+    public static bool Apply(FrameworkElement target, float blurRadius = 22f)
     {
         if (target is null)
         {
-            return;
+            return false;
         }
 
         try
@@ -49,17 +84,7 @@ internal static class BackdropBlur
             Visual host = ElementCompositionPreview.GetElementVisual(target);
             Compositor compositor = host.Compositor;
 
-            var blur = new GaussianBlurEffect
-            {
-                Name = "Blur",
-                BlurAmount = blurRadius,
-                BorderMode = EffectBorderMode.Hard,
-                Optimization = EffectOptimization.Balanced,
-                Source = new CompositionEffectSourceParameter("backdrop"),
-            };
-
-            CompositionEffectFactory factory = compositor.CreateEffectFactory(blur);
-            CompositionEffectBrush brush = factory.CreateBrush();
+            CompositionEffectBrush brush = GetFactory(compositor, blurRadius).CreateBrush();
             brush.SetSourceParameter("backdrop", compositor.CreateBackdropBrush());
 
             SpriteVisual visual = compositor.CreateSpriteVisual();
@@ -68,19 +93,44 @@ internal static class BackdropBlur
                 (float)Math.Max(target.ActualWidth, 1),
                 (float)Math.Max(target.ActualHeight, 1));
 
-            target.SizeChanged += (_, e) =>
+            void OnSizeChanged(object sender, SizeChangedEventArgs e)
             {
                 if (e.NewSize.Width > 0 && e.NewSize.Height > 0)
                 {
                     visual.Size = new Vector2((float)e.NewSize.Width, (float)e.NewSize.Height);
                 }
-            };
+            }
+
+            // 虚拟化容器回收时会 Unloaded：必须把挂上去的 SpriteVisual 摘下来。
+            // 留着 backdrop brush 的 visual 跟着容器进回收池，是滚动中崩溃的常见来源
+            // （backdrop 采样的是「背后的内容」，容器一摘，采样目标没了）。
+            void OnUnloaded(object sender, RoutedEventArgs e)
+            {
+                target.SizeChanged -= OnSizeChanged;
+                target.Unloaded -= OnUnloaded;
+
+                try
+                {
+                    ElementCompositionPreview.SetElementChildVisual(target, null);
+                    visual.Dispose();
+                    brush.Dispose();
+                }
+                catch (Exception)
+                {
+                    // 摘不下来就算了 —— XAML 底色还在
+                }
+            }
+
+            target.SizeChanged += OnSizeChanged;
+            target.Unloaded += OnUnloaded;
 
             ElementCompositionPreview.SetElementChildVisual(target, visual);
+            return true;
         }
         catch (Exception)
         {
             // 模糊失败不能连累卡片显示 —— XAML 里的半透明底色会兜底
+            return false;
         }
     }
 }

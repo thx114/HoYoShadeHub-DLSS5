@@ -814,10 +814,24 @@ public sealed partial class XxmiPage : PageBase
             return;
         }
 
-        // Tag 打标，避免卡片被复用时重复挂一遍
-        border.Tag = true;
+        if (BackdropBlur.Apply(border))
+        {
+            // Tag 打标，避免卡片被复用时重复挂一遍。
+            // 虚拟化容器回收（Unloaded）时 BackdropBlur 会把 visual 摘掉，
+            // 这里把 Tag 清掉，容器翻回来时好重新挂。
+            border.Tag = true;
+            border.Unloaded += Border_NameBlur_Unloaded;
+        }
+    }
 
-        BackdropBlur.Apply(border);
+    /// <summary>容器被回收：清掉打标，Loaded 再触发时重新挂模糊层</summary>
+    private void Border_NameBlur_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement border)
+        {
+            border.Unloaded -= Border_NameBlur_Unloaded;
+            border.Tag = null;
+        }
     }
 
     /// <summary>
