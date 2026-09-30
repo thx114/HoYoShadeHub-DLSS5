@@ -1,4 +1,6 @@
+using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Modules;
 using Microsoft.Extensions.Logging;
 using System;
@@ -23,16 +25,18 @@ internal static class RemoteCatalogDefaults
 internal sealed record RemoteCatalogResult(bool Fetched, bool PluginsUpdated, bool OptiScalerUpdated, bool ModulesUpdated, string Message);
 
 /// <summary>
-/// 远端目录（插件 + OptiScaler）的拉取与缓存。
+/// 远端目录（插件 + OptiScaler + 模块）的拉取与缓存。
 ///
 /// <para>
-/// 约定见 docs/OPEN-SOURCE-PLAN.md §4：仓库根 <c>catalog/plugins.json</c> 与 <c>catalog/optiscaler.json</c>，
-/// 按 id 覆盖内置条目 —— 改插件来源 / 加新分支机构**不用重新发版**。
+/// 2026-09-30 起目录**完全由 GitHub 提供**：启动器代码里没有任何内置条目，
+/// 新增插件 / 模块 / OptiScaler 来源只改仓库里的 catalog/*.json，不重新发版。
+/// 拉到的文件缓存在 <c>&lt;用户数据目录&gt;\.hysx\catalog\</c>，页面从缓存读（离线可用）。
 /// </para>
 ///
 /// <para>
 /// **每天最多自动拉一次**（用户要求）：超过 24 小时才自动拉；设置页的按钮用 force 绕过节流。
-/// 拉到的文件缓存在 <c>&lt;用户数据目录&gt;\.hysx\catalog\</c>，页面从缓存读（离线可用）。
+/// 首跑还没有缓存时，用随启动器发布的 <c>catalog\*.json</c> 副本（仓库根 catalog/ 目录，
+/// 构建时拷进输出）做种子，离线也能开出完整的插件 / 模块 / OptiScaler 列表。
 /// </para>
 /// </summary>
 internal static class RemoteCatalogService
@@ -54,6 +58,69 @@ internal static class RemoteCatalogService
     /// <summary>模块目录（catalog/modules.json）的缓存</summary>
     public static string ModulesCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "modules.json");
 
+    /// <summary>同步读插件目录缓存（addon 文件名匹配等同步场景用；没有缓存返回 null）</summary>
+    public static ExtensionCatalogDocument? LoadCachedPlugins()
+        => ExtensionCatalogService.LoadFile(PluginsCachePath);
+
+    /// <summary>随启动器发布的 catalog 副本目录（&lt;exe 目录&gt;\catalog\）；没有返回空串</summary>
+    private static string BundleCatalogDirectory
+    {
+        get
+        {
+            try
+            {
+                string dir = Path.Combine(AppContext.BaseDirectory, "catalog");
+                return Directory.Exists(dir) ? dir : string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 缓存文件缺失时，用随包 catalog 副本做种子（只补缺失，不覆盖已有缓存）。
+    /// 这样首跑离线也能开出完整列表；联网后 24 小时拉取会自然覆盖成最新。
+    /// </summary>
+    public static void SeedFromBundle()
+    {
+        try
+        {
+            string bundle = BundleCatalogDirectory;
+            if (bundle.Length == 0 || CacheDirectory.Length == 0)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(CacheDirectory);
+
+            foreach ((string fileName, string cachePath) in new[]
+            {
+                ("plugins.json", PluginsCachePath),
+                ("optiscaler.json", OptiScalerCachePath),
+                ("modules.json", ModulesCachePath),
+            })
+            {
+                if (File.Exists(cachePath))
+                {
+                    continue;
+                }
+
+                string source = Path.Combine(bundle, fileName);
+                if (File.Exists(source))
+                {
+                    File.Copy(source, cachePath);
+                    _logger.LogInformation("Seeded catalog {File} from bundle copy", fileName);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Seed catalog from bundle failed");
+        }
+    }
+
     /// <summary>离上次成功拉取超过 24 小时（或者从没拉过）</summary>
     public static bool IsRefreshDue => DateTimeOffset.UtcNow - AppConfig.LastCatalogFetchUtc > _interval;
 
@@ -72,7 +139,9 @@ internal static class RemoteCatalogService
 
     public static async Task<RemoteCatalogResult> RefreshAsync(bool force, CancellationToken cancellationToken = default)
     {
-        // 不管这次拉不拉，都先把缓存里的模块目录应用上（打开页面就能用）
+        // 先把随包种子落到缓存（首跑离线也能用），再把缓存里的模块目录应用上
+        //（打开页面就能用 —— 不管这次拉不拉）
+        SeedFromBundle();
         ModuleCatalogFile.Apply(ModulesCachePath);
 
         if (!force && !IsRefreshDue)

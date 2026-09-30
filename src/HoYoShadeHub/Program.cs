@@ -2,11 +2,16 @@ global using HoYoShadeHub.Language;
 using Microsoft.Extensions.Configuration;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.Models;
+using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Features.GameLauncher;
+using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Features.UrlProtocol;
 using HoYoShadeHub.RPC;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -24,7 +29,7 @@ public static class Program
     [global::System.CodeDom.Compiler.GeneratedCodeAttribute("Microsoft.UI.Xaml.Markup.Compiler", " 3.0.0.2411")]
     //[global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
     [global::System.STAThreadAttribute]
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
@@ -34,7 +39,8 @@ public static class Program
             if (args.Length > 0)
             {
                 string arg = args[0].ToLower();
-                if (arg is "rpc" or "playtime")
+                // rpc / playtime / run：静默通道，不弹 UAC 重启（保持调用方控制台 / 无窗口）
+                if (arg is "rpc" or "playtime" or "run" or "auto" or "action")
                 {
                     skip = true;
                 }
@@ -53,7 +59,7 @@ public static class Program
                     System.Diagnostics.Process.Start(info);
                 }
                 catch { }
-                return;
+                return 0;
             }
         }
 
@@ -84,7 +90,7 @@ public static class Program
             if (args[0].ToLower() is "rpc")
             {
                 RpcRunner.Run(args);
-                return;
+                return 0;
             }
             if (args[0].ToLower() is "playtime")
             {
@@ -95,7 +101,12 @@ public static class Program
                     var playtime = AppConfig.GetService<Features.PlayTime.PlayTimeService>();
                     playtime.LogPlayTimeAsync(biz, pid).GetAwaiter().GetResult();
                 }
-                return;
+                return 0;
+            }
+
+            if (args[0].ToLower() is "run" or "auto" or "action")
+            {
+                return RunCliActions(config);
             }
 
             if (args[0].ToLower() is "startgame")
@@ -106,7 +117,7 @@ public static class Program
                 {
                     AppConfig.GetService<GameLauncherService>().StartGameAsync(gameId).GetAwaiter().GetResult();
                 }
-                return;
+                return 0;
             }
 
             if (args[0].ToLower().StartsWith("hoyoshadehub://"))
@@ -115,7 +126,7 @@ public static class Program
                 // 内部 HttpClient 的异步延续若要回到主线程会死锁。
                 if (UrlProtocolService.HandleUrlProtocolAsync(args[0]).ConfigureAwait(false).GetAwaiter().GetResult())
                 {
-                    return;
+                    return 0;
                 }
             }
         }
@@ -130,7 +141,7 @@ public static class Program
                 existing.Set();
             }
             catch { }
-            return;
+            return 0;
         }
 
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
@@ -140,6 +151,116 @@ public static class Program
             global::System.Threading.SynchronizationContext.SetSynchronizationContext(context);
             new App();
         });
+        return 0;
+    }
+
+    /// <summary>
+    /// <c>run</c>：headless 执行动作步骤（与 auto.json 同一套接口词汇），可静默启动游戏。
+    /// 步骤直接来自命令行，不走覆盖包 / 同意弹窗 —— 显式命令行调用本身就是授权。
+    /// 用法：
+    ///   HoYoShadeHub.exe run --biz hkrpg_cn --file steps.json
+    ///   HoYoShadeHub.exe run --biz hkrpg_cn --json "{\"steps\":[{\"action\":\"set_dx12\",\"enabled\":true},{\"action\":\"launch_game\"}]}"
+    /// 退出码：0 全成功；1 有步骤失败 / 参数不对。
+    /// </summary>
+    private static int RunCliActions(IConfiguration config)
+    {
+        try
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+        }
+        catch { }
+
+        string? bizText = config.GetValue<string>("biz");
+        GameId? gameId = string.IsNullOrWhiteSpace(bizText) ? null : GameId.FromGameBiz((GameBiz)bizText);
+        if (gameId is null)
+        {
+            Console.Error.WriteLine("需要 --biz <游戏代码>，例如 hkrpg_cn（星铁国服）/ hk4e_cn（原神国服）/ nap_cn（绝区零国服）");
+            return 1;
+        }
+
+        string? json = config.GetValue<string>("json");
+        string? file = config.GetValue<string>("file");
+        if (string.IsNullOrWhiteSpace(json) && !string.IsNullOrWhiteSpace(file))
+        {
+            if (!File.Exists(file))
+            {
+                Console.Error.WriteLine("动作文件不存在：" + file);
+                return 1;
+            }
+
+            json = File.ReadAllText(file);
+        }
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            Console.Error.WriteLine("需要 --file <动作.json> 或 --json \"<动作 JSON>\"");
+            return 1;
+        }
+
+        List<PackAutoAction> actions = PackAutoActionFile.Parse(json);
+        if (actions.Count == 0)
+        {
+            Console.Error.WriteLine("没有可执行的动作（检查 JSON：{\"steps\":[{\"action\":\"...\"}]} 或 {\"actions\":[...]}）");
+            return 1;
+        }
+
+        // headless 上下文：无页面 / 无弹窗，UI 依赖型步骤自己会报 ✗ 跳过
+        GameEntry? entry = null;
+        try
+        {
+            entry = GameCatalog.GetOrCreate(GameCatalog.CreateService(), gameId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("!! 读取游戏信息失败：" + ex.Message);
+        }
+
+        ShadeHost? host = PluginHostLocator.Resolve(out string hostReason);
+        if (host is null)
+        {
+            Console.WriteLine("!! " + hostReason);
+        }
+
+        GamePluginService? plugins = null;
+        try
+        {
+            if (entry is not null)
+            {
+                plugins = GamePluginServiceFactory.Create(entry, host);
+            }
+        }
+        catch
+        {
+            // 读不出插件状态就只跑不依赖 ini 的步骤
+        }
+
+        var context = new LauncherActionContext
+        {
+            GameId = gameId,
+            GameBiz = gameId.GameBiz,
+            Entry = entry,
+            Host = host,
+            Plugins = plugins,
+            LauncherPage = null,
+            PackRoot = null,
+            XamlRoot = null,
+            Interactive = false,
+            Report = line => Console.WriteLine("  " + line),
+        };
+
+        bool failed = false;
+        foreach (PackAutoAction action in actions)
+        {
+            Console.WriteLine("== " + action.Name + " ==");
+            string summary = LauncherActionRunner.RunAsync(action, context).ConfigureAwait(false).GetAwaiter().GetResult();
+            Console.WriteLine(summary);
+            if (summary.Contains('✗'))
+            {
+                failed = true;
+            }
+        }
+
+        return failed ? 1 : 0;
     }
 
     private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)

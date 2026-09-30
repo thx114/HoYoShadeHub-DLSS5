@@ -21,8 +21,10 @@ using HoYoShadeHub.Features.Update;
 using HoYoShadeHub.Helpers;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 
 
@@ -198,9 +200,13 @@ public sealed partial class MainView : UserControl
         NavigationViewItem_GameSetting.Visibility = CurrentGameFeatureConfig.SupportedPages.Contains(nameof(GameSettingPage)).ToVisibility();
         NavigationViewItem_Screenshot.Visibility = CurrentGameFeatureConfig.SupportedPages.Contains(nameof(ScreenshotPage)).ToVisibility();
 
-        // 「模型替换」跟着游戏显示对应的 MI 实例名（绝区零 → ZZMI）
-        string? importer = CurrentGameId is null ? null : Features.Xxmi.XxmiLocator.ImporterFor(CurrentGameId.GameBiz);
+        // 「模型替换」跟着游戏显示对应的 MI 实例名（绝区零 → ZZMI；自定义游戏按名字认 → 鸣潮 → WWMI）
+        string? gameName = CurrentGameId is null ? null
+            : Features.Plugins.GameCatalog.GetOrCreate(Features.Plugins.GameCatalog.CreateService(), CurrentGameId)?.DisplayName;
+        string? importer = CurrentGameId is null ? null : Features.Xxmi.XxmiLocator.ImporterForGame(CurrentGameId.GameBiz, gameName);
         TextBlock_XxmiNav.Text = importer is null ? "模型替换" : $"模型替换（{importer}）";
+
+        MaybePromptVanillaReShade(gameName);
 
         if (CurrentGameId is null)
         {
@@ -209,6 +215,63 @@ public sealed partial class MainView : UserControl
         else if (MainView_Frame.SourcePageType?.Name is not nameof(SettingPage))
         {
             NavigateTo(MainView_Frame.SourcePageType);
+        }
+    }
+
+    /// <summary>问过「要不要装原版 ReShade」的游戏 id，一个游戏只问一次（选了「不用」不再烦）</summary>
+    private static readonly HashSet<string> _vanillaPrompted = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 切到鸣潮（WWMI 那条识别的自定义游戏）时提示装原版 ReShade：
+    /// 鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通，原版 ReShade 至少能用滤镜 / 插件。
+    /// 游戏目录里已经有 dxgi.dll（不管谁装的）就不问。
+    /// </summary>
+    private async void MaybePromptVanillaReShade(string? gameName)
+    {
+        try
+        {
+            if (XamlRoot is null || CurrentGameId is null
+                || Features.Xxmi.XxmiLocator.ImporterForGame(CurrentGameId.GameBiz, gameName) is not "WWMI"
+                || !_vanillaPrompted.Add(CurrentGameId.Id))
+            {
+                return;
+            }
+
+            string? gameDir = Features.Plugins.GameCatalog.GetOrCreate(
+                Features.Plugins.GameCatalog.CreateService(), CurrentGameId)?.GameDirectory;
+
+            if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir)
+                || File.Exists(Path.Combine(gameDir, "dxgi.dll")))
+            {
+                return;
+            }
+
+            ContentDialog dialog = new()
+            {
+                XamlRoot = XamlRoot,
+                Title = "原版 ReShade",
+                Content = $"鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通。\n\n" +
+                          "要不要下载官方「可加载插件」版原版 ReShade，装到游戏目录？装完按 Home 键开覆盖层。",
+                PrimaryButtonText = "下载并安装",
+                CloseButtonText = "不用",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);
+            await Features.Plugins.VanillaReShade.InstallToGameAsync(gameDir, null, CancellationToken.None);
+            InAppToast.MainWindow?.Success("原版 ReShade", "已装进游戏目录（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            InAppToast.MainWindow?.Error("原版 ReShade", "下载 / 安装失败：" + ex.Message, 10000);
         }
     }
 
@@ -281,9 +344,25 @@ public sealed partial class MainView : UserControl
         {
             page = typeof(GameLauncherPage);
         }
-        if (page.Name is nameof(GameLauncherPage))
+        // 帧内跳转（消息 / 齿轮按钮那种）也要把左侧导航栏的选中项跟上，
+        // 不然页面换了、导航栏还停在旧项，用户回不去主界面（帧率解锁跳游戏设置报过这个）
+        object? selected = page.Name switch
         {
-            MainView_NavigationView.SelectedItem = NavigationViewItem_Launcher;
+            nameof(GameLauncherPage) => NavigationViewItem_Launcher,
+            nameof(GameSettingPage) => NavigationViewItem_GameSetting,
+            nameof(ScreenshotPage) => NavigationViewItem_Screenshot,
+            nameof(GamePluginPage) => NavigationViewItem_Plugins,
+            nameof(OptiScalerPage) => NavigationViewItem_OptiScaler,
+            nameof(ModulesPage) => NavigationViewItem_Modules,
+            nameof(XxmiPage) => NavigationViewItem_Xxmi,
+            nameof(DllConfigPage) => NavigationViewItem_DllConfig,
+            nameof(GlobalPluginPage) => NavigationViewItem_GlobalPlugins,
+            nameof(SettingPage) => MainView_NavigationView.SettingsItem,
+            _ => null,
+        };
+        if (selected is not null && (selected is not NavigationViewItem item || item.Visibility == Visibility.Visible))
+        {
+            MainView_NavigationView.SelectedItem = selected;
         }
         MainView_Frame.Navigate(page, param ?? CurrentGameId, infoOverride);
         if (page.Name is nameof(BlankPage) or nameof(GameLauncherPage))

@@ -40,11 +40,13 @@ namespace HoYoShadeHub.Features.Plugins;
 /// 外加一小截「没匹配到目录条目的插件文件」；可下载 = 目录里还没装的扩展包。</item>
 /// <item>「OptiScaler」：当前 = 已经下载到本地的构建（展开换版本）；可下载 = 还没装过的来源。
 /// 总开关（<see cref="AppConfig.OptiScalerEnabled"/>）也挪到这里。</item>
-/// <item>「模块」：当前 = 装好了的模块（内置 + 手动加的 DLL）；可下载 = 远端 / 内置模块目录里还没装的。</item>
+/// <item>「模块」：当前 = 装好了的模块（目录里的 + 手动加的 DLL）；可下载 = 远端模块目录里还没装的。</item>
 /// </list>
 ///
-/// 三个标签页的条目都只来自云端目录（plugins.json / optiscaler.json / modules.json）+ 内置表，
-/// 以后加新东西不用改这个页面。按游戏的开关在左侧「插件」/「模块」/「OptiScaler」页里。
+/// 三个标签页的条目**全部**来自云端目录（plugins.json / optiscaler.json / modules.json，
+/// 每天最多拉一次、缓存在 .hysx\catalog，首跑离线用随包种子），代码里没有内置表 —
+/// 以后加新插件 / 模块 / OptiScaler 来源只改仓库里的 catalog/*.json，不用改这个页面、不用发版。
+/// 按游戏的开关在左侧「插件」/「模块」/「OptiScaler」页里。
 /// </summary>
 public sealed partial class GlobalPluginPage : PageBase
 {
@@ -65,6 +67,13 @@ public sealed partial class GlobalPluginPage : PageBase
 
     /// <summary>这次进页面已经查过更新了没有（别每次刷新都打一遍网络）</summary>
     private bool _updatesChecked;
+
+    /// <summary>
+    /// 这次进页面查到的「插件 id → 远端新版本 tag」。刷新会整个重建 Items（UpdateTag 挂在旧对象上，
+    /// 重建即丢），靠这份缓存在重查被跳过的情况下把徽标贴回去 —— 否则装完任意一个插件，
+    /// 其它插件的「有新版本」就全没了。
+    /// </summary>
+    private readonly Dictionary<string, string> _updateTags = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>这次会话已经弹过「版本更新引导」了没有（别每次刷新都弹）</summary>
     private static bool _migrationPrompted;
@@ -361,7 +370,21 @@ public sealed partial class GlobalPluginPage : PageBase
     /// </summary>
     private async Task CheckUpdatesAsync(bool force = false)
     {
-        if (_manager is null || (!force && _updatesChecked))
+        if (_manager is null)
+        {
+            return;
+        }
+
+        // Items 可能被刷新重建过 —— 先把这次会话查到的徽标贴到新对象上（不动网络）
+        foreach (PluginItemViewModel item in Items.Where(i => i.Installed is not null))
+        {
+            if (_updateTags.TryGetValue(item.Manifest.Id, out string? cached))
+            {
+                item.UpdateTag = cached;
+            }
+        }
+
+        if (!force && _updatesChecked)
         {
             return;
         }
@@ -376,13 +399,32 @@ public sealed partial class GlobalPluginPage : PageBase
                 if (!string.IsNullOrWhiteSpace(tag))
                 {
                     item.UpdateTag = tag;
+                    _updateTags[item.Manifest.Id] = tag;
                     _logger.LogInformation("Update available for {Id}: {Tag}", item.Manifest.Id, tag);
+                }
+                else
+                {
+                    // 查过没有新版本（典型：刚装完最新版）—— 缓存里的旧徽标一并撤掉
+                    _updateTags.Remove(item.Manifest.Id);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Check update for {Id}", item.Manifest.Id);
             }
+        }
+    }
+
+    /// <summary>把某次检查/装完得到的更新徽标同步进会话缓存（null = 撤掉）</summary>
+    private void SyncUpdateTagCache(string pluginId, string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            _updateTags.Remove(pluginId);
+        }
+        else
+        {
+            _updateTags[pluginId] = tag;
         }
     }
 
@@ -929,7 +971,7 @@ public sealed partial class GlobalPluginPage : PageBase
     private void RadioButtons_View_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // 事件可能在 InitializeComponent 解析到一半就触发，这时后面的控件还是 null
-        if (Grid_Plugins is null || Grid_OptiScaler is null || Grid_Modules is null || TextBlock_Count is null)
+        if (Grid_Plugins is null || Grid_OptiScaler is null || Grid_Modules is null)
         {
             return;
         }
@@ -982,10 +1024,10 @@ public sealed partial class GlobalPluginPage : PageBase
         return false;
     }
 
-    /// <summary>三个标签页共用：搜索 / 空状态 / 计数都在这里收口</summary>
+    /// <summary>三个标签页共用：搜索 / 空状态都在这里收口</summary>
     private void ApplyFilter()
     {
-        if (TextBlock_PluginsCurrentEmpty is null || TextBlock_Count is null)
+        if (TextBlock_PluginsCurrentEmpty is null)
         {
             return;
         }
@@ -994,7 +1036,6 @@ public sealed partial class GlobalPluginPage : PageBase
         UpdateOptiScalerLists();
         UpdateModuleLists();
         UpdateTabVisibility();
-        UpdateCount();
     }
 
     private void UpdateTabVisibility()
@@ -1009,17 +1050,7 @@ public sealed partial class GlobalPluginPage : PageBase
         Grid_Modules.Visibility = _tab == "modules" ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void UpdateCount()
-    {
-        TextBlock_Count.Text = _tab switch
-        {
-            "optiscaler" => $"当前 {OptiScalerBuilds.Count} · 可下载 {OptiScalerSources.Count}",
-            "modules" => $"当前 {CurrentModules.Count} · 可下载 {AvailableModules.Count}",
-            _ => $"当前 {InstalledItems.Count + OrphanAddonFiles.Count} · 可下载 {VisibleItems.Count}",
-        };
-    }
-
-    /// <summary>插件页：当前 = 已装扩展（+ 没归属的插件文件），可下载 = 还没装的扩展</summary>
+    /// <summary>插件页：已装 = 已装扩展（+ 没归属的插件文件），未装 = 可下载的扩展</summary>
     private void UpdatePluginLists()
     {
         // 已经归到某个扩展卡片下面的插件文件，不再单独列一遍
@@ -1524,8 +1555,8 @@ public sealed partial class GlobalPluginPage : PageBase
         OptiScalerBuild? selected = library.GetSelected();
         List<OptiScalerBuild> all = library.List();
 
-        // 内置来源 + 远端目录覆盖（catalog/optiscaler.json，缓存在 .hysxcatalog）
-        List<OptiScalerSource> sources = OptiScalerCatalog.MergeWithBuiltin(
+        // 来源 = 远端目录（catalog/optiscaler.json，缓存在 .hysx\catalog；首跑离线用随包种子）
+        List<OptiScalerSource> sources = OptiScalerCatalog.Normalize(
             _optiScalerOverlay ?? OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath));
 
         var byId = new Dictionary<string, OptiScalerSource>(StringComparer.OrdinalIgnoreCase);
@@ -3467,6 +3498,7 @@ public sealed partial class GlobalPluginPage : PageBase
             TextBlock_Status.Text = $"正在检查 {item.Manifest.Id} ";
             string? tag = await _manager.CheckUpdateAsync(item.Manifest, default, forceRefresh: true);
             item.UpdateTag = tag;
+            SyncUpdateTagCache(item.Manifest.Id, tag);
             TextBlock_Status.Text = string.IsNullOrWhiteSpace(tag)
                 ? $"{item.Manifest.Id}：已是最新（或不是 GitHub Release 来源）。"
                 : $"{item.Manifest.Id}：有新版本 {tag}。";
@@ -3522,6 +3554,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 bool same = string.Equals(item.Installed.ResolvedTag, latest, StringComparison.OrdinalIgnoreCase)
                             || string.Equals(item.Installed.Version, latest, StringComparison.OrdinalIgnoreCase);
                 item.UpdateTag = same ? null : latest;
+                SyncUpdateTagCache(item.Manifest.Id, item.UpdateTag);
             }
         }
         catch (Exception ex)
@@ -3689,6 +3722,11 @@ public sealed partial class GlobalPluginPage : PageBase
                 AddonReferenceCleanResult clean = names.Count > 0
                     ? PurgeAddonReferences(names)
                     : new AddonReferenceCleanResult(0, [], []);
+                int feedPresets = CleanupDlss5FeedPresetsIfNeeded(names);
+
+                // 每游戏插件包 / 版本选择 / 归档也要归零：不归零的话包标记里的选择会
+                // 从归档把文件再链接回包里，插件「卸载了又自动启用」（dlss5-feeder 案）
+                (int gamesCleared, int versionsDeleted) = GameAddonPackService.RemoveExtension(item.Manifest.Id);
 
                 var parts = new List<string> { deleted > 0 ? $"删了 {deleted} 个文件" : "未发现对应文件" };
                 if (failed > 0)
@@ -3706,6 +3744,18 @@ public sealed partial class GlobalPluginPage : PageBase
                 if (clean.Changed)
                 {
                     parts.Add($"顺手清了 {clean.ChangedGames.Count} 个游戏 ini 里的残留条目");
+                }
+                if (feedPresets > 0)
+                {
+                    parts.Add($"已从 {feedPresets} 份预设里移除 Lumenite Kernel + DLSS5 Feed 效果");
+                }
+                if (gamesCleared > 0)
+                {
+                    parts.Add($"清掉 {gamesCleared} 个游戏对它的专属版本选择");
+                }
+                if (versionsDeleted > 0)
+                {
+                    parts.Add($"删了 {versionsDeleted} 个版本归档");
                 }
 
                 _logger.LogInformation("Orphan plugin card removed: {Id} ({Files})",
@@ -3772,6 +3822,26 @@ public sealed partial class GlobalPluginPage : PageBase
                 }
             }
 
+            // dlss5-feed 的效果开关写在各游戏预设里（lumenite_Kernel.fx 属于 lumenitefx 不随这次
+            // 卸载走，文件还在盘上）——不摘的话 ReShade 启动就把残留效果重新勾上
+            int feedPresets = CleanupDlss5FeedPresetsIfNeeded(deletedNames);
+            if (feedPresets > 0)
+            {
+                parts.Add($"已从 {feedPresets} 份预设里移除 Lumenite Kernel + DLSS5 Feed 效果");
+            }
+
+            // 每游戏插件包 / 版本选择 / 归档归零：不归零的话包标记里的选择会从归档
+            // 把文件再链接回包里，插件「卸载了又自动启用」（dlss5-feeder 案）
+            (int gamesCleared, int versionsDeleted) = GameAddonPackService.RemoveExtension(item.Manifest.Id);
+            if (gamesCleared > 0)
+            {
+                parts.Add($"清掉 {gamesCleared} 个游戏对它的专属版本选择");
+            }
+            if (versionsDeleted > 0)
+            {
+                parts.Add($"删了 {versionsDeleted} 个版本归档");
+            }
+
             await ReloadPluginDataAsync();
             TextBlock_Status.Text = $"「{item.Name}」已删除：" + string.Join("；", parts);
         });
@@ -3807,6 +3877,24 @@ public sealed partial class GlobalPluginPage : PageBase
             _logger.LogWarning(ex, "Purge addon references");
             return new AddonReferenceCleanResult(0, [], []);
         }
+    }
+
+    /// <summary>
+    /// 删掉的文件里有 dlss5-feed addon 时，把各游戏预设里残留的 Lumenite Kernel + DLSS5 Feed
+    /// 效果一并摘掉（<see cref="GameCatalog.RemoveDlss5FeedFromAllPresets"/>）。没有 feed 文件返回 0。
+    /// </summary>
+    private static int CleanupDlss5FeedPresetsIfNeeded(IEnumerable<string?> deletedFileNames)
+    {
+        bool hasFeed = deletedFileNames.Any(GamePluginService.IsDlss5FeedAddon);
+        if (!hasFeed)
+        {
+            return 0;
+        }
+
+        int cleaned = GameCatalog.RemoveDlss5FeedFromAllPresets();
+        AppConfig.GetLogger<GlobalPluginPage>()
+            .LogInformation("Removed DLSS5 Feed techniques from {Count} preset(s) after uninstall", cleaned);
+        return cleaned;
     }
 
     private async Task RunInstallAsync(ExtensionManifest manifest, string? tagOverride = null)
@@ -3869,6 +3957,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 {
                     // 刚装完，更新提示先撤掉（RefreshAsync 之后会按新账本重算）
                     item.UpdateTag = null;
+                    _updateTags.Remove(item.Manifest.Id);
                 }
             }
             finally
@@ -4912,8 +5001,8 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
     /// 找不到才退回本地记的字符串。
     /// </summary>
     public OptiScalerSource? CatalogSource
-        => OptiScalerCatalog.Find(Build.SourceId)
-           ?? OptiScalerCatalog.MergeWithBuiltin(OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath)).FirstOrDefault(s =>
+        => OptiScalerCatalog.Find(OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath), Build.SourceId)
+           ?? OptiScalerCatalog.Normalize(OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath)).FirstOrDefault(s =>
                string.Equals(s.Name, Build.SourceId, StringComparison.OrdinalIgnoreCase)
                || (!string.IsNullOrWhiteSpace(Source.Repository)
                    && string.Equals(s.Repository, Source.Repository, StringComparison.OrdinalIgnoreCase)));
@@ -5477,7 +5566,7 @@ public sealed partial class ModuleItemViewModel : ObservableObject
 
     public bool IsBuiltin { get; }
 
-    public string KindText => IsBuiltin ? "内置" : "手动";
+    public string KindText => IsBuiltin ? "目录" : "手动";
 
     public bool HasDll => !string.IsNullOrWhiteSpace(DllPath);
 

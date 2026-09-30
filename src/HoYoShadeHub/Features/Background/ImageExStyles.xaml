@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8" ?>
+<!--
+    ImageEx 背景图样式的唯一出处（以前拆成两份几乎一样的模板文件：
+    Features/Background/AppBackgroundImageExStyle.xaml 和
+    Features/GameSelector/NoAnimationImageExStyle.xaml，改一处忘一处，这里合并）。
+
+    两个样式共用同一个 ControlTemplate 结构，唯一区别是 Loaded/Unloaded 状态：
+    · AppBackgroundImageExStyle —— 0.3s 淡入淡出，主页大背景用；
+    · NoAnimationImageExStyle   —— 瞬时切换（ObjectAnimation），小图标/卡片用，
+      不需要也不应该播淡入（一闪一闪的列表很毛）。
+-->
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                    xmlns:local="using:HoYoShadeHub.Features.Background"
                     xmlns:swi="using:Scighost.WinUI.ImageEx">
 
     <Style x:Key="AppBackgroundImageExStyle" TargetType="swi:ImageEx">
@@ -73,6 +82,62 @@
                                                          Duration="0" />
                                     </Storyboard>
                                 </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="NoAnimationImageExStyle" TargetType="swi:ImageEx">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{ThemeResource ApplicationForegroundThemeBrush}" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="swi:ImageEx">
+                    <Grid Background="{TemplateBinding Background}"
+                          BorderBrush="{TemplateBinding BorderBrush}"
+                          BorderThickness="{TemplateBinding BorderThickness}"
+                          CornerRadius="{TemplateBinding CornerRadius}">
+                        <Image Name="PlaceholderImage"
+                               HorizontalAlignment="{TemplateBinding HorizontalAlignment}"
+                               VerticalAlignment="{TemplateBinding VerticalAlignment}"
+                               x:Load="False"
+                               Opacity="1.0"
+                               Source="{TemplateBinding PlaceholderSource}"
+                               Stretch="{TemplateBinding PlaceholderStretch}" />
+                        <Image Name="Image"
+                               HorizontalAlignment="{TemplateBinding HorizontalAlignment}"
+                               VerticalAlignment="{TemplateBinding VerticalAlignment}"
+                               NineGrid="{TemplateBinding NineGrid}"
+                               Opacity="0.0"
+                               Stretch="{TemplateBinding Stretch}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Failed">
+                                    <Storyboard>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Image" Storyboard.TargetProperty="Opacity">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="0" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="PlaceholderImage" Storyboard.TargetProperty="Opacity">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="1" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Loading" />
+                                <VisualState x:Name="Loaded">
+                                    <Storyboard>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Image" Storyboard.TargetProperty="Opacity">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="1" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="PlaceholderImage" Storyboard.TargetProperty="Opacity">
+                                            <DiscreteObjectKeyFrame KeyTime="0" Value="0" />
+                                        </ObjectAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Unloaded" />
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
                     </Grid>

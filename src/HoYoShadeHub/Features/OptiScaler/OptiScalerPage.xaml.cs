@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using HoYoShadeHub.Features.ViewHost;
@@ -257,7 +258,8 @@ public sealed partial class OptiScalerPage : PageBase
                 // （List() 本身就是新装的在前，顺序照旧）
                 foreach (OptiScalerBuild build in library.List())
                 {
-                    OptiScalerSource? source = OptiScalerCatalog.Find(build.SourceId);
+                    OptiScalerSource? source = OptiScalerCatalog.Find(
+                        OptiScalerCatalog.LoadFile(RemoteCatalogService.OptiScalerCachePath), build.SourceId);
 
                     var item = new OptiScalerBuildItemViewModel
                     {

@@ -128,12 +128,49 @@ public sealed class IniDocument
             {
                 continue;
             }
-
             int separator = trimmed.IndexOf('=');
             if (separator > 0)
             {
                 yield return trimmed[..separator].Trim();
             }
+        }
+    }
+
+    /// <summary>文档里出现过的节名（按出现顺序去重，大小写不敏感）；根节（无节头键）返回 <see cref="RootSection"/></summary>
+    public IEnumerable<string> GetSections()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? current = RootSection;
+        bool rootHadKeys = false;
+
+        foreach (string line in _lines)
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+            {
+                if (!rootHadKeys && seen.Add(RootSection))
+                {
+                    yield return RootSection;
+                }
+
+                current = trimmed[1..^1].Trim();
+                if (seen.Add(current))
+                {
+                    yield return current;
+                }
+
+                continue;
+            }
+
+            if (current == RootSection && trimmed.Length > 0 && !trimmed.StartsWith(';') && !trimmed.StartsWith('#'))
+            {
+                rootHadKeys = true;
+            }
+        }
+
+        if (!rootHadKeys)
+        {
+            seen.Remove(RootSection);
         }
     }
 

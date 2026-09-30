@@ -82,6 +82,13 @@
 		<Content Include="Assets\Video\**">
 			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
 		</Content>
+		<!-- 远端目录的随包种子：仓库根 catalog/（插件 / OptiScaler / 模块清单）。
+		     首跑离线时 RemoteCatalogService.SeedFromBundle 用它补齐本地缓存；
+		     新增资源只改这些 json + 推到 GitHub，不用重新发版。 -->
+		<Content Include="..\..\catalog\*.json">
+			<Link>catalog\%(FileName)%(Extension)</Link>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
 	</ItemGroup>
 	<ItemGroup>
 		<Page Update="Features\GameLauncher\UninstallReShadeClientDialog.xaml">

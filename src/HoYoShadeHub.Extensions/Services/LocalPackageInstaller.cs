@@ -259,7 +259,16 @@ public sealed class LocalPackageInstaller
            || names.Any(n => n.Equals(ShadeOverlayFolder + "/ReShade64.dll", StringComparison.OrdinalIgnoreCase))
            || names.Any(n => n.Equals(OptiOverlayFolder + "/" + OptiScalerLibrary.StateFileName, StringComparison.OrdinalIgnoreCase))
            || (names.Any(n => n.Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase))
-               && names.Any(n => n.StartsWith("reshade-shaders/", StringComparison.OrdinalIgnoreCase)));
+               && names.Any(n => n.StartsWith("reshade-shaders/", StringComparison.OrdinalIgnoreCase)))
+           || IsVanillaReShadePackage(names);
+
+    /// <summary>
+    /// 是不是「原版 ReShade 官方包」：<c>ReShade64.dll</c> + <c>ReShade.ini</c> 在根上（不在 HoYoShade/ 下）。
+    /// 用户从 reshade.me 下的一键安装 exe 内置 zip 就长这样 —— 也当覆盖包处理，装到 HoYoShade 框架根上。
+    /// </summary>
+    private static bool IsVanillaReShadePackage(List<string> names)
+        => names.Any(n => n.Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase))
+           && names.Any(n => n.Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsAddonFile(string path)
     {

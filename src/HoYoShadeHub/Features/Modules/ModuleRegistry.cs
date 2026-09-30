@@ -78,74 +78,20 @@ public sealed class ModuleEntry
     public bool GloballyEnabled { get; init; }
 }
 
-/// <summary>内置模块表 + 远端目录覆盖 + 每个游戏用哪些模块 + 下载部署</summary>
+/// <summary>远端目录驱动的模块表 + 每个游戏用哪些模块 + 下载部署</summary>
 public static class ModuleRegistry
 {
-    /// <summary>
-    /// 内置模块。DLSS-NR on AMD 以前挂在「全局插件 → OptiScaler 可下载」里，
-    /// 它不是 OptiScaler（是另一套要单独注入的东西），所以搬到模块里。
-    /// 远端 <c>catalog/modules.json</c> 可以按 id 覆盖 / 追加（不用发版）。
-    /// </summary>
-    public static IReadOnlyList<ModuleDefinition> Builtin { get; } =
-    [
-        new ModuleDefinition(
-            "dlssnr-amd",
-            "DLSS-NR on AMD",
-            "A 卡用的 DLSS 神经渲染分支。它只发官方安装程序：点「下载」会先问一句，然后运行它 —— 装到模块目录即可。" +
-            "装完那里会有 version.dll；某个游戏要用它就到左侧「模块」页勾上。",
-            "danielblnc/DLSS-NR-on-AMD",
-            @"^v?\d",
-            "https://github.com/danielblnc/DLSS-NR-on-AMD/releases",
-            "version.dll",
-            ["dlssnr", "amd", "neural"]),
+    // 2026-09-30 起没有内置模块表了：条目全部来自远端目录 catalog/modules.json
+    //（RemoteCatalogService 每天最多拉一次，缓存在 <用户数据目录>\.hysx\catalog\），
+    // 加新模块 / 改介绍只改仓库里的 json，不重新发版。首跑离线时启动器随包的
+    // catalog 副本做种子（RemoteCatalogService.SeedFromBundle）。
+    //
+    // 已随内置表一起移出的条目：
+    // · genshin-fsr-bridge（原神 DX11 FSR2 桥）——按用户要求从启动器移出；
+    //   注入链路（检测到 Dx11FsrBridge.dll 就 autoload + 等 ready）保留，
+    //   自己往模块目录放桥 DLL 仍会被接管。
 
-        new ModuleDefinition(
-            "dlssg-sm86",
-            "DLSSG for SM86（RTX 30/20 帧生成）",
-            "在 RTX 30 系（SM86）和 20 系（SM75）上启用 NVIDIA DLSS 帧生成（DLSS-G），Windows x64 / D3D12。" +
-            "运行文件是 version.dll + dlssg_sm86.ini（仓库根目录是 310.9 版，310.1/ 是老版运行库）。" +
-            "生成帧数量、优化档位都在 ini 里（MaxGeneratedFrames 3=4X / 5=6X）。",
-            "sdli1995/dlssg_for_sm86",
-            @"^\d",
-            "https://github.com/sdli1995/dlssg_for_sm86",
-            "version.dll",
-            ["dlssg", "framegen", "rtx20", "rtx30"],
-            ["version.dll", "dlssg_sm86.ini"]),
-
-        // 原神 DLSS5 链路里「让 OptiScaler 看见 FSR2」的那一环。
-        // 它是被注入的原生 DLL，不是 ReShade 插件，也不是 OptiScaler 本身：
-        // hook 游戏的 D3D11 与 GetProcAddress，把标准 ffxFsr2* 接口垫出来。
-        // 上游是 AizawaHikaru233/genshin_fsr_brigde（GPL-3.0），但它只发「一键配置」整包
-        //（含 OptiScaler / ReShade / 安装器），没有单文件 Release，所以这里从 CXP 的
-        // 打包目录直下那两个文件（CXP 用的是同一份二进制，SHA-256 1AB7FBD9...）。
-        new ModuleDefinition(
-            "genshin-fsr-bridge",
-            "Genshin FSR Bridge（原神 DX11 FSR2 桥）",
-            "让 OptiScaler 在原神这种「FSR2 静态链进 exe、符号不导出」的 DX11 游戏里看见 FSR2：" +
-            "hook 游戏的 D3D11 与 GetProcAddress，把标准 ffxFsr2* 接口垫出来。" +
-            "注入进游戏进程后，游戏里抗锯齿必须选 FSR2、渲染精度低于 1 才生效。" +
-            "这是 DLSS5 链路必需的一环，不是 ReShade 插件。",
-            "CXP-2024/dlss5_for_genshinimpact",
-            @"^v",
-            "https://github.com/AizawaHikaru233/genshin_fsr_brigde",
-            "Dx11FsrBridge.dll",
-            ["dlss5", "fsr2", "genshin", "bridge"],
-            ["release/configs/Dx11FsrBridge.dll", "release/configs/Dx11FsrBridge.ini"]),
-
-        // 星穹铁道伤害统计（release 只挂一个 veritas.dll，注入后自己画伤害面板）
-        new ModuleDefinition(
-            "veritas",
-            "Veritas（星铁伤害统计 / ACT）",
-            "星穹铁道的战斗伤害统计：实时记录每个角色 / 敌人的伤害明细、总伤和 DPS，用法看 Wiki。" +
-            "只对星穹铁道有意义；版本跟游戏版本绑定，游戏更新后要等上游发新版再更新。",
-            "hessiser/veritas",
-            @"^\d",
-            "https://github.com/hessiser/veritas/wiki",
-            "veritas.dll",
-            ["star-rail", "hkrpg", "damage-stat", "act", "overlay"]),
-    ];
-
-    /// <summary>远端目录（catalog/modules.json）里读到的模块；同 id 覆盖内置</summary>
+    /// <summary>远端目录（catalog/modules.json）里读到的模块；同 id 覆盖</summary>
     public static IReadOnlyList<ModuleDefinition> RemoteOverlay { get; private set; } = [];
 
     /// <summary>远端目录里用 <c>removed: true</c> 删掉的模块 id</summary>
@@ -157,16 +103,15 @@ public static class ModuleRegistry
         RemovedIds = removed is null ? [] : [.. removed];
     }
 
-    /// <summary>内置 + 远端覆盖（同 id 用远端那条）</summary>
+    /// <summary>远端目录（去墓碑、按 id 去重）</summary>
     public static List<ModuleDefinition> All()
     {
-        var result = new List<ModuleDefinition>(Builtin)
-            .Where(m => !RemovedIds.Contains(m.Id, StringComparer.OrdinalIgnoreCase))
-            .ToList();
+        var result = new List<ModuleDefinition>();
 
         foreach (ModuleDefinition module in RemoteOverlay)
         {
-            if (string.IsNullOrWhiteSpace(module.Id))
+            if (string.IsNullOrWhiteSpace(module.Id)
+                || RemovedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -646,24 +591,6 @@ public static class ModuleRegistry
     }
 
     /// <summary>
-    /// 装完之后的「补齐文件」。现在只有原神 FSR 桥需要：它的 DLL 下下来就够用，
-    /// 但 ini 缺失时补一份最小模板（桥的每个键都有代码默认值，ini 只是方便用户改）。
-    /// 已经有一份就一律不动。
-    /// </summary>
-    private static void EnsurePostInstallFiles(ModuleDefinition module, string? directory)
-    {
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
-        {
-            return;
-        }
-
-        if (string.Equals(module.DllHint, OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
-        {
-            OptiScalerRuntime.EnsureFsrBridgeIni(directory);
-        }
-    }
-
-    /// <summary>
     /// 下载 / 更新一个模块（走 OptiScaler 那套下载器：它已经会处理 zip 和官方安装程序）。
     /// 界面用它。
     /// </summary>
@@ -689,8 +616,6 @@ public static class ModuleRegistry
                 string url = HysxHttp.Apply($"https://raw.githubusercontent.com/{module.Repository}/{branch}/{file}");
                 await downloads.DownloadToFileAsync(url, Path.Combine(directory, name), null, progress, cancellationToken);
             }
-
-            EnsurePostInstallFiles(module, directory);
 
             return $"仓库树直下 {module.DirectFiles.Length} 个文件（{branch}）";
         }
@@ -729,8 +654,6 @@ public static class ModuleRegistry
 
         // 旧版本**保留**（用户要求：多个版本共存，反复切换不用重新下载）。
         // 具体注入哪一份由每个游戏选的版本决定（见 ResolveInjectionDlls）。
-        EnsurePostInstallFiles(module, AppConfig.ModuleDirectory(module.Id));
-
         return $"{chosenTag} / {asset}";
     }
 }

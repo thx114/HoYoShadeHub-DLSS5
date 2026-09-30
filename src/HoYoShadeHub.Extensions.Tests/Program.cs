@@ -328,23 +328,44 @@ Check(GlobMatcher.IsMatch("shaders/*.fx", "shaders/Bar.fx"), "单层匹配");
 string stripped = ExtensionInstaller.StripGlobPrefix("Repo-main/HSR/aaa/bbb.ini", "Repo-main/HSR/**");
 Check(stripped == "aaa/bbb.ini", $"剥离字面前缀（实际 {stripped}）");
 
-Console.WriteLine("== 10. 内置目录 ==");
-var builtin = ExtensionCatalogService.LoadBuiltin();
-Check(builtin.Extensions.Length >= 6, $"内置目录有 {builtin.Extensions.Length} 个条目");
-Check(builtin.Extensions.All(e => e.IsValid), "所有内置条目都通过 IsValid 校验");
-Check(builtin.Extensions.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == builtin.Extensions.Length, "id 无重复");
-// renodx.hkrpg（RenoDX 星铁）按用户要求删掉了，不再断言它
+Console.WriteLine("== 10. 远端插件目录（仓库根 catalog/plugins.json）==");
+// 目录的唯一出处是仓库根 catalog/（嵌入式内置表 2026-09-30 移除）。从测试运行目录往上找仓库根。
+static string? FindRepoCatalogDir()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        if (File.Exists(Path.Combine(dir.FullName, "catalog", "plugins.json")))
+        {
+            return Path.Combine(dir.FullName, "catalog");
+        }
+
+        dir = dir.Parent;
+    }
+
+    return null;
+}
+
+string? repoCatalogDir = FindRepoCatalogDir();
+Check(repoCatalogDir is not null, "从测试运行目录往上找得到仓库根的 catalog/（找不到的话后面的目录断言都会红）");
+var builtin = ExtensionCatalogService.LoadFile(Path.Combine(repoCatalogDir ?? "", "plugins.json"))
+              ?? new ExtensionCatalogDocument();
+var liveEntries = builtin.Extensions.Where(e => !e.Removed).ToArray();
+Check(liveEntries.Length >= 6, $"插件目录有 {liveEntries.Length} 个有效条目");
+Check(liveEntries.All(e => e.IsValid), "所有条目都通过 IsValid 校验");
+Check(liveEntries.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == liveEntries.Length, "id 无重复");
+// renodx.hkrpg（RenoDX 星铁）按用户要求删掉了 —— 只允许以墓碑（removed: true）形式存在
 string[] expectedIds = ["renodx.dlss5", "renodx.dlss5.superanus", "renodx.dlss.sf", "renodx.ue.doffix", "dlss5.neural.interposer", "dlss5.bridge", "hoyoshade.presets"];
-Check(expectedIds.All(id => builtin.Extensions.Any(e => e.Id == id)), "内置插件条目齐全（含 thx114/hoyodlss5 的 Neural Interposer）");
-Check(builtin.Extensions.All(e => e.Id != "renodx.hkrpg"), "renodx.hkrpg（RenoDX 星铁）已按用户要求删除");
+Check(expectedIds.All(id => liveEntries.Any(e => e.Id == id)), "插件条目齐全（含 thx114/hoyodlss5 的 Neural Interposer）");
+Check(builtin.Extensions.All(e => e.Id != "renodx.hkrpg" || e.Removed), "renodx.hkrpg（RenoDX 星铁）已按用户要求删除（墓碑不算活条目）");
 
 // 「只管理插件」：全局插件页只列会装 addon 的扩展包，滤镜/预设那条不该出现
-Check(builtin.Extensions.First(e => e.Id == "hoyoshade.presets").Rules.All(r => !r.To.Contains("Addons")),
+Check(liveEntries.First(e => e.Id == "hoyoshade.presets").Rules.All(r => !r.To.Contains("Addons")),
     "官方预设合集不装 addon —— 所以全局插件页不会列它");
 
-var dlss5 = builtin.Extensions.First(e => e.Id == "renodx.dlss5");
-var dlssSf = builtin.Extensions.First(e => e.Id == "renodx.dlss.sf");
-var ueDof = builtin.Extensions.First(e => e.Id == "renodx.ue.doffix");
+var dlss5 = liveEntries.First(e => e.Id == "renodx.dlss5");
+var dlssSf = liveEntries.First(e => e.Id == "renodx.dlss.sf");
+var ueDof = liveEntries.First(e => e.Id == "renodx.ue.doffix");
 
 // 同一个仓库里多个插件族必须靠 tagPattern 区分开
 Check(dlss5.Source.Repository == dlssSf.Source.Repository, "rhi-repo 里的多个插件族来自同一仓库");
@@ -667,7 +688,7 @@ if (args.Contains("--online"))
         List<OptiScalerSource>? remoteSources = OptiScalerCatalog.LoadFile(optiFile);
         Check(remoteSources is not null && remoteSources.Count > 0, $"[远端] optiscaler.json 读得到（{remoteSources?.Count ?? 0} 条）");
 
-        foreach (OptiScalerSource remoteSource in OptiScalerCatalog.MergeWithBuiltin(remoteSources))
+        foreach (OptiScalerSource remoteSource in OptiScalerCatalog.Normalize(remoteSources))
         {
             try
             {
@@ -2167,15 +2188,18 @@ Check(OptiScalerDownloader.IsInstaller(installerOnly[0]) && !OptiScalerDownloade
 Check(OptiScalerDownloader.PickAsset(installerOnly) == "dlssnr_on_amd_setup.exe", "只有 exe 时挑它");
 Check(OptiScalerDownloader.PickAsset(bothKinds) == "OptiScaler-NR-v0.8.6.zip", "有 zip 就不要顺手去跑人家的安装程序");
 
-// 内置来源：wilsjo2 / neurotic / mfg-ada（本 fork）
-Check(OptiScalerCatalog.Builtin.Count == 4, $"内置 4 个 OptiScaler 来源（实际 {OptiScalerCatalog.Builtin.Count}）");
-Check(OptiScalerCatalog.Builtin.All(s => s.Id != "dlssnr-amd"), "DLSS NR on AMD 不再挂在 OptiScaler 来源里");
-Check(OptiScalerCatalog.Builtin.All(s => s.Id != "multipass-mfg"), "404 的那个来源删掉了");
-Check(OptiScalerCatalog.Builtin.Select(s => s.Id).Distinct().Count() == 4, "来源 id 不重复（要当目录名用）");
-Check(OptiScalerCatalog.Builtin.All(s => s.Tags is { Length: > 0 }), "每个来源都带 tags（卡片上要显示）");
-Check(OptiScalerCatalog.Builtin.All(s => s.Repository.Contains('/')), "每个来源都是 owner/repo");
+// 目录来源（catalog/optiscaler.json）：wilsjo2 / neurotic / mfg-ada（本 fork）等
+List<OptiScalerSource> optiCatalog = repoCatalogDir is null
+    ? []
+    : OptiScalerCatalog.Normalize(OptiScalerCatalog.LoadFile(Path.Combine(repoCatalogDir, "optiscaler.json")));
+Check(optiCatalog.Count >= 4, $"目录里有 {optiCatalog.Count} 个 OptiScaler 来源");
+Check(optiCatalog.All(s => s.Id != "dlssnr-amd"), "DLSS NR on AMD 不再挂在 OptiScaler 来源里");
+Check(optiCatalog.All(s => s.Id != "multipass-mfg"), "404 的那个来源删掉了");
+Check(optiCatalog.Select(s => s.Id).Distinct().Count() == optiCatalog.Count, "来源 id 不重复（要当目录名用）");
+Check(optiCatalog.All(s => s.Tags is { Length: > 0 }), "每个来源都带 tags（卡片上要显示）");
+Check(optiCatalog.All(s => s.Repository.Contains('/')), "每个来源都是 owner/repo");
 Check(OptiScalerLibrary.Sanitize("a/b:c") == "a_b_c", "版本号里的非法字符会被换掉");
-Check(OptiScalerCatalog.Find("neurotic")?.Repository == "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork", "按 id 找得到来源");
+Check(OptiScalerCatalog.Find(optiCatalog, "neurotic")?.Repository == "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork", "按 id 找得到来源");
 
 
 Console.WriteLine();
@@ -2249,9 +2273,8 @@ Check(bareLines.Length == 5
       && bareLines[3] == "[Some.fx]",
     "根键插在第一个节头之前：" + string.Join(" | ", bareLines));
 
-// 目录条目
-var feedCatalog = ExtensionCatalogService.LoadBuiltin();
-ExtensionManifest? feedManifest = feedCatalog.Extensions.FirstOrDefault(e => e.Id == "dlss5.feed");
+// 目录条目（仓库根 catalog/plugins.json，见上面 section 10）
+ExtensionManifest? feedManifest = builtin.Extensions.FirstOrDefault(e => e.Id == "dlss5.feed" && !e.Removed);
 Check(feedManifest is not null, "内置目录有 dlss5.feed");
 Check(feedManifest!.Requires is ["lumenitefx"], "dlss5.feed 声明依赖 lumenitefx");
 Check(feedManifest.Rules.Any(r => r.To.Contains("Addons", StringComparison.OrdinalIgnoreCase))
@@ -2259,8 +2282,8 @@ Check(feedManifest.Rules.Any(r => r.To.Contains("Addons", StringComparison.Ordin
     "既装 addon 也装 DLSS5_Feed.fx");
 Check(feedManifest.Tags?.Contains("dlss5") == true, "带 dlss5 标签（自动进 LoadFromDllMain）");
 
-ExtensionManifest? lumManifest = feedCatalog.Extensions.FirstOrDefault(e => e.Id == "lumenitefx");
-Check(lumManifest is not null, "内置目录有 lumenitefx");
+ExtensionManifest? lumManifest = builtin.Extensions.FirstOrDefault(e => e.Id == "lumenitefx" && !e.Removed);
+Check(lumManifest is not null, "目录里有 lumenitefx");
 Check(lumManifest!.Rules.All(r => !r.To.Contains("Addons", StringComparison.OrdinalIgnoreCase)),
     "lumenitefx 不是插件（不进「全局插件」列表）");
 
@@ -2960,6 +2983,198 @@ File.WriteAllText(Path.Combine(orphanDir, "StarRail.exe"), "fake");
 var orphanEntry = new GameEntry("test:orphan", "无宿主") { ExePath = Path.Combine(orphanDir, "StarRail.exe") };
 GameIniBootstrapResult boot5 = GameIniBootstrap.Ensure(orphanEntry, null);
 Check(boot5.MissingTemplate && !File.Exists(orphanEntry.ReShadeIniPath!), "没宿主且没 ini → MissingTemplate，不硬造");
+
+// ⑤ 崩铁双 runtime 案：ReShade2.ini 停留在旧副本（旧宿主路径 + 旧插件开关）→ 启动时被主 ini 镜像覆盖；
+//    [INPUT] / [OVERLAY] 里的 runtime 自己的状态保留
+string staleSecondary = Path.Combine(bootGameDir, "ReShade2.ini");
+ReShadeProfile staleProfile = ReShadeProfile.Load(staleSecondary);
+staleProfile.SetValue("ADDON", "AddonPath", "Z:\\old-host\\reshade-shaders\\Addons\\");
+staleProfile.SetValue("ADDON", "DisabledAddons", "Old Plugin@old.addon64");
+staleProfile.SetValue("INPUT", "KeyOverlay", "113,0,0,0");
+staleProfile.SetValue("OVERLAY", "WindowX", "123");
+staleProfile.Save();
+GameIniBootstrapResult boot6 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+ReShadeProfile fixedSecondary = ReShadeProfile.Load(staleSecondary);
+Check(boot6.SyncedSecondary && !boot6.CreatedSecondary, "识别为同步已有 ReShade2.ini（不是新建）");
+Check(fixedSecondary.GetValue("ADDON", "AddonPath") ==
+      ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("ADDON", "AddonPath"),
+    "ReShade2.ini 的 AddonPath 被主 ini 覆盖");
+string? mainDisabled = ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("ADDON", "DisabledAddons");
+Check(fixedSecondary.GetValue("ADDON", "DisabledAddons") == mainDisabled,
+    "ReShade2.ini 的 DisabledAddons 跟主 ini 一致（主没有则副本的死键也被摘掉）");
+Check(fixedSecondary.GetValue("INPUT", "KeyOverlay") == "113,0,0,0", "第二 runtime 自己的热键保留");
+Check(fixedSecondary.GetValue("OVERLAY", "WindowX") == "123", "第二 runtime 自己的覆盖层位置保留");
+Check(fixedSecondary.GetValue("OVERLAY", "TutorialProgress") == "4", "教程标记仍然 = 4");
+GameIniBootstrapResult boot7 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(!boot7.SyncedSecondary && !boot7.ChangedAnything, "同步幂等：再跑一遍什么都不写");
+
+Console.WriteLine("== DLSS5 预设切换器：分享码编解码 + 预设库 ==");
+// 跨实现测试向量：Python 独立实现（zlib.crc32 + 自定义字母表 base64）算的 flags=0 裸路径
+byte[]? vec1 = Dlss5PresetShareCode.Decode("D5P1AB0AAAATBwEhW1JFTk9EWC1ETFNTNV0KTlJIb29rUG9pbnQ9MQo");
+Check(vec1 is not null && System.Text.Encoding.UTF8.GetString(vec1!) == "[RENODX-DLSS5]\nNRHookPoint=1\n",
+    "解码 Python 向量（裸路径 flags=0）");
+Check(Dlss5PresetShareCode.Decode("D5P1AAUAAACCidH3SGVsbG8") is { } v2
+      && System.Text.Encoding.UTF8.GetString(v2) == "Hello", "解码第二个 Python 向量");
+
+// 往返：随机（不可压 → flags=0）/ 重复 INI 文本（可压 → flags=1）/ 边界尺寸
+var rng = new Random(42);
+byte[] randomPayload = new byte[5000];
+rng.NextBytes(randomPayload);
+Check(Dlss5PresetShareCode.Decode(Dlss5PresetShareCode.Encode(randomPayload)!)!.SequenceEqual(randomPayload),
+    "随机负载往返");
+var repetitive = new System.Text.StringBuilder();
+for (int i = 0; i < 400; i++)
+{
+    repetitive.Append("[RENODX-DLSS5]\nNRHookPoint=1\nDX11Source=native\nEnableHooks=2\n");
+}
+
+byte[] repetitiveBytes = System.Text.Encoding.UTF8.GetBytes(repetitive.ToString());
+string repetitiveCode = Dlss5PresetShareCode.Encode(repetitiveBytes)!;
+Check(Dlss5PresetShareCode.Decode(repetitiveCode)!.SequenceEqual(repetitiveBytes), "可压缩负载往返");
+Check(repetitiveCode.Length < repetitiveBytes.Length * 4 / 3 / 2, "可压缩负载真的走了压缩（码长明显小于原文 base64）");
+byte[] boundary = new byte[Dlss5PresetShareCode.MaxPayload];
+rng.NextBytes(boundary);
+Check(Dlss5PresetShareCode.Decode(Dlss5PresetShareCode.Encode(boundary)!)!.SequenceEqual(boundary), "256 KiB 边界往返");
+Check(Dlss5PresetShareCode.Encode(new byte[Dlss5PresetShareCode.MaxPayload + 1]) is null, "超 256 KiB 拒编码");
+Check(Dlss5PresetShareCode.Encode([]) is null, "空内容拒编码");
+
+// CRC 校验：改一个字符必须解码失败（不是静默出坏数据）
+char[] corrupt = repetitiveCode.ToCharArray();
+corrupt[corrupt.Length - 3] = corrupt[corrupt.Length - 3] == 'A' ? 'B' : 'A';
+Check(Dlss5PresetShareCode.Decode(new string(corrupt)) is null, "负载被篡改 → CRC 拦下");
+Check(Dlss5PresetShareCode.Decode("not-a-code") is null && Dlss5PresetShareCode.Decode("D5P1!!!") is null,
+    "非分享码拒解码");
+Check(Dlss5PresetShareCode.Decode("  \r\nD5P1AAUAAACCidH3SGVsbG8  ") is { } v3
+      && System.Text.Encoding.UTF8.GetString(v3) == "Hello", "前导空白容忍");
+
+// 预设库：扫描（Addons 顶层 + DLSS5-Presets 递归）+ 导入分享码 / 导入文件
+string presetAddons = Path.Combine(root, "preset-addons");
+Directory.CreateDirectory(Path.Combine(presetAddons, "DLSS5-Presets", "by-author"));
+File.WriteAllText(Path.Combine(presetAddons, "beside-addon.ini"), "[A]\nB=1\n");
+File.WriteAllText(Path.Combine(presetAddons, "DLSS5-Presets", "gi.ini"), "[G]\nH=1\n");
+File.WriteAllText(Path.Combine(presetAddons, "DLSS5-Presets", "by-author", "nested.ini"), "[N]\nM=1\n");
+File.WriteAllText(Path.Combine(presetAddons, "ignore.txt"), "x");
+List<Dlss5PresetFile> presets = Dlss5PresetLibrary.Scan(presetAddons);
+Check(presets.Count == 3 && presets.Any(p => p.Name == "beside-addon.ini")
+      && presets.Any(p => p.Name == "gi.ini") && presets.Any(p => p.Name == "nested.ini"),
+    "扫描到顶层 + DLSS5-Presets 递归，txt 不算");
+Check(Dlss5PresetLibrary.Scan(Path.Combine(root, "no-such-dir")).Count == 0, "目录不存在 → 空列表");
+
+string? imported = Dlss5PresetLibrary.ImportShareCode(
+    presetAddons, "D5P1AB0AAAATBwEhW1JFTk9EWC1ETFNTNV0KTlJIb29rUG9pbnQ9MQo", null);
+Check(imported is not null && File.Exists(imported!) && Path.GetFileName(imported!).StartsWith("Shared-"),
+    "导入分享码 → DLSS5-Presets 下 Shared-XXXXXXXX.ini");
+string? imported2 = Dlss5PresetLibrary.ImportShareCode(
+    presetAddons, "D5P1AB0AAAATBwEhW1JFTk9EWC1ETFNTNV0KTlJIb29rUG9pbnQ9MQo", "我的预设");
+Check(imported2 is not null && Path.GetFileName(imported2!) == "我的预设.ini", "指定文件名导入");
+string? imported3 = Dlss5PresetLibrary.ImportShareCode(
+    presetAddons, "D5P1AB0AAAATBwEhW1JFTk9EWC1ETFNTNV0KTlJIb29rUG9pbnQ9MQo", "我的预设");
+Check(imported3 is not null && Path.GetFileName(imported3!) == "我的预设 (2).ini", "重名自动加后缀");
+Check(Dlss5PresetLibrary.ImportShareCode(presetAddons, "garbage", null) is null, "坏码拒导入");
+
+string? importedFile = Dlss5PresetLibrary.ImportFile(presetAddons, Path.Combine(presetAddons, "beside-addon.ini"));
+Check(importedFile is not null && File.Exists(importedFile!) && importedFile!.EndsWith(".ini"),
+    "导入 txt/ini 文件复制进 DLSS5-Presets");
+Check(System.Text.Encoding.UTF8.GetString(Dlss5PresetLibrary.ReadContent(importedFile!)!) == "[A]\nB=1\n",
+    "读回内容一致");
+File.WriteAllBytes(Path.Combine(presetAddons, "utf16.ini"),
+    [.. System.Text.Encoding.Unicode.GetPreamble(), .. System.Text.Encoding.Unicode.GetBytes("[A]\r\nB=1\r\n")]);
+Check(Dlss5PresetLibrary.ReadContent(Path.Combine(presetAddons, "utf16.ini")) is null, "UTF-16 预设拒读（和游戏内一致）");
+
+// ===== 覆盖包用户内容：ini_config.json / auto.json / presets 同步 / 文件覆盖 =====
+string ucPackRoot = Path.Combine(root, "pack");
+Directory.CreateDirectory(Path.Combine(ucPackRoot, "presets", "sub"));
+File.WriteAllText(Path.Combine(ucPackRoot, "presets", "a.ini"), "[A]\nB=1\n");
+File.WriteAllText(Path.Combine(ucPackRoot, "presets", "sub", "b.ini"), "[C]\nD=2\n");
+Check(GameAddonPackUserContent.HasAny(ucPackRoot), "presets\\ 算用户内容");
+
+string ucPackAddons = Path.Combine(ucPackRoot, "Addons");
+Directory.CreateDirectory(ucPackAddons);
+File.WriteAllText(Path.Combine(ucPackAddons, GameAddonPack.MarkerFileName), "{\"schema\":1}");
+Check(GameAddonPackUserContent.PackRootOfAddonDirectory(ucPackAddons) == Path.GetFullPath(ucPackRoot),
+    "包根 = Addons 上一级");
+Check(GameAddonPackUserContent.PackRootOfAddonDirectory(presetAddons) is null, "非包目录 → 无包根");
+
+int syncedPresets = GameAddonPackUserContent.SyncPresets(ucPackRoot, ucPackAddons);
+Check(syncedPresets == 2 && File.Exists(Path.Combine(ucPackAddons, "DLSS5-Presets", "a.ini"))
+      && File.Exists(Path.Combine(ucPackAddons, "DLSS5-Presets", "sub", "b.ini")),
+    "presets\\ 递归复制进 DLSS5-Presets");
+Check(GameAddonPackUserContent.SyncPresets(ucPackRoot, ucPackAddons) == 0, "重复同步幂等（内容一致不重写）");
+File.WriteAllText(Path.Combine(ucPackRoot, "presets", "a.ini"), "[A]\nB=2\n");
+Check(GameAddonPackUserContent.SyncPresets(ucPackRoot, ucPackAddons) == 1, "内容变了会更新");
+Check(File.ReadAllText(Path.Combine(ucPackAddons, "DLSS5-Presets", "a.ini")) == "[A]\nB=2\n",
+    "更新后的预设内容一致");
+
+Directory.CreateDirectory(Path.Combine(ucPackRoot, "game_files", "sub"));
+File.WriteAllText(Path.Combine(ucPackRoot, "game_files", "x.dll"), "dll");
+File.WriteAllText(Path.Combine(ucPackRoot, "game_files", "sub", "y.txt"), "y");
+string overlayTarget = Path.Combine(root, "overlay-target");
+int overlaid = GameAddonPackUserContent.OverlayFiles(ucPackRoot, GameAddonPackUserContent.GameFilesFolderName, overlayTarget);
+Check(overlaid == 2 && File.ReadAllText(Path.Combine(overlayTarget, "sub", "y.txt")) == "y",
+    "game_files\\ 按相对结构覆盖到目标目录");
+
+// ini_config.json：set 写入 + remove 摘除 + 幂等
+File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.IniConfigFileName), """
+{
+  "set": {
+    "GENERAL": { "PresetPath": "C:\\p.ini", "NoEffectCache": "1" },
+    "RenoDX.DLSS5": { "NRHookPoint": "1" }
+  },
+  "remove": { "ADDON": ["DeadKey"] }
+}
+""");
+GamePackIniConfig? iniConfig = GamePackIniConfig.Load(ucPackRoot);
+Check(iniConfig is not null && iniConfig.Set.Count == 2 && iniConfig.Set["GENERAL"].Count == 2
+      && iniConfig.Remove["ADDON"].Count == 1, "ini_config.json 解析");
+
+string gameIni = Path.Combine(root, "game.ini");
+File.WriteAllText(gameIni, "[GENERAL]\nPresetPath=C:\\old.ini\n[ADDON]\nDeadKey=1\n");
+Check(iniConfig!.Apply(gameIni), "首次 apply 有写入");
+string applied = File.ReadAllText(gameIni);
+Check(applied.Contains("PresetPath=C:\\p.ini") && applied.Contains("NoEffectCache=1")
+      && applied.Contains("NRHookPoint=1") && !applied.Contains("DeadKey"),
+    "set 写入 + remove 摘除都生效");
+Check(!iniConfig.Apply(gameIni), "重复 apply 幂等");
+
+File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.IniConfigFileName), "{ broken json");
+Check(GamePackIniConfig.Load(ucPackRoot) is null, "坏 ini_config.json 当没有配置");
+File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.IniConfigFileName), "{}");
+Check(GamePackIniConfig.Load(ucPackRoot) is null, "空配置当没有");
+
+// auto.json：动作 / runOnLaunch / 步骤参数
+File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.AutoActionFileName), """
+{
+  "actions": [
+    {
+      "name": "一键 NR",
+      "runOnLaunch": true,
+      "steps": [
+        { "action": "set_addons", "enabled": false, "files": ["a.addon64", "b.addon64"] },
+        { "action": "apply_preset", "name": "NR.ini" },
+        { "action": "set_dx12", "enabled": true }
+      ]
+    },
+    { "name": "空动作", "steps": [] },
+    { "name": "坏步骤", "steps": [ { "nope": 1 }, { "action": "set_opt", "enabled": false } ] }
+  ]
+}
+""");
+List<PackAutoAction> actions = PackAutoActionFile.Load(ucPackRoot);
+Check(actions.Count == 2, "空动作被丢掉、坏步骤被跳过");
+Check(actions[0].Name == "一键 NR" && actions[0].RunOnLaunch && actions[0].Steps.Count == 3,
+    "动作名 / runOnLaunch / 步骤数");
+Check(actions[0].Steps[0].GetBool("enabled") == false
+      && actions[0].Steps[0].GetStringList("files").SequenceEqual(["a.addon64", "b.addon64"]),
+    "步骤参数按名取值");
+Check(actions[0].Steps[1].GetString("name") == "NR.ini", "字符串参数");
+Check(actions[1].Steps.Count == 1 && actions[1].Steps[0].Action == "set_opt",
+    "坏步骤跳过、有效步骤保留");
+Check(!actions[1].RunOnLaunch, "runOnLaunch 默认 false");
+Check(PackAutoActionFile.Load(Path.Combine(root, "no-such-pack")).Count == 0, "无 auto.json → 空");
+Check(PackAutoActionFile.Parse("""{"actions":[{"name":"A","steps":[{"action":"set_dx12","enabled":true},{"action":"launch_game"}]}]}""") is { Count: 1 } pa && pa[0].Name == "A" && pa[0].Steps.Count == 2 && pa[0].Steps[1].Action == "launch_game", "Parse：标准 actions 形态");
+Check(PackAutoActionFile.Parse("""[{"steps":[{"action":"set_opt","enabled":true}]},{"steps":[{"action":"clear_game_ini"}]}]""") is { Count: 2 } bareArr && bareArr[0].Steps[0].GetBool("enabled") == true, "Parse：裸数组形态");
+Check(PackAutoActionFile.Parse("""{"steps":[{"action":"set_dx12","enabled":true}]}""") is { Count: 1 } single && single[0].Steps.Count == 1 && single[0].Name.Length > 0, "Parse：单 steps 匿名动作");
+Check(PackAutoActionFile.Parse("not json").Count == 0 && PackAutoActionFile.Parse("{}").Count == 0, "Parse：坏 JSON / 空对象 → 空");
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }

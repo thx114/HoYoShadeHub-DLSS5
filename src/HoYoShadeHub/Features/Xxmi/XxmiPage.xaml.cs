@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
@@ -342,6 +343,11 @@ public sealed partial class XxmiPage : PageBase
     private readonly ObservableCollection<XxmiModItem> _mods = [];
 
     private GameId? _gameId;
+    private string? _gameName;
+
+    /// <summary>鸣潮缺 -krqlv=hd 的提示每个会话只弹一次（进一次页面弹一次太烦）</summary>
+    private static bool _krqlvPrompted;
+
     private string? _instance;
     private bool _loadingMods;
 
@@ -373,13 +379,49 @@ public sealed partial class XxmiPage : PageBase
     {
         base.OnNavigatedTo(e);
         _gameId = e.Parameter as GameId;
+        _gameName = ResolveGameName();
         LoadInstance();
+    }
+
+    /// <summary>当前游戏的名字（导航参数只有 GameId；自定义游戏要反查 games.json 才有名字）</summary>
+    private string? ResolveGameName()
+    {
+        try
+        {
+            return GameCatalog.GetOrCreate(GameCatalog.CreateService(), _gameId)?.DisplayName;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "反查游戏名失败");
+            return null;
+        }
     }
 
     private void LoadInstance()
     {
-        string? expected = XxmiLocator.ImporterFor(_gameId?.GameBiz);
-        string? instance = XxmiLocator.FindInstance(_gameId?.GameBiz, out string? importer);
+        try
+        {
+            LoadInstanceCore();
+        }
+        catch (Exception ex)
+        {
+            // 探测过程踩了任何坑（权限 / 坏盘 / 配置损坏）都不能让页面加载失败 ——
+            // 加载失败的表现就是「整个页面读不到 XXMI」，比报错更误导
+            _logger.LogWarning(ex, "XXMI 实例探测失败");
+            _instance = null;
+            TextBox_Instance.Text = string.Empty;
+            _importerName = string.Empty;
+            _instanceStatusText = "检测 XXMI 出错了：" + ex.Message + "　可以点「选择…」手动指定 MI 目录。";
+            _modsCountText = string.Empty;
+            _mods.Clear();
+            UpdateStatusBar();
+        }
+    }
+
+    private void LoadInstanceCore()
+    {
+        string? expected = XxmiLocator.ImporterForGame(_gameId?.GameBiz, _gameName);
+        string? instance = XxmiLocator.FindInstance(_gameId?.GameBiz, _gameName, out string? importer);
 
         _instance = instance;
         TextBox_Instance.Text = instance ?? string.Empty;
@@ -390,9 +432,13 @@ public sealed partial class XxmiPage : PageBase
         List<XxmiInstanceItem> items = [];
         string? root = XxmiLocator.FindRoot();
 
-        if (root is not null)
+        // 实例和游戏一对一：下拉里只放这个游戏自己的 MI（绝区零只能选 ZZMI），
+        // 别的实例不往里塞（FindInstance 那边同样会拒掉不匹配的目录）
+        if (root is not null && expected is not null)
         {
-            foreach (string dir in XxmiLocator.ListInstances(root))
+            string dir = Path.Combine(root, expected);
+
+            if (XxmiLocator.IsInstance(dir))
             {
                 items.Add(new XxmiInstanceItem(Path.GetFileName(dir), dir));
             }
@@ -412,6 +458,26 @@ public sealed partial class XxmiPage : PageBase
                 : $"没找到 XXMI 的 {expected} 实例。点「自动查找」，或「选择…」手动指定；也可以先用 XXMI Launcher 装一次。")
             : $"MI 实例：{instance}";
 
+        // 之前手动指定的目录被实例↔游戏配对检查忽略了（类型不匹配）——明说原因，
+        // 不然看起来像「读不到 XXMI」
+        if (_gameId is not null && expected is not null)
+        {
+            string? manual = AppConfig.GetXxmiInstance(_gameId.GameBiz);
+
+            if (!string.IsNullOrWhiteSpace(manual)
+                && XxmiLocator.IsInstance(manual)
+                && !Path.GetFileName(manual.TrimEnd('\\', '/')).Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                status += $"　注意：之前指定的 {manual} 是 {Path.GetFileName(manual)} 实例，这个游戏只能用 {expected}，已忽略该指定。";
+            }
+        }
+
+        // 3DMigoto 的 loader 对非 ASCII 路径支持很差（注入会无声失败）——路径带中文时给个明示
+        if (instance is not null && instance.Any(c => c > 127))
+        {
+            status += "　⚠ 路径里有中文：XXMI 对中文路径支持很差，模型替换可能注不进去，建议把 XXMI 装到纯英文目录。";
+        }
+
         // 启动器那边「启用 XXMI 注入」跑完会写到这儿，方便确认上次到底有没有注进去
         if (AppConfig.XxmiLastLaunch is { Length: > 0 } lastLaunch)
         {
@@ -424,6 +490,67 @@ public sealed partial class XxmiPage : PageBase
         _modsCountText = string.Empty;
         LoadMods();
         UpdateStatusBar();
+
+        MaybePromptKrqlvHd(importer);
+    }
+
+    /// <summary>
+    /// 鸣潮（WWMI）：XXMI 的启动参数里没带 <c>-krqlv=hd</c> 时提示回退 HD 材质 ——
+    /// 极致材质档在某些机器上会让游戏崩溃，XXMI 官方建议加这个参数。
+    /// </summary>
+    private void MaybePromptKrqlvHd(string? importer)
+    {
+        if (_krqlvPrompted || importer is not "WWMI" || _instance is null)
+        {
+            return;
+        }
+
+        string options = XxmiLocator.LaunchOptions(_gameId?.GameBiz, _gameName);
+
+        if (options.Contains("-krqlv=hd", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _krqlvPrompted = true;
+        _ = PromptKrqlvHdAsync(options);
+    }
+
+    private async Task PromptKrqlvHdAsync(string currentOptions)
+    {
+        try
+        {
+            ContentDialog dialog = new()
+            {
+                XamlRoot = XamlRoot,
+                Title = "鸣潮材质参数",
+                Content = "XXMI 给鸣潮的启动参数里没有 -krqlv=hd。极致材质档在某些机器上会导致游戏崩溃，" +
+                          "建议回退到 HD 材质（加上 -krqlv=hd）。\n\n当前参数：" +
+                          (string.IsNullOrWhiteSpace(currentOptions) ? "（空）" : currentOptions),
+                PrimaryButtonText = "加 -krqlv=hd",
+                CloseButtonText = "不用",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            string merged = string.IsNullOrWhiteSpace(currentOptions)
+                ? "-krqlv=hd"
+                : currentOptions.Trim() + " -krqlv=hd";
+
+            string? error = XxmiLocator.SetLaunchOptions(_gameId?.GameBiz, _gameName, merged);
+
+            TextBlock_Status.Text = error is null
+                ? "已在 XXMI 配置里加上 -krqlv=hd（并启用启动参数）。"
+                : "改 XXMI 配置失败：" + error;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "鸣潮 -krqlv=hd 提示失败");
+        }
     }
 
     /// <summary>底部状态 = 实例说明 + mod 计数（顶栏砍成一行后，这些信息都并到这儿）</summary>
@@ -640,6 +767,20 @@ public sealed partial class XxmiPage : PageBase
             if (!XxmiLocator.IsInstance(folder))
             {
                 TextBlock_Status.Text = $"{folder} 看起来不是 MI 实例目录（里面没有 d3dx.ini / d3d11.dll）。";
+                return;
+            }
+
+            string? expected = XxmiLocator.ImporterForGame(_gameId?.GameBiz, _gameName);
+
+            if (expected is null)
+            {
+                TextBlock_Status.Text = "这个游戏没有对应的 MI 实例（认识的：ZZMI / GIMI / SRMI / WWMI / HIMI / EFMI），不支持 XXMI。";
+                return;
+            }
+
+            if (!Path.GetFileName(folder.TrimEnd('\\', '/')).Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                TextBlock_Status.Text = $"{folder} 是 {Path.GetFileName(folder)} 实例；{ _gameName ?? "这个游戏" }只能用 {expected}（MI 实例和游戏是一对一的）。";
                 return;
             }
 

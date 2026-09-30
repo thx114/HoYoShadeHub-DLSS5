@@ -121,9 +121,9 @@ internal sealed class XxmiInjector
     /// 我们自己 Inject 进去它能加载但完全不初始化（连 d3d11_log.txt 都不写）；而 XXMI Launcher 有 CLI，
     /// 可以让它**在后台**把整条启动+注入流程跑完，我们不用碰它的 dll。
     /// </summary>
-    public static XxmiLaunchResult LaunchViaXxmiCli(GameId gameId, string gameExePath)
+    public static XxmiLaunchResult LaunchViaXxmiCli(GameId gameId, string gameExePath, string? gameName)
     {
-        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, out string? importer);
+        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);
 
         if (instance is null || importer is null)
         {
@@ -180,10 +180,10 @@ internal sealed class XxmiInjector
     /// DllMain 在游戏进程里跑，所以不会有 <c>HookLibrary</c> 那个 1114（DLL_INIT_FAILED）问题；
     /// 而且进程是挂起的，注入发生在 D3D 初始化之前。
     /// </summary>
-    public static XxmiLaunchResult Launch(GameId gameId, string gameExePath, string? extraArguments, IReadOnlyList<string>? extraDlls = null)
+    public static XxmiLaunchResult Launch(GameId gameId, string gameExePath, string? gameName, string? extraArguments, IReadOnlyList<string>? extraDlls = null)
     {
-        string? injector = FindInjector(gameId);
-        string? loader = FindLoader(gameId);
+        string? injector = FindInjector(gameId, gameName);
+        string? loader = FindLoader(gameId, gameName);
 
         if (injector is null || loader is null)
         {
@@ -231,7 +231,7 @@ internal sealed class XxmiInjector
                 // LoadLibraryW 会失败（Inject 返回 600，用户实测过）。
                 List<string> extras = [];
 
-                foreach (string extra in Xxmi.XxmiLocator.ExtraLibraries(gameId.GameBiz))
+                foreach (string extra in Xxmi.XxmiLocator.ExtraLibraries(gameId.GameBiz, gameName))
                 {
                     extras.Add(extra);
                 }
@@ -286,9 +286,9 @@ internal sealed class XxmiInjector
     }
 
     /// <summary>这个游戏的 XXMI 加载器（3DMigoto 的 d3d11.dll）；找不到返回 null</summary>
-    public static string? FindLoader(GameId gameId)
+    public static string? FindLoader(GameId gameId, string? gameName)
     {
-        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, out _);
+        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out _);
 
         if (string.IsNullOrWhiteSpace(instance))
         {
@@ -300,9 +300,9 @@ internal sealed class XxmiInjector
     }
 
     /// <summary>XXMI 的注入器 3dmloader.dll（从 MI 实例往上找 Resources\Packages\XXMI）</summary>
-    public static string? FindInjector(GameId gameId)
+    public static string? FindInjector(GameId gameId, string? gameName)
     {
-        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, out _);
+        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out _);
 
         if (string.IsNullOrWhiteSpace(instance))
         {
@@ -327,9 +327,9 @@ internal sealed class XxmiInjector
     }
 
     /// <summary>XXMI 包里自带的那份 d3d11.dll（实例里那份加载失败时的备选）</summary>
-    public static string? FindPackageLoader(GameId gameId)
+    public static string? FindPackageLoader(GameId gameId, string? gameName)
     {
-        string? injector = FindInjector(gameId);
+        string? injector = FindInjector(gameId, gameName);
 
         if (injector is null)
         {
@@ -343,11 +343,11 @@ internal sealed class XxmiInjector
     /// <summary>
     /// 挂钩子 → 等注入 → 脱钩。调用时机：**游戏进程起来之前**（用户自己起游戏也行，钩子会一直等）。
     /// </summary>
-    public static async Task<bool> ArmAndWaitAsync(GameId gameId, string processName, CancellationToken cancellationToken)
+    public static async Task<bool> ArmAndWaitAsync(GameId gameId, string? gameName, string processName, CancellationToken cancellationToken)
     {
-        string? injector = FindInjector(gameId);
-        string? instanceDll = FindLoader(gameId);
-        string? packageDll = FindPackageLoader(gameId);
+        string? injector = FindInjector(gameId, gameName);
+        string? instanceDll = FindLoader(gameId, gameName);
+        string? packageDll = FindPackageLoader(gameId, gameName);
 
         if (injector is null || (instanceDll is null && packageDll is null))
         {

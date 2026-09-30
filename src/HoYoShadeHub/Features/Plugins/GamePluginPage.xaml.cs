@@ -25,6 +25,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace HoYoShadeHub.Features.Plugins;
 
@@ -87,6 +88,12 @@ public sealed partial class GamePluginPage : PageBase
 
     public ObservableCollection<AddonItemViewModel> Addons { get; } = [];
 
+    /// <summary>DLSS5 预设切换器的预设列表（右卡「预设管理」）</summary>
+    public ObservableCollection<Dlss5PresetFile> Presets { get; } = [];
+
+    /// <summary>最近一次剪贴板内容变化的时间（「+」导入时判断 1 分钟窗口用）</summary>
+    private DateTimeOffset? _clipboardChangedAt;
+
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
@@ -104,6 +111,8 @@ public sealed partial class GamePluginPage : PageBase
         _isPageAlive = true;
         RegisterWindowStateHandler();
         AddonList.ItemsSource = Addons;
+        PresetList.ItemsSource = Presets;
+        Clipboard.ContentChanged += OnClipboardContentChanged;
         _ = RefreshAsync();
     }
 
@@ -113,7 +122,15 @@ public sealed partial class GamePluginPage : PageBase
         // 否则窗口每次激活都会摸到已经释放的页面（ObjectDisposedException 崩进程）
         _isPageAlive = false;
         WeakReferenceMessenger.Default.UnregisterAll(this);
+        Clipboard.ContentChanged -= OnClipboardContentChanged;
         Addons.Clear();
+        Presets.Clear();
+    }
+
+    private void OnClipboardContentChanged(object? sender, object e)
+    {
+        // 事件不一定落在 UI 线程，记时间戳走分发队列
+        DispatcherQueue?.TryEnqueue(() => _clipboardChangedAt = DateTimeOffset.Now);
     }
 
     /// <summary>
@@ -175,15 +192,26 @@ public sealed partial class GamePluginPage : PageBase
             if (_entry is null)
             {
                 ShowEmptyState("还没有选中游戏。\n点左上角那个游戏按钮选一个；Hub 不认识游戏（比如 WeGame 上的）就用那里的「+」加进来。");
-                TextBlock_GameTitle.Text = "没有游戏";
                 TextBlock_GameMeta.Text = string.Empty;
-                TextBlock_IniPath.Text = string.Empty;
                 return;
+            }
+
+            // 覆盖包用户内容（ini_config.json / auto.json / presets\）挂在「AddonPath 指向包」上：
+            // 进页先同步一次包，让这些内容打开页面就激活，不用等启动 / 切版本
+            if (CurrentGameId is { } packGameId && _host is not null)
+            {
+                try
+                {
+                    GameAddonPackService.Sync(packGameId, _entry, _host);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Sync addon pack on page refresh");
+                }
             }
 
             // 进插件页先自动收拾这个游戏自己的 ReShade.ini（缺了补、指错了拉回），再读它
             AutoFixGameIni(_entry);
-
             LoadGame(_entry);
         }
         catch (Exception ex)
@@ -239,19 +267,24 @@ public sealed partial class GamePluginPage : PageBase
         try
         {
             _isApplying = true;
-            TextBlock_GameTitle.Text = entry.DisplayName;
             TextBlock_GameMeta.Text = GameCatalog.Describe(entry);
-            TextBlock_IniPath.Text = entry.ReShadeIniPath is { } gameIni
-                ? (entry.HasReShadeIni ? "游戏目录：" + gameIni : "缺少：" + gameIni)
-                : "还不知道游戏目录（先「指定主程序…」）";
 
-            Button_CopyIni.IsEnabled = entry.ReShadeIniPath is not null && !entry.HasReShadeIni;
+            // 游戏 ini 缺失 → 页面中央显示「复制模板到游戏目录」；平时不显示
+            Button_CopyIni.Visibility = entry.ReShadeIniPath is not null && !entry.HasReShadeIni
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             Button_OpenGameFolder.IsEnabled = entry.GameDirectory is not null && Directory.Exists(entry.GameDirectory);
         }
         finally
         {
             _isApplying = false;
         }
+
+        // 预设管理：跟插件目录走，和 ini 是否可读无关
+        RefreshPresets();
+
+        // 覆盖包动作（内置 + auto.json）
+        RefreshActions();
 
         // 注入时机（HoYoShade / ReShade 这一步）：按游戏，独立于插件列表是否可用
         UpdateShadeInjectDelayUi();
@@ -265,6 +298,7 @@ public sealed partial class GamePluginPage : PageBase
             ShowInfo("读不了这个游戏的 ReShade.ini", profileError, InfoBarSeverity.Error);
             TextBlock_AddonsEmpty.Text = "ReShade.ini 读取失败：" + profileError;
             TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
+            TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -275,10 +309,11 @@ public sealed partial class GamePluginPage : PageBase
             // §5：没有 ReShade.ini 的自定义游戏允许添加，只用于启动/注入
             ShowInfo("该游戏没有 ReShade.ini",
                 "插件开关写在这个游戏的 ReShade.ini 里，现在还没有这份文件，所以暂时管不了插件。\n" +
-                "点「复制模板到游戏目录」可以先补一份（HoYoShade 自己也会在注入时复制过去），或者直接开「注入模式」启动游戏。",
+                "点页面中间的「复制模板到游戏目录」可以先补一份（HoYoShade 自己也会在注入时复制过去），或者直接开「注入模式」启动游戏。",
                 InfoBarSeverity.Warning);
             TextBlock_AddonsEmpty.Text = "该游戏没有 ReShade.ini —— 插件开关暂时不可用。";
             TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
+            TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -321,6 +356,8 @@ public sealed partial class GamePluginPage : PageBase
 
         TextBlock_AddonsEmpty.Text = "插件目录里还没有 addon。到左下角「全局插件」里装一个。";
         TextBlock_AddonsEmpty.Visibility = Addons.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        TextBlock_AddonSummary.Text = $"{Addons.Count} 个插件，启用 {Addons.Count(a => a.Enabled)} 个";
+        TextBlock_AddonSummary.Visibility = Visibility.Visible;
         UpdatePathHint(_plugins.AddonDirectory);
         UpdateDriverWarning();
         HideInfo();
@@ -387,6 +424,10 @@ public sealed partial class GamePluginPage : PageBase
     {
         _plugins = null;
         Addons.Clear();
+        Presets.Clear();
+        TextBlock_PresetsEmpty.Visibility = Visibility.Collapsed;
+        TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
+        Button_CopyIni.Visibility = Visibility.Collapsed;
         TextBlock_AddonsEmpty.Text = message;
         TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
         UpdatePathHint(null);
@@ -1056,63 +1097,6 @@ public sealed partial class GamePluginPage : PageBase
 
     private async void Button_Refresh_Click(object sender, RoutedEventArgs e) => await RefreshAsync();
 
-    /// <summary>
-    /// 右上角「DLSS5 兼容性检测」：弹窗列 15 条（显卡 / 启动器 / 游戏目录 / XXMI），
-    /// 7/9/10/11/12/13/14/15 带自动修复。
-    ///
-    /// <para>
-    /// 用页面已经解析好的当前游戏 + HoYoShade 宿主，不再重新探测一遍（避免和列表显示的不是同一份）。
-    /// </para>
-    /// </summary>
-    private async void Button_Dlss5CompatCheck_Click(object sender, RoutedEventArgs e)
-    {
-        // 初始 context 和「重新检测」用的工厂是同一个 —— 每次检测都重新读盘
-        var dialog = new Dlss5CompatDialog(BuildDlss5CompatContext(), BuildDlss5CompatContext)
-        {
-            XamlRoot = XamlRoot,
-        };
-
-        await dialog.ShowAsync();
-    }
-
-    /// <summary>
-    /// 组装 DLSS5 检测上下文。「重新检测」每次都会重新走一遍（重建 GamePluginService 重读 ini / 插件目录）：
-    /// 修复（比如把 ini 路径指回当前 HoYoShade）改的是**盘上的文件**，页面缓存的 service 还是修复前那份 ——
-    /// 不重建的话，修完再检还是旧内容，看起来就是「指回了也没用」（群友反馈）。
-    /// </summary>
-    private Dlss5CompatContext BuildDlss5CompatContext()
-    {
-        // 没装 HoYoShade 也要能检测：DLSS5 还有「OptiScaler 的 DLSS-NR」那条路，那条不需要 HoYoShade。
-        ShadeHost? host = _host ?? PluginHostLocator.Resolve(out _);
-
-        GamePluginService? plugins = _plugins;
-        if (_entry is not null)
-        {
-            try
-            {
-                plugins = GamePluginServiceFactory.Create(_entry, host);
-            }
-            catch
-            {
-                plugins = _plugins;
-            }
-        }
-
-        return new Dlss5CompatContext
-        {
-            ShadeHost = host,
-            Game = _entry,
-            GameId = CurrentGameId,
-            Profile = plugins?.Profile,
-            ProfileError = plugins?.ProfileError,
-            AddonStates = plugins?.GetAddons(),
-            HookPoint = plugins?.GetHookPoint() ?? 0,
-            PluginService = plugins,
-            Delivery = Dlss5CompatContext.ResolveDelivery(CurrentGameId, host),
-            OptiScalerDllPath = AppConfig.GetSelectedOptiScalerDll(CurrentGameId),
-        };
-    }
-
     private async void Button_PickExe_Click(object sender, RoutedEventArgs e)
     {
         if (_discovery is null || _entry is null)
@@ -1149,48 +1133,6 @@ public sealed partial class GamePluginPage : PageBase
 
     #region ReShade.ini 工具
 
-    private async void Button_BuildIni_Click(object sender, RoutedEventArgs e)
-    {
-        if (_host is null)
-        {
-            return;
-        }
-
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "重置模板 ReShade.ini",
-            Content = "跑一次 HoYoShade\\LauncherResource\\INIBuild.exe，重新生成 HoYoShade 根目录下的模板 ReShade.ini" +
-                      "（等于启动器 bat 里的「重置 ReShade.ini」）。\n\n" +
-                      "注意：它会按插件目录重写模板里的 DisabledAddons —— 新装的插件默认是关的；" +
-                      "已经复制到各游戏目录的那份不会被它改动。",
-            PrimaryButtonText = "执行",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Close,
-        };
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        TextBlock_Status.Text = "正在跑 INIBuild.exe…";
-        IniBuildResult result = await ReShadeIniBuilder.RunAsync(_host);
-
-        if (result.Ok)
-        {
-            _logger.LogInformation("INIBuild ok: {Path}", _host.ReShadeIniPath);
-            ShowInfo("模板已重新生成", _host.ReShadeIniPath, InfoBarSeverity.Success);
-            TextBlock_Status.Text = "模板 ReShade.ini 已重新生成：" + _host.ReShadeIniPath;
-        }
-        else
-        {
-            _logger.LogWarning("INIBuild failed: {Reason}", result.FailureReason);
-            ShowInfo("生成失败", result.FailureReason ?? "未知原因", InfoBarSeverity.Error);
-            TextBlock_Status.Text = "INIBuild 失败：" + result.FailureReason;
-        }
-    }
-
     private async void Button_CopyIni_Click(object sender, RoutedEventArgs e)
     {
         if (_host is null || _entry is not { } entry)
@@ -1212,7 +1154,7 @@ public sealed partial class GamePluginPage : PageBase
 
         if (!File.Exists(_host.ReShadeIniPath))
         {
-            ShowInfo("模板还没有", "HoYoShade 根目录下没有 ReShade.ini，先点「重置模板 ReShade.ini」。", InfoBarSeverity.Warning);
+            ShowInfo("模板还没有", "HoYoShade 根目录下没有 ReShade.ini，先启动一次 HoYoShade 让它生成模板。", InfoBarSeverity.Warning);
             return;
         }
 
@@ -1246,6 +1188,379 @@ public sealed partial class GamePluginPage : PageBase
 
         await RefreshAsync();
         TextBlock_Status.Text = "已复制到 " + target;
+    }
+
+    #endregion
+
+    #region 预设管理（DLSS5-ReShade-Preset-Switcher）
+
+    /// <summary>扫当前插件目录的预设（Addons 顶层 + DLSS5-Presets 递归），刷新右卡列表</summary>
+    private void RefreshPresets()
+    {
+        Presets.Clear();
+        string? addonsDir = ResolveCurrentAddonDirectory() ?? _host?.AddonsPath;
+        foreach (Dlss5PresetFile preset in Dlss5PresetLibrary.Scan(addonsDir))
+        {
+            Presets.Add(preset);
+        }
+
+        TextBlock_PresetsEmpty.Text = string.IsNullOrWhiteSpace(addonsDir)
+            ? "还没有插件目录。装好 HoYoShade / 插件后再来。"
+            : "还没有预设。点右上「+」导入分享码或预设文件。";
+        TextBlock_PresetsEmpty.Visibility = Presets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    #endregion
+
+    #region 覆盖包动作（内置 + auto.json）
+
+    private string? _packRoot;
+
+    /// <summary>刷新「动作」区：内置（关/开全部插件）+ 覆盖包 auto.json 定义、且用户仍然启用的自定义动作</summary>
+    private void RefreshActions()
+    {
+        Panel_Actions.Children.Clear();
+        _packRoot = GameAddonPackUserContent.PackRootOfAddonDirectory(ResolveCurrentAddonDirectory());
+
+        var buttons = new List<(string Label, string? Tip, object Tag)>();
+
+        if (_plugins is { HasReShadeIni: true })
+        {
+            buttons.Add(("关闭全部插件", "把这个游戏的插件全部禁用（写进游戏 ReShade.ini）", BuiltinAction("关闭全部插件", false)));
+            buttons.Add(("启用全部插件", "把这个游戏的插件全部启用", BuiltinAction("启用全部插件", true)));
+        }
+
+        // auto.json 内容变了 / 还没同意过 → 先弹窗让用户挑（默认全装），确认前自定义动作不上架
+        string gameBiz = CurrentGameId?.GameBiz.Value ?? string.Empty;
+        string hash = PackActionConsent.ComputeHash(_packRoot);
+        List<PackAutoAction> packActions = PackAutoActionFile.Load(_packRoot);
+        bool needConsent = packActions.Count > 0
+                           && gameBiz.Length > 0
+                           && !PackActionConsent.IsConsented(gameBiz, hash);
+        if (needConsent && _packRoot is not null)
+        {
+            _ = PromptPackActionConsentAsync(gameBiz, hash, _packRoot, packActions);
+        }
+        else if (packActions.Count > 0 && gameBiz.Length > 0)
+        {
+            HashSet<string> disabled = PackActionConsent.DisabledActions(gameBiz, hash);
+            foreach (PackAutoAction action in packActions)
+            {
+                if (disabled.Contains(action.Name))
+                {
+                    continue;
+                }
+
+                buttons.Add((action.Name,
+                    action.RunOnLaunch ? "启动 / 注入前会自动执行" : null,
+                    action));
+            }
+        }
+
+        Grid_ActionsHeader.Visibility = buttons.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        foreach ((string label, string? tip, object tag) in buttons)
+        {
+            var button = new Button
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left,
+                Content = label,
+                Tag = tag,
+            };
+            if (tip is not null)
+            {
+                ToolTipService.SetToolTip(button, tip);
+            }
+
+            button.Click += Button_PackAction_Click;
+            Panel_Actions.Children.Add(button);
+        }
+    }
+
+    private static PackAutoAction BuiltinAction(string name, bool enabled)
+    {
+        var action = new PackAutoAction { Name = name };
+        action.Steps.Add(new PackActionStep
+        {
+            Action = "set_addons",
+            Raw = MakeRaw(new { action = "set_addons", enabled }),
+        });
+        return action;
+    }
+
+    /// <summary>
+    /// 覆盖包 auto.json 首次出现 / 内容变更后的同意弹窗：列出**全部**动作和步骤，
+    /// 高危动作（覆盖文件 / 注册表加游戏 / 清 ini / 删滤镜）标红并展开全部文件清单。
+    /// 逐项勾选、默认全装；「全部不要」= 同意但全禁（包内容再变之前不再弹）。
+    /// </summary>
+    private async Task PromptPackActionConsentAsync(string gameBiz, string hash, string packRoot, List<PackAutoAction> actions)
+    {
+        try
+        {
+            var panel = new StackPanel { Spacing = 10 };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "这个覆盖包（auto.json）请求执行以下自定义动作。勾选要启用的（默认全部启用）：",
+                TextWrapping = TextWrapping.Wrap,
+            });
+
+            var boxes = new List<CheckBox>();
+            foreach (PackAutoAction action in actions)
+            {
+                var box = new CheckBox { IsChecked = true, Tag = action.Name };
+                var content = new StackPanel { Spacing = 2 };
+                content.Children.Add(new TextBlock
+                {
+                    Text = action.Name + (action.RunOnLaunch ? "　（启动前自动执行）" : string.Empty),
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+
+                int index = 1;
+                foreach (PackActionStep step in action.Steps)
+                {
+                    bool highRisk = PackActionDescriber.IsHighRisk(step);
+                    var stepText = new TextBlock
+                    {
+                        Text = $"{index}. {(highRisk ? "⚠ " : string.Empty)}{PackActionDescriber.Describe(step, packRoot)}",
+                        TextWrapping = TextWrapping.Wrap,
+                    };
+                    if (highRisk)
+                    {
+                        stepText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
+                    }
+
+                    content.Children.Add(stepText);
+
+                    foreach (string detail in PackActionDescriber.HighRiskDetails(step, packRoot))
+                    {
+                        content.Children.Add(new TextBlock
+                        {
+                            Text = "　　· " + detail,
+                            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCriticalBrush"],
+                            TextWrapping = TextWrapping.Wrap,
+                        });
+                    }
+
+                    index++;
+                }
+
+                box.Content = content;
+                boxes.Add(box);
+                panel.Children.Add(box);
+            }
+
+            var scroll = new ScrollViewer { Content = panel, MaxHeight = 420 };
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "覆盖包动作确认",
+                Content = scroll,
+                PrimaryButtonText = "启用勾选的",
+                SecondaryButtonText = "全部不要",
+                CloseButtonText = "下次再说",
+                DefaultButton = ContentDialogButton.Primary,
+                MaxWidth = 560,
+            };
+
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result == ContentDialogResult.None)
+            {
+                return;   // 下次再说：不上架自定义动作，下次进页还会问
+            }
+
+            var disabled = result == ContentDialogResult.Secondary
+                ? actions.Select(a => a.Name).ToList()
+                : boxes.Where(b => b.IsChecked != true).Select(b => (string)b.Tag!).ToList();
+
+            PackActionConsent.Save(gameBiz, hash, disabled);
+            RefreshActions();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pack action consent prompt");
+        }
+    }
+
+    private async void Button_PackAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: PackAutoAction action })
+        {
+            return;
+        }
+
+        if (action.Steps.Count == 0)
+        {
+            return;
+        }
+
+        TextBlock_Status.Text = $"正在执行「{action.Name}」…";
+        string summary = await LauncherActionRunner.RunAsync(action, BuildActionContext(interactive: true));
+        TextBlock_Status.Text = $"「{action.Name}」：{summary}";
+        ShowInfo($"动作「{action.Name}」", summary, InfoBarSeverity.Informational);
+
+        // 插件开关 / 预设应用会改盘上的 ini —— 卡片状态跟一遍
+        UpdateHookPointUi();
+        RefreshPresets();
+    }
+
+    private static System.Text.Json.JsonElement MakeRaw(object value)
+        => System.Text.Json.JsonSerializer.SerializeToDocument(value).RootElement.Clone();
+
+    private LauncherActionContext BuildActionContext(bool interactive) => new()
+    {
+        GameId = CurrentGameId,
+        GameBiz = CurrentGameBiz,
+        Entry = _entry,
+        Host = _host,
+        Plugins = _plugins,
+        PackRoot = _packRoot,
+        XamlRoot = XamlRoot,
+        Interactive = interactive,
+        Report = text => TextBlock_Status.Text = text,
+    };
+
+    /// <summary>「包目录」按钮：打开（必要时预创建）覆盖包目录</summary>
+    private void Button_OpenPackFolder_Click(object sender, RoutedEventArgs e)
+    {
+        string? packRoot = _packRoot;
+        if (packRoot is null && CurrentGameId is { } gameId)
+        {
+            packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
+        }
+
+        if (string.IsNullOrWhiteSpace(packRoot))
+        {
+            TextBlock_Status.Text = "没有覆盖包目录（先选中一个游戏）。";
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(packRoot);
+            OpenInExplorer(packRoot);
+        }
+        catch (Exception ex)
+        {
+            ShowInfo("打不开包目录", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    /// <summary>每个预设那一行的「分享码」：编码进剪贴板（可直接粘到游戏内插件的 Paste code）</summary>
+    private void Button_CopyPresetCode_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: Dlss5PresetFile preset })
+        {
+            return;
+        }
+
+        string? code = Dlss5PresetLibrary.BuildShareCode(preset.Path);
+        if (code is null)
+        {
+            ShowInfo("生成分享码失败", "预设文件读不了，或内容超过 256 KiB 上限。", InfoBarSeverity.Error);
+            return;
+        }
+
+        try
+        {
+            var package = new DataPackage();
+            package.SetText(code);
+            Clipboard.SetContent(package);
+            TextBlock_Status.Text = $"已复制「{preset.Name}」的分享码（{code.Length} 个字符），可以粘到游戏内插件的 Paste code。";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Copy preset share code");
+            ShowInfo("复制失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    /// <summary>
+    /// 「+」导入预设：剪贴板 1 分钟内有变化且内容是分享码 → 弹窗确认导入剪贴板；
+    /// 否则（或用户选「选择文件」）弹文件选择器挑 .txt / .ini。
+    /// </summary>
+    private async void Button_AddPreset_Click(object sender, RoutedEventArgs e)
+    {
+        string? addonsDir = ResolveCurrentAddonDirectory() ?? _host?.AddonsPath;
+        if (string.IsNullOrWhiteSpace(addonsDir))
+        {
+            ShowInfo("没有插件目录", "先装好 HoYoShade，或给这个游戏指定主程序。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        if (_clipboardChangedAt is { } changed
+            && DateTimeOffset.Now - changed <= TimeSpan.FromMinutes(1))
+        {
+            string? text = await TryGetClipboardTextAsync();
+            if (Dlss5PresetShareCode.LooksLikeCode(text) && text is not null)
+            {
+                var dialog = new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "导入剪贴板里的分享码？",
+                    Content = "检测到剪贴板里有最近 1 分钟内复制的 DLSS5 预设分享码。要现在导入吗？",
+                    PrimaryButtonText = "导入",
+                    CloseButtonText = "选择文件…",
+                    DefaultButton = ContentDialogButton.Primary,
+                };
+
+                if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                {
+                    ImportShareCode(addonsDir, text);
+                    return;
+                }
+            }
+        }
+
+        string? file = await FileDialogHelper.PickSingleFileAsync(
+            XamlRoot,
+            ("预设文件", ".txt"),
+            ("预设文件", ".ini"));
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return;
+        }
+
+        string? target = Dlss5PresetLibrary.ImportFile(addonsDir, file);
+        if (target is null)
+        {
+            ShowInfo("导入失败", "文件读不了，或插件目录写不进去。", InfoBarSeverity.Error);
+            return;
+        }
+
+        _logger.LogInformation("Imported preset file {Source} -> {Target}", file, target);
+        RefreshPresets();
+        TextBlock_Status.Text = "已导入预设：" + target;
+    }
+
+    private void ImportShareCode(string addonsDir, string code)
+    {
+        string? target = Dlss5PresetLibrary.ImportShareCode(addonsDir, code, null);
+        if (target is null)
+        {
+            ShowInfo("导入失败", "分享码解不开 —— 可能复制不全，或不是 DLSS5 预设的分享码。", InfoBarSeverity.Error);
+            return;
+        }
+
+        _logger.LogInformation("Imported preset share code -> {Target}", target);
+        RefreshPresets();
+        TextBlock_Status.Text = "已导入分享码：" + target;
+    }
+
+    private static async Task<string?> TryGetClipboardTextAsync()
+    {
+        try
+        {
+            DataPackageView content = Clipboard.GetContent();
+            return content.Contains(StandardDataFormats.Text)
+                ? await content.GetTextAsync()
+                : null;
+        }
+        catch
+        {
+            // 剪贴板被别的进程占用等，静默按「没有」处理
+            return null;
+        }
     }
 
     #endregion

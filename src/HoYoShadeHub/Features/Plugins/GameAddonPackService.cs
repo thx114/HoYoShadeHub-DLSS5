@@ -62,10 +62,15 @@ internal static class GameAddonPackService
 
         Dictionary<string, string> selections = AppConfig.GetPluginVersionSelections(gameId, extensionIds);
 
+        string packDirectory = GameAddonPack.PackDirectory(cacheRoot, gameKey);
         string addonsDirectory = GameAddonPack.AddonDirectory(cacheRoot, gameKey);
         string? iniPath = entry?.ReShadeIniPath is { } ini && File.Exists(ini) ? ini : null;
 
-        if (selections.Count == 0)
+        // 覆盖包里有用户内容（ini_config.json / auto.json / presets\ / *_files\）时，
+        // 就算没选任何版本包目录也常驻 —— 这些功能都挂在「AddonPath 指向包」上，收掉就全失效了。
+        bool keepPack = GameAddonPackUserContent.HasAny(packDirectory);
+
+        if (selections.Count == 0 && !keepPack)
         {
             // 没有选任何版本 = 回到今天的默认行为：AddonPath 指共享目录，包目录收掉。
             RevertIfPack(iniPath, host);
@@ -82,13 +87,16 @@ internal static class GameAddonPackService
             selections,
             (extensionId, tag) => store.AddonFiles(extensionId, tag));
 
-        if (entries.Count == 0)
+        if (entries.Count == 0 && !keepPack)
         {
             RevertIfPack(iniPath, host);
             return null;
         }
 
         GameAddonPack.Sync(addonsDirectory, entries, selections.Select(kv => (kv.Key, kv.Value)));
+
+        // 包 presets\ 随同步进 DLSS5-Presets（启动路径 GameIniBootstrap 也会再做一次兜底）
+        GameAddonPackUserContent.SyncPresets(packDirectory, addonsDirectory);
 
         if (iniPath is not null)
         {
@@ -149,6 +157,70 @@ internal static class GameAddonPackService
         }
 
         return synced;
+    }
+
+    /// <summary>
+    /// 扩展被卸载后调用：清掉所有游戏给它的版本选择、把每游戏插件包重拼一遍，
+    /// 并把这个扩展的版本归档整个删掉。
+    ///
+    /// <para>
+    /// 不归零会复活：选择还留着 → 重拼包时从版本归档里再链接回包里
+    /// （归档 intentionally 不受全局卸载影响）→ 游戏的 AddonPath 还指着包 →
+    /// 插件照常被加载（用户报过：卸载 dlss5-feeder 后滤镜还在且自动启用）。
+    /// 归档只为「切版本」存在，扩展卸载后没有保留价值，一并删掉。
+    /// </para>
+    /// </summary>
+    /// <returns>(清掉选择的游戏数, 删掉的归档版本数)</returns>
+    public static (int GamesCleared, int VersionsDeleted) RemoveExtension(string extensionId)
+    {
+        if (string.IsNullOrWhiteSpace(extensionId))
+        {
+            return (0, 0);
+        }
+
+        ShadeHost? host = PluginHostLocator.Resolve(out _);
+        if (host is null)
+        {
+            return (0, 0);
+        }
+
+        int gamesCleared = 0;
+        GameDiscoveryService service = GameCatalog.CreateService();
+
+        foreach (GameId gameId in AppConfig.GetAddonPackGames())
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(AppConfig.GetPluginVersion(gameId, extensionId)))
+                {
+                    continue;
+                }
+
+                AppConfig.SetPluginVersion(gameId, extensionId, null);
+                gamesCleared++;
+
+                // 重拼：这个扩展的文件不再进 plan → Sync 会把包里的链接删掉；
+                // 一个选择都不剩时整个包收掉、AddonPath 指回共享目录
+                GameEntry? entry = GameCatalog.GetOrCreate(service, gameId);
+                Sync(gameId, entry, host);
+            }
+            catch
+            {
+                // 单个游戏失败不影响其它游戏
+            }
+        }
+
+        int versionsDeleted = 0;
+        var store = new AddonVersionStore(AppConfig.CacheRoot);
+        foreach (StoredAddonVersion version in store.ListVersions(extensionId))
+        {
+            if (store.DeleteVersion(extensionId, version.Tag))
+            {
+                versionsDeleted++;
+            }
+        }
+
+        return (gamesCleared, versionsDeleted);
     }
 
     /// <summary>把这个游戏之前指到插件包的 AddonPath 指回共享目录（只在确实指着包时才动）</summary>

@@ -51,64 +51,22 @@ public sealed class OptiScalerSource
     };
 }
 
-/// <summary>内置的 OptiScaler 来源表（用户 2026-09 给的三个仓库）。</summary>
+/// <summary>
+/// OptiScaler 来源目录（GitHub 仓库列表）。
+///
+/// <para>
+/// 2026-09 起**没有内置表了**：条目全部来自远端目录 <c>catalog/optiscaler.json</c>
+/// （由 <c>RemoteCatalogService</c> 每天最多拉一次、缓存在 &lt;用户数据目录&gt;\.hysx\catalog\），
+/// 加新来源 / 改来源信息只改仓库里的 json，不重新发版。首跑离线时启动器随包带一份
+/// catalog 副本做种子（见 RemoteCatalogService.SeedFromBundle）。
+/// </para>
+/// </summary>
 public static class OptiScalerCatalog
 {
-    public static IReadOnlyList<OptiScalerSource> Builtin { get; } =
-    [
-        new OptiScalerSource
-        {
-            Id = "wilsjo2",
-            Name = "OptiScaler DLSSNR PreSR Multipass (wilsjo2)",
-            Repository = "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
-            Description = "DLSS 神经渲染 + pre-SR 摆放，支持 1~3 遍处理。带 -rtx40-mfg 的是 40 系多帧生成特化包。",
-            TagPattern = @"^v?\d",
-            Tags = ["dlssnr", "presr", "multipass"],
-            Homepage = "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases",
-        },
-        new OptiScalerSource
-        {
-            Id = "neurotic",
-            Name = "NeuRotic (MagicalPrincessUnicorn)",
-            Repository = "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork",
-            Description = "NeuRotic 分支（alpha 系列）。名字里带 Patch 的包是在上一版上打的补丁，单独装是残缺的。",
-            TagPattern = @"^alpha-\d",
-            Tags = ["dlssnr", "neurotic", "alpha"],
-            Homepage = "https://github.com/MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork/releases",
-        },
-        new OptiScalerSource
-        {
-            Id = "janblade-f5",
-            Name = "OptiScaler F5 DLSSNR Multipass (janblade)",
-            Repository = "janblade/OptiScaler-F5-DLSSNR-Multipass",
-            Description = "janblade 的 F5 分支：F5 版 DLSSNR + multipass，带 vit-reuse / nvidia-residual / pre/post-SR 预设，含 RTX 40 MFG 测试构建。",
-            TagPattern = @"^v\d",
-            AssetPattern = "OptiScaler-DLSSNR-F5-*.zip",
-            Tags = ["dlssnr", "f5", "multipass", "presr"],
-            Homepage = "https://github.com/janblade/OptiScaler-F5-DLSSNR-Multipass/releases",
-        },
-        new OptiScalerSource
-        {
-            Id = "mfg-ada",
-            Name = "OptiScaler MFG Ada（本 fork）",
-            Repository = "thx114/OptiScaler-MFG-Ada",
-            Description = "本 fork：RTX 40（Ada）DX11 游戏多帧生成。门补丁 + 双向 NvAPI 架构伪装 + midpoint 修正（默认开），包内两处 dlssg 均为 310.9.1。runtime-* tag 只是 dlssg 单文件，会自动跳过。",
-            TagPattern = @"^mfg-ada-",
-            Tags = ["mfg", "ada", "dlssg", "fork"],
-            Homepage = "https://github.com/thx114/OptiScaler-MFG-Ada/releases",
-        },
-    ];
-
-    public static OptiScalerSource? Find(string id)
-        => Builtin.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>
-    /// 内置来源 + 远端目录的覆盖（同 id 用远端那条）。
-    /// 远端目录就是仓库里的 <c>catalog/optiscaler.json</c>：改来源 / 加新分支不用重新发版。
-    /// </summary>
-    public static List<OptiScalerSource> MergeWithBuiltin(IEnumerable<OptiScalerSource>? overlay)
+    /// <summary>把远端目录规范化成可用列表：按 id 去重（后者覆盖前者）、跳过缺 id / 仓库的条目。</summary>
+    public static List<OptiScalerSource> Normalize(IEnumerable<OptiScalerSource>? overlay)
     {
-        var result = new List<OptiScalerSource>(Builtin);
+        var result = new List<OptiScalerSource>();
 
         if (overlay is null)
         {
@@ -135,6 +93,10 @@ public static class OptiScalerCatalog
 
         return result;
     }
+
+    /// <summary>按 id 在一份目录里找来源；找不到返回 null。</summary>
+    public static OptiScalerSource? Find(IEnumerable<OptiScalerSource>? sources, string id)
+        => sources?.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>读一个远端目录文件（读不到 / 坏了就当没有）。</summary>
     public static List<OptiScalerSource>? LoadFile(string? path)

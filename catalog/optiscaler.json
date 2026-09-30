@@ -6,7 +6,11 @@
       "repository": "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
       "description": "DLSS 神经渲染 + pre-SR 摆放，支持 1~3 遍处理。带 -rtx40-mfg 的是 40 系多帧生成特化包。",
       "tagPattern": "^v?\\d",
-      "tags": ["dlssnr", "presr", "multipass"],
+      "tags": [
+        "dlssnr",
+        "presr",
+        "multipass"
+      ],
       "homepage": "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases"
     },
     {
@@ -15,7 +19,11 @@
       "repository": "MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork",
       "description": "NeuRotic 分支（alpha 系列）。名字里带 Patch 的包是在上一版上打的补丁，单独装是残缺的。",
       "tagPattern": "^alpha-\\d",
-      "tags": ["dlssnr", "neurotic", "alpha"],
+      "tags": [
+        "dlssnr",
+        "neurotic",
+        "alpha"
+      ],
       "homepage": "https://github.com/MagicalPrincessUnicorn/NeuRotic-an-OptiScaler-DLSSNR-fork/releases"
     },
     {
@@ -24,7 +32,11 @@
       "repository": "janblade/OptiScaler-DLSSNR-PreSR-Multipass",
       "description": "上游作者自己的实验分支（wilsjo2 那份就 fork 自它）：guarded pre-SR 摆放 + 1~3 遍处理，多出 vit-reuse / nvidia-residual / 预设包几个方向。装好后按它的说明还要跑一次 setup_windows.bat 选 NVIDIA；缺的 nvngx_dlssnr.dll 本页会自动补一份。",
       "tagPattern": "^v?\\d",
-      "tags": ["dlssnr", "presr", "upstream"],
+      "tags": [
+        "dlssnr",
+        "presr",
+        "upstream"
+      ],
       "homepage": "https://github.com/janblade/OptiScaler-DLSSNR-PreSR-Multipass/releases"
     },
     {
@@ -34,7 +46,11 @@
       "description": "ShyVortex 的 DLSS Unlocked（NR 系列）。release 同时发 setup exe 和 standalone zip，目录这里只取 standalone zip 解压进库参与注入。",
       "tagPattern": "^NR-v?\\d",
       "assetPattern": "dlss-unlocked-standalone-*.zip",
-      "tags": ["dlss", "unlocked", "standalone"],
+      "tags": [
+        "dlss",
+        "unlocked",
+        "standalone"
+      ],
       "homepage": "https://github.com/ShyVortex/dlss-unlocked/releases"
     },
     {
@@ -44,7 +60,12 @@
       "description": "janblade 的 F5 分支：F5 版 DLSSNR + multipass，带 vit-reuse / nvidia-residual / pre/post-SR 预设，含 RTX 40 MFG 测试构建。",
       "tagPattern": "^v\\d",
       "assetPattern": "OptiScaler-DLSSNR-F5-*.zip",
-      "tags": ["dlssnr", "f5", "multipass", "presr"],
+      "tags": [
+        "dlssnr",
+        "f5",
+        "multipass",
+        "presr"
+      ],
       "homepage": "https://github.com/janblade/OptiScaler-F5-DLSSNR-Multipass/releases"
     },
     {
@@ -53,7 +74,12 @@
       "repository": "thx114/OptiScaler-MFG-Ada",
       "description": "本 fork：RTX 40（Ada）DX11 游戏多帧生成。门补丁 + 双向 NvAPI 架构伪装 + midpoint 修正（默认开），包内两处 dlssg 均为 310.9.1。runtime-* tag 只是 dlssg 单文件，会自动跳过。",
       "tagPattern": "^mfg-ada-",
-      "tags": ["mfg", "ada", "dlssg", "fork"],
+      "tags": [
+        "mfg",
+        "ada",
+        "dlssg",
+        "fork"
+      ],
       "homepage": "https://github.com/thx114/OptiScaler-MFG-Ada/releases"
     },
     {
@@ -62,8 +88,13 @@
       "repository": "artur-graniszewski/DLSS-Enabler",
       "description": "artur-graniszewski 的 DLSS Enabler。release 只发它自己的 setup exe：下载后运行，按提示装到默认目录（构建目录），装完那里会有可注入的 dll。",
       "tagPattern": "^v\\d",
-      "tags": ["dlss", "enabler", "installer"],
+      "tags": [
+        "dlss",
+        "enabler",
+        "installer"
+      ],
       "homepage": "https://github.com/artur-graniszewski/DLSS-Enabler/releases"
     }
-  ]
+  ],
+  "updatedAt": "2026-09-30T00:00:00Z"
 }

@@ -80,14 +80,25 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0" Spacing="0">
-                    <TextBlock Style="{ThemeResource TitleTextBlockStyle}" Text="全局插件" />
+                <!--  标题 + 目标路径同一行：路径不再单独占一行，
+                      免得标题和下面单选框之间像隔了一层空行  -->
+                <Grid Grid.Column="0" ColumnSpacing="12" VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource TitleTextBlockStyle}"
+                               Text="全局插件" />
                     <TextBlock x:Name="TextBlock_TargetPath"
+                               Grid.Column="1"
+                               VerticalAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Text="正在检测 HoYoShade…"
                                TextTrimming="CharacterEllipsis" />
-                </StackPanel>
+                </Grid>
 
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
@@ -98,12 +109,7 @@
                     </Button>
                     <Button x:Name="Button_PickFolder" Click="Button_PickFolder_Click" Content="指定目录" />
                     <Button x:Name="Button_OpenFolder" Click="Button_OpenFolder_Click" Content="打开目录" />
-                    <TextBox x:Name="TextBox_Search"
-                             Width="200"
-                             VerticalAlignment="Center"
-                             PlaceholderText="搜索…"
-                             TextChanged="TextBox_Search_TextChanged" />
-    <Button x:Name="Button_CheckAllUpdates" Click="Button_CheckAllUpdates_Click" Content="检查全部更新" ToolTipService.ToolTip="立刻向 GitHub 强制检查一遍（平时一天只自动查一次）" />
+                    <Button x:Name="Button_CheckAllUpdates" Click="Button_CheckAllUpdates_Click" Content="检查全部更新" ToolTipService.ToolTip="立刻向 GitHub 强制检查一遍（平时一天只自动查一次）" />
                     <Button x:Name="Button_Dlss5CompatCheck" Click="Button_Dlss5CompatCheck_Click" Content="DLSS5 兼容性检测" Style="{ThemeResource AccentButtonStyle}" ToolTipService.ToolTip="检测这台机器 / 这个游戏跑 DLSS5 神经渲染的 15 项兼容性" />
                     <Button x:Name="Button_InstallLocal"
                             Click="Button_InstallLocal_Click"
@@ -120,51 +126,32 @@
 
         </StackPanel>
 
-        <!--  一行：左边标签页，右边计数  -->
+        <!--  一行：左边三个标签页，右边搜索框（靠右）  -->
         <Grid Grid.Row="1" ColumnSpacing="16">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <!--  插件 / OptiScaler / 模块：三个标签页都是「上 当前、下 可下载」 -->
-            <!--  放在 * 列里让这一排拿到整行可用宽度：RadioButtons 不会因为可用宽度不够而折成 2 列，
-                 第三个标签就不会掉到另一个位置；三个 RadioButton 再统一 MinWidth + 左对齐 + 垂直居中，                 单选框圆圈、文字起始位置一致，整体等距排布  -->
             <RadioButtons x:Name="RadioButtons_View"
                           Grid.Column="0"
-                          HorizontalAlignment="Left"
                           VerticalAlignment="Center"
                           MaxColumns="3"
                           SelectedIndex="0"
                           SelectionChanged="RadioButtons_View_SelectionChanged">
-                <RadioButton MinWidth="132"
-                             HorizontalAlignment="Left"
-                             HorizontalContentAlignment="Left"
-                             VerticalAlignment="Center"
-                             VerticalContentAlignment="Center"
-                             Content="插件"
-                             Tag="plugins" />
-                <RadioButton MinWidth="132"
-                             HorizontalAlignment="Left"
-                             HorizontalContentAlignment="Left"
-                             VerticalAlignment="Center"
-                             VerticalContentAlignment="Center"
-                             Content="OptiScaler"
-                             Tag="optiscaler" />
-                <RadioButton MinWidth="132"
-                             HorizontalAlignment="Left"
-                             HorizontalContentAlignment="Left"
-                             VerticalAlignment="Center"
-                             VerticalContentAlignment="Center"
-                             Content="模块"
-                             Tag="modules" />
+                <!--  三个 MinWidth 一致：圆圈间隔相等，文字长短不影响排布  -->
+                <RadioButton MinWidth="120" Content="插件" Tag="plugins" />
+                <RadioButton MinWidth="120" Content="OptiScaler" Tag="optiscaler" />
+                <RadioButton MinWidth="120" Content="模块" Tag="modules" />
             </RadioButtons>
 
-            <TextBlock x:Name="TextBlock_Count"
-                       Grid.Column="1"
-                       VerticalAlignment="Center"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Style="{ThemeResource CaptionTextBlockStyle}" />
+            <TextBox x:Name="TextBox_Search"
+                     Grid.Column="1"
+                     Width="240"
+                     HorizontalAlignment="Right"
+                     VerticalAlignment="Center"
+                     PlaceholderText="搜索…"
+                     TextChanged="TextBox_Search_TextChanged" />
         </Grid>
 
         <Grid Grid.Row="3">
@@ -172,7 +159,6 @@
             <Grid x:Name="Grid_Plugins">
                 <ScrollViewer Padding="0,0,6,0">
                     <StackPanel Spacing="6">
-                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
 
                         <!--  已装的扩展包：全局开关 + 点开改版本（切到别的 tag 就是装那个版本）  -->
                         <ItemsControl x:Name="InstalledPluginList" ItemsSource="{x:Bind InstalledItems}">
@@ -501,10 +487,6 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <TextBlock Margin="0,6,0,0"
-                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                   Text="可下载" />
-
                         <!--  还没装的扩展包：紧凑一行，点开才摊描述 / 安装  -->
                         <ItemsControl x:Name="PluginList" ItemsSource="{x:Bind VisibleItems}">
                             <ItemsControl.ItemTemplate>
@@ -610,8 +592,6 @@
             <Grid x:Name="Grid_OptiScaler" Visibility="Collapsed">
                 <ScrollViewer Padding="0,0,6,0">
                     <StackPanel Spacing="6">
-
-                        <TextBlock Margin="0,6,0,0" Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
 
                         <ItemsControl x:Name="OptiScalerBuildList" ItemsSource="{x:Bind OptiScalerBuilds}">
                             <ItemsControl.ItemTemplate>
@@ -810,10 +790,6 @@
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
 
-                        <TextBlock Margin="0,6,0,0"
-                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                   Text="可下载" />
-
                         <ItemsControl x:Name="OptiScalerSourceList" ItemsSource="{x:Bind OptiScalerSources}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="local:OptiScalerSourceItemViewModel">
@@ -920,8 +896,6 @@
                                     ToolTipService.ToolTip="打开 &lt;用户数据目录&gt;\Modules" />
                             <Button Click="Button_RefreshModules_Click" Content="刷新" />
                         </StackPanel>
-
-                        <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="当前" />
 
                         <ItemsControl x:Name="ModuleList" ItemsSource="{x:Bind CurrentModules}">
                             <ItemsControl.ItemTemplate>
@@ -1137,10 +1111,6 @@
                                    TextAlignment="Center"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
-
-                        <TextBlock Margin="0,6,0,0"
-                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                   Text="可下载" />
 
                         <ItemsControl x:Name="ModuleDownloadList" ItemsSource="{x:Bind AvailableModules}">
                             <ItemsControl.ItemTemplate>

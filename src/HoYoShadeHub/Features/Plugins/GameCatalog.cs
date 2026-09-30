@@ -369,6 +369,23 @@ internal static class GameCatalog
     }
 
     /// <summary>
+    /// 目录缓存里的插件清单（addon 文件名匹配用，同步读）。
+    /// 没有内置表了之后，这里读的是远端目录的本地缓存（RemoteCatalogService 每天拉一次）；
+    /// 缓存还没有（首跑且离线）就是空表 —— 匹配不到最多显示效果差一点，不算错。
+    /// </summary>
+    private static ExtensionManifest[] CachedManifests()
+    {
+        try
+        {
+            return RemoteCatalogService.LoadCachedPlugins()?.Extensions ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
     /// addon 文件名 → 认领它的扩展条目 id（靠目录里的 <c>addonPatterns</c>）。
     /// 每游戏插件页的版本下拉靠它把盘上的 addon 文件对到扩展的版本归档。
     /// 认不出来返回 null。
@@ -377,8 +394,7 @@ internal static class GameCatalog
     {
         try
         {
-            ExtensionManifest[] manifests = ExtensionCatalogService.LoadBuiltin().Extensions;
-            return ExtensionAddonMatcher.MatchExtensionId(manifests, addonFileName);
+            return ExtensionAddonMatcher.MatchExtensionId(CachedManifests(), addonFileName);
         }
         catch
         {
@@ -394,7 +410,7 @@ internal static class GameCatalog
     {
         try
         {
-            ExtensionManifest[] manifests = ExtensionCatalogService.LoadBuiltin().Extensions;
+            ExtensionManifest[] manifests = CachedManifests();
             AddonFileInfo? file = AddonFileInfo.Parse(addonFileName);
             if (file is null)
             {
@@ -454,12 +470,72 @@ internal static class GameCatalog
         }
     }
 
+    /// <summary>
+    /// 卸载 dlss5-feed 后调用：把**所有游戏**当前生效预设里的 Lumenite_Kernel + DLSS5_Feed
+    /// 两个效果摘掉（预处理器定义 DLSS5_MV_PROVIDER=3 一并去掉）。
+    ///
+    /// <para>
+    /// 卸载只删插件文件 + 清游戏 ini 里的 addon 条目，预设里的 Techniques 残留没人管 ——
+    /// 而 lumenite_Kernel.fx 属于 lumenitefx（独立扩展，不随 feed 卸载），文件还在盘上，
+    /// ReShade 一启动就把残留效果重新勾上（用户报：卸载 dlss5-feeder 后滤镜还在且自动启用）。
+    /// 预设有可能是多个游戏共用的，按预设路径去重，只动还开着这两个效果的那份。
+    /// </para>
+    /// </summary>
+    /// <returns>清理过的预设文件数（0 = 没有残留）</returns>
+    public static int RemoveDlss5FeedFromAllPresets()
+    {
+        var cleanedPresets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            ShadeHost? host = PluginHostLocator.Resolve(out _);
+            if (host is null)
+            {
+                return 0;
+            }
+
+            GameDiscoveryService discovery = CreateService();
+            foreach (GameEntry entry in discovery.DiscoverAll(KnownCandidates()))
+            {
+                try
+                {
+                    var service = GamePluginServiceFactory.Create(entry, host);
+                    ReShadeProfile? profile = service.Profile;
+                    if (profile is null || !ReShadePresetEditor.IsEnabled(profile))
+                    {
+                        continue;
+                    }
+
+                    // 只摘这两个效果，别的内容不动（TrySetEnabled(false) 幂等）
+                    if (service.SyncDlss5FeedPreset(out _))
+                    {
+                        string? presetPath = profile.ResolvePresetPath();
+                        if (!string.IsNullOrWhiteSpace(presetPath))
+                        {
+                            cleanedPresets.Add(presetPath);
+                        }
+                    }
+                }
+                catch
+                {
+                    // 单个游戏失败不挡其它游戏
+                }
+            }
+        }
+        catch
+        {
+            // 清理是卸载的附加动作，失败不该让卸载报错
+        }
+
+        return cleanedPresets.Count;
+    }
+
     /// <summary>装了哪些扩展、叫什么名字 —— 给 addon 内部名的二进制匹配当候选</summary>
     public static IEnumerable<string> AddonCandidateNames()
     {
         try
         {
-            return ExtensionCatalogService.LoadBuiltin().Extensions
+            return CachedManifests()
                 .SelectMany(e => new[] { e.Name, e.Source.AssetName ?? string.Empty })
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct(StringComparer.OrdinalIgnoreCase)

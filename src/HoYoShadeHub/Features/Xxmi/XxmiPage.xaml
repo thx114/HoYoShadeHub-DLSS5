@@ -84,8 +84,17 @@
                 <ComboBox x:Name="ComboBox_Importer"
                           Grid.Column="1"
                           MinWidth="150"
+                          MaxWidth="240"
                           SelectionChanged="ComboBox_Importer_SelectionChanged"
-                          ToolTipService.ToolTip="MI 实例" />
+                          ToolTipService.ToolTip="MI 实例（这个游戏对应的实例，一对一只认它）">
+                    <!-- WinUI 3 的 DisplayMemberPath 不生效（已知 bug），必须走 ItemTemplate 绑定 -->
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Display}"
+                                       ToolTipService.ToolTip="{Binding Path}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
                 <TextBox x:Name="TextBox_Instance"
                          Grid.Column="2"
                          IsReadOnly="True"

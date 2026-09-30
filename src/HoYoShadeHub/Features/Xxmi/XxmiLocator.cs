@@ -4,7 +4,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace HoYoShadeHub.Features.Xxmi;
 
@@ -104,13 +106,28 @@ internal sealed class XxmiLocator
     /// <summary>XXMI 根目录（没有配置 / 启动器 / 任何 MI 实例就不算）</summary>
     public static string? FindRoot()
     {
-        foreach (string candidate in RootCandidates())
+        try
         {
-            if (IsXxmiRoot(candidate))
+            foreach (string candidate in RootCandidates())
             {
-                Logger.LogInformation("XXMI 根目录：{Root}", candidate);
-                return candidate;
+                try
+                {
+                    if (IsXxmiRoot(candidate))
+                    {
+                        Logger.LogInformation("XXMI 根目录：{Root}", candidate);
+                        return candidate;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 单个候选挂了（权限 / 坏路径）不拖垮整个查找
+                    Logger.LogDebug(ex, "XXMI 根候选检查失败：{Dir}", candidate);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "XXMI 根目录查找失败");
         }
 
         return null;
@@ -165,11 +182,11 @@ internal sealed class XxmiLocator
     /// 这个实例在 XXMI 配置里的启动参数（例如绝区零是 <c>-use-d3d12</c>）。
     /// 取 <c>Importers.&lt;实例名&gt;.Importer.launch_options</c>，并且要 <c>use_launch_options</c> 为真。
     /// </summary>
-    public static string LaunchOptions(string? gameBiz)
+    public static string LaunchOptions(string? gameBiz, string? gameName)
     {
         try
         {
-            string? instance = FindInstance(gameBiz, out string? importer);
+            string? instance = FindInstance(gameBiz, gameName, out string? importer);
 
             if (instance is null || importer is null)
             {
@@ -214,17 +231,87 @@ internal sealed class XxmiLocator
     }
 
     /// <summary>
+    /// 往 XXMI 配置的 <c>Importers.&lt;实例名&gt;.Importer.launch_options</c> 写启动参数，
+    /// 并确保 <c>use_launch_options</c> 为真（否则写了也不生效）。成功返回 null，失败返回原因。
+    /// </summary>
+    public static string? SetLaunchOptions(string? gameBiz, string? gameName, string options)
+    {
+        try
+        {
+            string? config = FindConfigPath(gameBiz, gameName, out string? importer);
+
+            if (config is null || importer is null)
+            {
+                return "找不到 XXMI 配置文件";
+            }
+
+            JsonNode? root = JsonNode.Parse(File.ReadAllText(config));
+
+            if (root is not JsonObject obj
+                || obj["Importers"] is not JsonObject importers
+                || importers[importer] is not JsonObject importerNode
+                || importerNode["Importer"] is not JsonObject block)
+            {
+                return "XXMI 配置结构跟预期不一样（没有 Importers." + importer + ".Importer）";
+            }
+
+            block["launch_options"] = options;
+            block["use_launch_options"] = true;
+
+            // 跟 XXMI 自己的写法对齐：4 空格缩进、UTF-8 无 BOM
+            File.WriteAllText(config, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+            Logger.LogInformation("已写 XXMI 启动参数（{Importer}）：{Options}", importer, options);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "写 XXMI 启动参数失败");
+            return ex.Message;
+        }
+    }
+
+    /// <summary>从这个游戏的实例目录往上找 <c>XXMI Launcher Config.json</c>；<paramref name="importer"/> 返回实例名</summary>
+    public static string? FindConfigPath(string? gameBiz, string? gameName, out string? importer)
+    {
+        importer = null;
+
+        string? instance = FindInstance(gameBiz, gameName, out string? foundImporter);
+
+        if (instance is null || foundImporter is null)
+        {
+            return null;
+        }
+
+        importer = foundImporter;
+        DirectoryInfo? dir = new(instance);
+
+        while (dir is not null)
+        {
+            string config = Path.Combine(dir.FullName, "XXMI Launcher Config.json");
+
+            if (File.Exists(config))
+            {
+                return config;
+            }
+
+            dir = dir.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 这个实例在 XXMI 配置里配的「Extra Libraries」（额外注入的 dll，例如
     /// <c>D:\APPS\HoYoShadeHub\HoYoShade\ReShade64.dll</c>）。XXMI 启动时会把这些也注入游戏进程，
     /// 所以我们按 XXMI 方式启动时也要带上，不然 ReShade 这类就没了。
     /// </summary>
-    public static List<string> ExtraLibraries(string? gameBiz)
+    public static List<string> ExtraLibraries(string? gameBiz, string? gameName)
     {
         List<string> list = [];
 
         try
         {
-            string? instance = FindInstance(gameBiz, out string? importer);
+            string? instance = FindInstance(gameBiz, gameName, out string? importer);
 
             if (instance is null || importer is null)
             {
@@ -307,10 +394,22 @@ internal sealed class XxmiLocator
         return [];
     }
 
-    /// <summary>找这个游戏的 MI 实例；<paramref name="importerName"/> 返回实际用到的实例名</summary>
-    public static string? FindInstance(string? gameBiz, out string? importerName)
+    /// <summary>
+    /// 找这个游戏的 MI 实例；<paramref name="importerName"/> 返回实际用到的实例名。
+    ///
+    /// **只许加载这个游戏自己的 MI**（ZZMI 只能绝区零加载，反过来也一样）：期望实例不在就返回 null，
+    /// 不再拿别的 MI 顶上 —— 以前的回退会把绝区零注进 SRMI、鸣潮注进 ZZMI。
+    /// 手动指定（AppConfig）保留，但目录名必须就是期望的 MI 实例名，否则视为配错、记日志忽略。
+    /// </summary>
+    public static string? FindInstance(string? gameBiz, string? gameName, out string? importerName)
     {
-        importerName = ImporterFor(gameBiz);
+        importerName = ImporterForGame(gameBiz, gameName);
+
+        if (importerName is null)
+        {
+            // 认不出游戏 → 不给 XXMI（以前会按任意顺序挑一个装着的 MI，什么游戏都敢注）
+            return null;
+        }
 
         if (gameBiz is not null)
         {
@@ -318,8 +417,14 @@ internal sealed class XxmiLocator
 
             if (!string.IsNullOrWhiteSpace(manual) && IsInstance(manual))
             {
-                importerName = ImporterFor(gameBiz) ?? Path.GetFileName(manual.TrimEnd('\\'));
-                return manual;
+                if (string.Equals(Path.GetFileName(manual.TrimEnd('\\', '/')), importerName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return manual;
+                }
+
+                Logger.LogWarning(
+                    "忽略不匹配的 XXMI 手动指定：{Manual} 不是 {Importer} 目录（{Game} 只能加载自己的 MI 实例）",
+                    manual, importerName, gameName ?? gameBiz);
             }
         }
 
@@ -330,20 +435,8 @@ internal sealed class XxmiLocator
             return null;
         }
 
-        List<string> order = importerName is null ? [.. ImporterNames] : [importerName, .. ImporterNames];
-
-        foreach (string name in order)
-        {
-            string dir = Path.Combine(root, name);
-
-            if (IsInstance(dir))
-            {
-                importerName = name;
-                return dir;
-            }
-        }
-
-        return null;
+        string dir = Path.Combine(root, importerName);
+        return IsInstance(dir) ? dir : null;
     }
 
     private static IEnumerable<string> RootCandidates()
@@ -400,16 +493,7 @@ internal sealed class XxmiLocator
                 continue;
             }
 
-            IEnumerable<string> links;
-
-            try
-            {
-                links = Directory.EnumerateFiles(menu, "*.lnk", SearchOption.AllDirectories);
-            }
-            catch
-            {
-                continue;
-            }
+            IEnumerable<string> links = SafeEnumerateFiles(menu, "*.lnk");
 
             foreach (string link in links)
             {
@@ -538,24 +622,78 @@ internal sealed class XxmiLocator
             yield break;
         }
 
-        IEnumerable<string> children;
-
-        try
-        {
-            children = Directory.EnumerateDirectories(root);
-        }
-        catch
-        {
-            yield break;
-        }
-
-        foreach (string child in children)
+        foreach (string child in SafeEnumerateDirectories(root))
         {
             yield return child;
 
             foreach (string nested in ShallowDirectories(child, depth - 1))
             {
                 yield return nested;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 枚举一组路径，连 <see cref="IEnumerator{T}.MoveNext"/> 一起包进 try。
+    /// 只包住 <c>Enumerate*</c> 调用挡不住「枚举到一半遇到无权访问的目录」
+    /// （<c>C:\System Volume Information</c>、别的用户的目录之类）——那种异常是在
+    /// foreach 推进时抛的，会把整个根目录查找打断，页面看起来就是「读不到 XXMI」。
+    /// 中途被拒就放弃这一棵子树，继续别的。
+    /// </summary>
+    private static IEnumerable<string> SafeEnumerate(Func<IEnumerable<string>> factory)
+    {
+        IEnumerator<string>? enumerator = null;
+
+        try
+        {
+            enumerator = factory().GetEnumerator();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        using (enumerator)
+        {
+            while (true)
+            {
+                string current;
+
+                try
+                {
+                    if (!enumerator.MoveNext())
+                    {
+                        yield break;
+                    }
+
+                    current = enumerator.Current;
+                }
+                catch
+                {
+                    yield break;
+                }
+
+                yield return current;
+            }
+        }
+    }
+
+    private static IEnumerable<string> SafeEnumerateDirectories(string dir) =>
+        SafeEnumerate(() => Directory.EnumerateDirectories(dir));
+
+    /// <summary>递归枚举文件（等效 <c>SearchOption.AllDirectories</c>），中途被拒跳过那棵子树</summary>
+    private static IEnumerable<string> SafeEnumerateFiles(string dir, string pattern)
+    {
+        foreach (string file in SafeEnumerate(() => Directory.EnumerateFiles(dir, pattern)))
+        {
+            yield return file;
+        }
+
+        foreach (string child in SafeEnumerateDirectories(dir))
+        {
+            foreach (string file in SafeEnumerateFiles(child, pattern))
+            {
+                yield return file;
             }
         }
     }

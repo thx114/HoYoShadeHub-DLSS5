@@ -585,7 +585,7 @@
                               IsChecked="{x:Bind UseInjectMode, Mode=TwoWay}"
                               IsEnabled="{x:Bind CanUseInjectMode, Mode=OneWay}"
                               Style="{ThemeResource CompactCheckBoxStyle}"
-                              ToolTipService.ToolTip="勾上后：点开始游戏会先确保这个游戏有 ReShade.ini，再跑 HoYoShade 自带的 inject.exe 等这个进程起来。注入模式下 Hub 不替你启动游戏 —— 要自己用启动器（HoYoPlay / WeGame 等）拉起，直接双击 exe 会导致注入失败。只影响这一个游戏。"
+                              ToolTipService.ToolTip="勾上后 Hub 不替你启动游戏：只架好注入器等这个进程出现，游戏要用你自己的启动器拉起。"
                               Unchecked="CheckBox_InjectMode_Changed">
                         <TextBlock Margin="0,0,0,4"
                                    FontSize="12"
@@ -626,36 +626,57 @@
                 <Border Padding="10,0,10,0"
                         Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
                         CornerRadius="12"
-                        Visibility="{x:Bind IsDX12OptionVisible, Mode=OneWay}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <CheckBox MinWidth="0"
+                        Visibility="{x:Bind IsDX12OptionVisible, Mode=OneWay}"
+                        ToolTipService.ToolTip="{x:Bind Dx12IntroText, Mode=OneWay}">
+                    <CheckBox MinWidth="0"
+                              Margin="0,-2,0,-2"
+                              VerticalAlignment="Center"
+                              VerticalContentAlignment="Center"
+                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                              IsChecked="{x:Bind EnableDX12, Mode=TwoWay}"
+                              Style="{ThemeResource CompactCheckBoxStyle}">
+                        <TextBlock Margin="0,0,0,4"
+                                   FontSize="12"
+                                   FontWeight="Bold"
+                                   Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                   IsTextScaleFactorEnabled="False"
+                                   Text="DX12" />
+                    </CheckBox>
+                </Border>
+
+                <!--  帧率解锁（原神）：目标帧率在左侧「游戏设置」页改  -->
+                <Border Padding="10,0,6,0"
+                        Background="{ThemeResource ControlOnImageFillColorDefaultBrush}"
+                        CornerRadius="12"
+                        Visibility="{x:Bind FpsUnlockVisibility, Mode=OneWay}">
+                    <StackPanel Orientation="Horizontal" Spacing="2">
+                        <CheckBox x:Name="CheckBox_UseFpsUnlock"
+                                  MinWidth="0"
                                   Margin="0,-2,0,-2"
                                   VerticalAlignment="Center"
                                   VerticalContentAlignment="Center"
                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                  IsChecked="{x:Bind EnableDX12, Mode=TwoWay}"
-                                  Style="{ThemeResource CompactCheckBoxStyle}">
+                                  IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
+                                  Style="{ThemeResource CompactCheckBoxStyle}"
+                                  ToolTipService.ToolTip="由启动器原生注入：游戏启动后扫描帧率变量并同步目标值。目标帧率在「游戏设置」页改。游戏用管理员启动时，Hub 也要用管理员启动。">
                             <TextBlock Margin="0,0,0,4"
                                        FontSize="12"
                                        FontWeight="Bold"
                                        Foreground="{ThemeResource SystemFillColorCautionBrush}"
                                        IsTextScaleFactorEnabled="False"
-                                       Text="{x:Bind lang:Lang.GameLauncherPage_GraphicsQualityEnhancement}" />
+                                       Text="帧率解锁" />
                         </CheckBox>
-                        <TextBlock VerticalAlignment="Center"
-                                   FontSize="12"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   IsTextScaleFactorEnabled="False"
-                                   Text="{x:Bind lang:Lang.GameLauncherPage_LaunchWithDX12}" />
-                        <TextBlock VerticalAlignment="Center"
-                                   FontSize="12"
-                                   IsTextScaleFactorEnabled="False">
-                            <Hyperlink x:Name="Hyperlink_DX12Intro"
-                                       Click="Hyperlink_DX12Intro_Click"
-                                       UnderlineStyle="None">
-                                <Run Text="{x:Bind lang:Lang.GameLauncherPage_DetailsGt}" />
-                            </Hyperlink>
-                        </TextBlock>
+                        <!--  直接跳到游戏设置页去改目标帧率（省得用户自己找）  -->
+                        <Button Width="24"
+                                Height="24"
+                                Padding="0"
+                                VerticalAlignment="Center"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Click="Button_FpsUnlockSettings_Click"
+                                ToolTipService.ToolTip="打开「游戏设置」页改目标帧率">
+                            <FontIcon FontSize="12" Glyph="&#xE713;" />
+                        </Button>
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -742,27 +763,6 @@
                       Margin="0,1"
                       Visibility="{x:Bind XxmiInjectVisibility, Mode=OneWay}"
                       ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
-
-            <!--  帧率解锁：原神，目标帧率在左侧「游戏设置」页改  -->
-            <StackPanel Orientation="Horizontal"
-                        Spacing="2"
-                        Visibility="{x:Bind FpsUnlockVisibility, Mode=OneWay}">
-                <CheckBox x:Name="CheckBox_UseFpsUnlock"
-                          Content="帧率解锁"
-                          IsChecked="{x:Bind UseFpsUnlock, Mode=TwoWay}"
-                          Margin="0,1"
-                          ToolTipService.ToolTip="由启动器原生注入，不外挂 exe：游戏启动后扫描帧率变量并同步目标值。目标帧率在左侧「游戏设置」页设置。游戏以管理员启动时，Hub 也要用管理员启动。只影响这一个游戏。" />
-                <!--  直接跳到游戏设置页去改目标帧率（省得用户自己找）  -->
-                <Button Width="28"
-                        Height="28"
-                        Margin="0,1,0,0"
-                        Padding="0"
-                        VerticalAlignment="Center"
-                        Click="Button_FpsUnlockSettings_Click"
-                        ToolTipService.ToolTip="打开「游戏设置」页改目标帧率">
-                    <FontIcon FontSize="12" Glyph="&#xE713;" />
-                </Button>
-            </StackPanel>
 
             <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
             <CheckBox x:Name="CheckBox_UseModules"

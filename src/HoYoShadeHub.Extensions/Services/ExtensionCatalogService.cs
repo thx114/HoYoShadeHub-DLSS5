@@ -1,17 +1,21 @@
 using HoYoShadeHub.Extensions.Models;
-using System.Reflection;
+using System.IO;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Services;
 
 /// <summary>
-/// 扩展目录（catalog）的加载：内置 → 远程 → 用户本地，后者按 id 覆盖前者。
-/// 远程目录让我们不重新发版也能加/改条目。
+/// 扩展目录（catalog）的加载：远程 → 用户本地，后者按 id 覆盖前者。
+///
+/// <para>
+/// 2026-09-30 起**没有嵌入式内置目录了**：条目全部来自远端 catalog/plugins.json
+/// （由启动器的 RemoteCatalogService 每天最多拉一次、缓存在 &lt;用户数据目录&gt;\.hysx\catalog\，
+/// 经 <see cref="ExtraCatalogFiles"/> 进来），加新插件 / 改插件信息只改仓库里的 json，
+/// 不重新发版。首跑离线时启动器随包的 catalog 副本会做种子（见 RemoteCatalogService.SeedFromBundle）。
+/// </para>
 /// </summary>
 public sealed class ExtensionCatalogService
 {
-    public const string BuiltinResourceName = "HoYoShadeHub.Extensions.Resources.catalog.builtin.json";
-
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -30,7 +34,8 @@ public sealed class ExtensionCatalogService
 
     public async Task<ExtensionCatalogDocument> LoadAsync(CancellationToken cancellationToken = default)
     {
-        ExtensionCatalogDocument document = LoadBuiltin();
+        // 没有内置表了：从空文档开始，远程目录 + 本地文件按 id 覆盖/追加。
+        var document = new ExtensionCatalogDocument();
 
         if (!string.IsNullOrWhiteSpace(RemoteCatalogUrl))
         {
@@ -58,21 +63,46 @@ public sealed class ExtensionCatalogService
     }
 
     public static ExtensionCatalogDocument LoadBuiltin()
+        => new();
+
+    /// <summary>同步读一个目录文件（本地缓存用；读不到 / 坏了返回 null）。允许单包清单当目录用。</summary>
+    public static ExtensionCatalogDocument? LoadFile(string? path)
     {
-        using Stream? stream = typeof(ExtensionCatalogService).Assembly.GetManifestResourceStream(BuiltinResourceName);
-        if (stream is null)
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
-            return new ExtensionCatalogDocument();
+            return null;
+        }
+
+        // 先按目录文档解析；单包清单（.hysx）没有 "extensions" 键会解析出空表，再退到单条清单。
+        // 顺序不能反：整份目录文档也能「解析成」一条空清单（未知键被忽略），那样只剩 1 个假条目。
+        ExtensionCatalogDocument? document = TryParseCatalogDocument(path);
+        if (document is { Extensions.Length: > 0 })
+        {
+            return document;
         }
 
         try
         {
-            return JsonSerializer.Deserialize<ExtensionCatalogDocument>(stream, _jsonOptions)
-                   ?? new ExtensionCatalogDocument();
+            using var stream = File.OpenRead(path);
+            var manifest = JsonSerializer.Deserialize<ExtensionManifest>(stream, _jsonOptions);
+            return manifest is null ? null : new ExtensionCatalogDocument { Extensions = [manifest] };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static ExtensionCatalogDocument? TryParseCatalogDocument(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return JsonSerializer.Deserialize<ExtensionCatalogDocument>(stream, _jsonOptions);
         }
         catch (JsonException)
         {
-            return new ExtensionCatalogDocument();
+            return null;
         }
     }
 
@@ -98,6 +128,22 @@ public sealed class ExtensionCatalogService
             return null;
         }
 
+        // 先按目录文档解析；单包清单（.hysx）没有 "extensions" 键会解析出空表，再退到单条清单。
+        // 顺序不能反：整份目录文档也能「解析成」一条空清单（未知键被忽略），那样只剩 1 个假条目。
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            var document = await JsonSerializer.DeserializeAsync<ExtensionCatalogDocument>(stream, _jsonOptions, cancellationToken);
+            if (document is { Extensions.Length: > 0 })
+            {
+                return document;
+            }
+        }
+        catch (JsonException)
+        {
+            // 落到下面按单包清单再试一次
+        }
+
         try
         {
             await using var stream = File.OpenRead(path);
@@ -110,18 +156,10 @@ public sealed class ExtensionCatalogService
         }
         catch (JsonException)
         {
-            // 落到下面按 catalog 文档再试一次
+            // 两个形状都不是，按没有处理
         }
 
-        try
-        {
-            await using var stream = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<ExtensionCatalogDocument>(stream, _jsonOptions, cancellationToken);
-        }
-        catch
-        {
-            return null;
-        }
+        return null;
     }
 
     /// <summary>把 overlay 合并进 target，同 id 覆盖</summary>
