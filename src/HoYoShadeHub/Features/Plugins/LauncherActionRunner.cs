@@ -122,27 +122,90 @@ public static class LauncherActionRunner
             "run_compat_check" => await RunCompatCheckAsync(step, context),
             "add_game_from_registry" => AddGameFromRegistry(step, context),
 
-            // ===== 启动游戏（CLI / auto.json 都能用）=====
+            // ===== 启动 / 结束游戏（CLI / auto.json 都能用）=====
             "launch_game" or "launch" or "start_game" => await LaunchGameAsync(context),
+            "stop_game" or "close_game" or "kill_game" or "stopgame" => await StopGameAsync(context),
 
             _ => $"✗ 不支持的接口：{step.Action}",
         };
 
+    /// <summary>launch_game / stop_game 共用的游戏解析</summary>
+    private static GameId? ResolveGameId(LauncherActionContext context)
+        => context.GameId
+           ?? (context.GameBiz is { } biz ? GameId.FromGameBiz(biz) : null);
+
     // ==================== 启动游戏 ====================
 
-    /// <summary>launch_game：启动上下文指定的游戏（走 GameLauncherService，和 startgame CLI / 启动页同一入口）。</summary>
+    /// <summary>
+    /// launch_game：按启动选项完整启动上下文指定的游戏（GameLaunchPipeline：shade 注入器 /
+    /// 模块 / OptiScaler / 帧率解锁一个不少，和启动页「启动游戏」同行为）。
+    /// 纯 CLI（无 UI 上下文）会等到注入完成才返回；启动器里触发则后台注入。
+    /// </summary>
     private static async Task<string> LaunchGameAsync(LauncherActionContext context)
     {
-        GameId? gameId = context.GameId
-            ?? (context.GameBiz is { } biz ? GameId.FromGameBiz(biz) : null);
+        GameId? gameId = ResolveGameId(context);
         if (gameId is null)
         {
             return "✗ launch_game 需要先指定游戏（--biz xxx）";
         }
 
-        System.Diagnostics.Process? process = await AppConfig.GetService<GameLauncherService>()
-            .StartGameAsync(gameId);
+        GameEntry? entry = context.Entry;
+        if (entry is null)
+        {
+            try
+            {
+                entry = GameCatalog.GetOrCreate(GameCatalog.CreateService(), gameId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "launch_game: resolve game entry");
+            }
+        }
+
+        bool blockForInjection = context.LauncherPage is null && context.XamlRoot is null;
+        System.Diagnostics.Process? process = await GameLaunchPipeline.LaunchAsync(
+            gameId, entry, blockForInjection, context.Report);
         return process is null ? "✗ 启动游戏失败（看日志）" : $"已启动游戏（PID {process.Id}）";
+    }
+
+    // ==================== 结束游戏 ====================
+
+    /// <summary>stop_game：结束上下文指定的游戏。先给主窗口发关闭消息（游戏有机会存档收尾），5 秒不退再强杀。</summary>
+    private static async Task<string> StopGameAsync(LauncherActionContext context)
+    {
+        GameId? gameId = ResolveGameId(context);
+        if (gameId is null)
+        {
+            return "✗ stop_game 需要先指定游戏（--biz xxx）";
+        }
+
+        System.Diagnostics.Process? process = await AppConfig.GetService<GameLauncherService>()
+            .GetGameProcessAsync(gameId);
+        if (process is null)
+        {
+            return "游戏没在运行";
+        }
+
+        try
+        {
+            process.CloseMainWindow();
+            for (int i = 0; i < 20 && !process.HasExited; i++)
+            {
+                await Task.Delay(250);
+            }
+
+            if (!process.HasExited)
+            {
+                process.Kill();
+                return $"已强杀游戏（PID {process.Id}）";
+            }
+
+            return $"游戏已退出（PID {process.Id}）";
+        }
+        catch (Exception ex)
+        {
+            return "✗ 结束游戏失败：" + ex.Message;
+        }
     }
 
     // ==================== 插件 ====================

@@ -39,8 +39,8 @@ public static class Program
             if (args.Length > 0)
             {
                 string arg = args[0].ToLower();
-                // rpc / playtime / run：静默通道，不弹 UAC 重启（保持调用方控制台 / 无窗口）
-                if (arg is "rpc" or "playtime" or "run" or "auto" or "action")
+                // rpc / playtime / run / stopgame：静默通道，不弹 UAC 重启（保持调用方控制台 / 无窗口）
+                if (arg is "rpc" or "playtime" or "run" or "auto" or "action" or "stopgame" or "killgame")
                 {
                     skip = true;
                 }
@@ -109,6 +109,12 @@ public static class Program
                 return RunCliActions(config);
             }
 
+            if (args[0].ToLower() is "stopgame" or "killgame")
+            {
+                // 结束游戏：就是跑一个 stop_game 步骤
+                return RunStepsJson(config.GetValue<string>("biz"), """{"steps":[{"action":"stop_game"}]}""");
+            }
+
             if (args[0].ToLower() is "startgame")
             {
                 GameBiz biz = (GameBiz)config.GetValue<string>("biz");
@@ -164,20 +170,6 @@ public static class Program
     /// </summary>
     private static int RunCliActions(IConfiguration config)
     {
-        try
-        {
-            Console.OutputEncoding = Encoding.UTF8;
-        }
-        catch { }
-
-        string? bizText = config.GetValue<string>("biz");
-        GameId? gameId = string.IsNullOrWhiteSpace(bizText) ? null : GameId.FromGameBiz((GameBiz)bizText);
-        if (gameId is null)
-        {
-            Console.Error.WriteLine("需要 --biz <游戏代码>，例如 hkrpg_cn（星铁国服）/ hk4e_cn（原神国服）/ nap_cn（绝区零国服）");
-            return 1;
-        }
-
         string? json = config.GetValue<string>("json");
         string? file = config.GetValue<string>("file");
         if (string.IsNullOrWhiteSpace(json) && !string.IsNullOrWhiteSpace(file))
@@ -194,6 +186,25 @@ public static class Program
         if (string.IsNullOrWhiteSpace(json))
         {
             Console.Error.WriteLine("需要 --file <动作.json> 或 --json \"<动作 JSON>\"");
+            return 1;
+        }
+
+        return RunStepsJson(config.GetValue<string>("biz"), json);
+    }
+
+    /// <summary>解析 --biz + 动作 JSON，headless 执行；退出码 0 = 全成功，1 = 有步骤失败 / 参数不对。</summary>
+    private static int RunStepsJson(string? bizText, string json)
+    {
+        try
+        {
+            Console.OutputEncoding = Encoding.UTF8;
+        }
+        catch { }
+
+        GameId? gameId = string.IsNullOrWhiteSpace(bizText) ? null : GameId.FromGameBiz((GameBiz)bizText);
+        if (gameId is null)
+        {
+            Console.Error.WriteLine("需要 --biz <游戏代码>，例如 hkrpg_cn（星铁国服）/ hk4e_cn（原神国服）/ nap_cn（绝区零国服）");
             return 1;
         }
 

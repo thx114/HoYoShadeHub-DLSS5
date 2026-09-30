@@ -40,10 +40,11 @@
                      PlaceholderText="xxx.dll"
                      TextChanged="TextBox_CustomDllName_TextChanged"
                      Visibility="Collapsed" />
-            <!--  注入时机（OptiScaler，按游戏）：越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样）  -->
+            <!--  注入时机（OptiScaler，按游戏）：暂时隐藏，固定 0（AppConfig.GetOptiScalerInjectDelayEffective）  -->
             <TextBlock VerticalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Text="注入时机" />
+                       Text="注入时机"
+                       Visibility="Collapsed" />
             <NumberBox x:Name="NumberBox_OptiInjectDelay"
                        Width="150"
                        Minimum="0"
@@ -51,6 +52,7 @@
                        SmallChange="1"
                        SpinButtonPlacementMode="Compact"
                        PlaceholderText="跟随全局"
+                       Visibility="Collapsed"
                        ValueChanged="NumberBox_OptiInjectDelay_ValueChanged"
                        ToolTipService.ToolTip="OptiScaler 注入前等游戏稳定几秒。0 = 立即；留空 = 跟随全局默认。只影响这一个游戏。" />
             <TextBlock x:Name="TextBlock_Count"

@@ -574,7 +574,12 @@
                             </Grid.ContextFlyout>
                             <sc:CachedImage Width="40"
                                             Height="40"
-                                            Source="{x:Bind GameIcon}" />
+                                            Opacity="{x:Bind ImageOpacity}"
+                                            Source="{x:Bind GameIcon}">
+                                <sc:CachedImage.OpacityTransition>
+                                    <ScalarTransition />
+                                </sc:CachedImage.OpacityTransition>
+                            </sc:CachedImage>
                             <Image Width="20"
                                    Height="20"
                                    HorizontalAlignment="Right"
@@ -586,11 +591,6 @@
                                                  UriSource="{x:Bind ServerIcon}" />
                                 </Image.Source>
                             </Image>
-                            <Border Background="#60000000" Opacity="{x:Bind MaskOpacity}">
-                                <Border.OpacityTransition>
-                                    <ScalarTransition />
-                                </Border.OpacityTransition>
-                            </Border>
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
@@ -612,15 +612,17 @@
                     ToolTipService.ToolTip="添加自定义游戏（选一个游戏 exe；同目录里有 ReShade.ini 就能顺带管插件）"
                     Translation="0,0,16">
                 <Grid Width="40" Height="40" CornerRadius="8">
-                    <!--  静态毛玻璃（不是实时模糊，见 App.xaml 里的 CustomFrostBrush 说明）  -->
+                    <!--  静态毛玻璃（不是实时模糊，见 App.xaml 里的 CustomFrostBrush 说明）。
+                          用户要求弱化存在感：底色 / 描边都压到半透明  -->
                     <Border Background="{ThemeResource CustomFrostBrush}"
-                            BorderBrush="#33FFFFFF"
+                            BorderBrush="#14FFFFFF"
                             BorderThickness="1"
-                            CornerRadius="8" />
+                            CornerRadius="8"
+                            Opacity="0.55" />
                     <FontIcon HorizontalAlignment="Center"
                               VerticalAlignment="Center"
                               FontSize="16"
-                              Foreground="White"
+                              Foreground="#99FFFFFF"
                               Glyph="&#xE710;"
                               IsTextScaleFactorEnabled="False" />
                 </Grid>

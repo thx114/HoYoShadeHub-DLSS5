@@ -99,6 +99,7 @@
                            SpinButtonPlacementMode="Compact"
                            PlaceholderText="跟随全局"
                            VerticalAlignment="Center"
+                           Visibility="Collapsed"
                            ValueChanged="NumberBox_ShadeInjectDelay_ValueChanged"
                            ToolTipService.ToolTip="注入时机：HoYoShade / ReShade 注入前等几秒（按这个游戏）。0 = 立即；留空 = 跟随全局默认" />
             </StackPanel>
@@ -390,21 +391,13 @@
                 <Grid RowSpacing="10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <!--  「N 个插件，启用 M 个」  -->
-                    <TextBlock x:Name="TextBlock_AddonSummary"
-                              Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                              Style="{ThemeResource CaptionTextBlockStyle}"
-                              TextWrapping="Wrap"
-                              Visibility="Collapsed" />
-
                     <!--  预设管理（DLSS5-ReShade-Preset-Switcher 的预设）  -->
-                    <Grid Grid.Row="1" ColumnSpacing="8">
+                    <Grid Grid.Row="0" ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
@@ -425,7 +418,7 @@
                         </Button>
                     </Grid>
 
-                    <Grid Grid.Row="2">
+                    <Grid Grid.Row="1">
                         <ListView x:Name="PresetList"
                                   Padding="0"
                                   SelectionMode="None">
@@ -474,7 +467,7 @@
                                   Visibility="Collapsed" />
                     </Grid>
 
-                    <StackPanel Grid.Row="3" Spacing="8">
+                    <StackPanel Grid.Row="2" Spacing="8">
                         <!--  覆盖包动作：内置（关闭/启用全部插件）+ 包 auto.json 定义的自定义动作  -->
                         <Grid ColumnSpacing="8" x:Name="Grid_ActionsHeader">
                             <Grid.ColumnDefinitions>
@@ -498,7 +491,7 @@
                         <StackPanel x:Name="Panel_Actions" Spacing="6" />
                     </StackPanel>
 
-                    <StackPanel Grid.Row="4" Spacing="8">
+                    <StackPanel Grid.Row="3" Spacing="8">
                         <Button x:Name="Button_OpenGameFolder"
                                HorizontalAlignment="Stretch"
                                Click="Button_OpenGameFolder_Click"

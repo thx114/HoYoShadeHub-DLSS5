@@ -957,7 +957,9 @@
                         </StackPanel>
 
                         <!--  注入前「等进程稳一稳」（用户实测：星铁刚起时注入会偶发把游戏带崩）。
-                              按游戏记：inject_warmup_enabled_{biz} / inject_warmup_seconds_{biz}。  -->
+                              按游戏记：inject_warmup_enabled_{biz} / inject_warmup_seconds_{biz}。
+                              暂时隐藏：注入时机全部固定 0（AppConfig.GetDefaultInjectionDelaySeconds 已固定为 0）  -->
+                        <StackPanel Visibility="Collapsed">
                         <TextBlock Margin="0,12,0,0"
                                    FontSize="14"
                                    FontWeight="SemiBold"
@@ -986,6 +988,7 @@
                                        FontSize="12"
                                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                        TextWrapping="Wrap" />
+                        </StackPanel>
                         </StackPanel>
                     </StackPanel>
                 </FlipViewItem>

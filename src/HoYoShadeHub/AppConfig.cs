@@ -1987,9 +1987,8 @@ public static class AppConfig
         SetValue(Math.Clamp(seconds, 0, MaxInjectionWarmupSeconds), $"inject_warmup_seconds_{biz}");
     }
 
-    /// <summary>没单独设「注入时机」时用的默认秒数（全局预热；关掉或 0 就是立即注入）</summary>
-    public static int GetDefaultInjectionDelaySeconds(GameBiz biz)
-        => GetInjectionWarmupEnabled(biz) ? GetInjectionWarmupSeconds(biz) : 0;
+    /// <summary>没单独设「注入时机」时用的默认秒数。用户要求：全部固定 0（立即注入），存值保留。</summary>
+    public static int GetDefaultInjectionDelaySeconds(GameBiz biz) => 0;
 
     // ---- 「注入时机（秒）」：模块 / 插件（ReShade）/ OptiScaler 三处各自的覆盖值 ----
     // 键：module_inject_delay_{模块 id}、shade_inject_delay_{biz}、opti_inject_delay_{biz}
@@ -2021,15 +2020,13 @@ public static class AppConfig
     public static void SetOptiScalerInjectDelaySeconds(GameBiz biz, int? seconds)
         => SetInjectDelayOverride($"opti_inject_delay_{biz}", seconds);
 
-    // 这个游戏真正要等几秒才注入某个东西：单独设过就用它的，否则用全局默认
-    public static int GetModuleInjectDelayEffective(string moduleId, GameBiz biz)
-        => GetModuleInjectDelaySeconds(moduleId) ?? GetDefaultInjectionDelaySeconds(biz);
+    // 这个游戏真正要等几秒才注入某个东西。
+    // 用户要求：注入时机全部隐藏并固定 0（立即注入）——存值还留着，重新放开就把这三个 getter 改回去。
+    public static int GetModuleInjectDelayEffective(string moduleId, GameBiz biz) => 0;
 
-    public static int GetShadeInjectDelayEffective(GameBiz biz)
-        => GetShadeInjectDelaySeconds(biz) ?? GetDefaultInjectionDelaySeconds(biz);
+    public static int GetShadeInjectDelayEffective(GameBiz biz) => 0;
 
-    public static int GetOptiScalerInjectDelayEffective(GameBiz biz)
-        => GetOptiScalerInjectDelaySeconds(biz) ?? GetDefaultInjectionDelaySeconds(biz);
+    public static int GetOptiScalerInjectDelayEffective(GameBiz biz) => 0;
 
     private static int? GetInjectDelayOverride(string? key)
         => string.IsNullOrWhiteSpace(key) || !HasValue(key)

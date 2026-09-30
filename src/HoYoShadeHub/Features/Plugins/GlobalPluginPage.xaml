@@ -137,6 +137,7 @@
                           Grid.Column="0"
                           VerticalAlignment="Center"
                           MaxColumns="3"
+                          Margin="0,-8,0,-12"
                           SelectedIndex="0"
                           SelectionChanged="RadioButtons_View_SelectionChanged">
                 <!--  三个 MinWidth 一致：圆圈间隔相等，文字长短不影响排布  -->
@@ -400,92 +401,9 @@
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed" />
 
-                        <!--  用户在别处拿到的、目录条目认领不到的老插件文件：单独一截，保留逐个改名开关） -->
-                        <TextBlock x:Name="TextBlock_OrphanCaption"
-                                   Margin="0,6,0,0"
-                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                   Text="其它插件文件（目录里没匹配到条目）"
-                                   Visibility="Collapsed" />
+                        <!--  用户在别处拿到的、目录条目认领不到的老插件文件：曾经单独一截展示，
+                              用户要求删掉（占用空间 + 与上方列表重复入口）  -->
 
-                        <ItemsControl x:Name="OrphanAddonFileList" ItemsSource="{x:Bind OrphanAddonFiles}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="local:AddonFileItemViewModel">
-                                    <Border Style="{StaticResource CatalogCardStyle}">
-                                        <Border.ContextFlyout>
-                                            <MenuFlyout>
-                                                <MenuFlyoutItem Click="MenuFlyout_RenameAddon_Click" Text="重命名（显示名 / 版本号）" />
-                                                <MenuFlyoutItem Click="MenuFlyout_OpenAddonFolder_Click" Text="打开所在文件夹" />
-                                                <MenuFlyoutSeparator />
-                                                <MenuFlyoutItem Click="MenuFlyout_DeleteAddon_Click" Text="删除这个插件" />
-                                            </MenuFlyout>
-                                        </Border.ContextFlyout>
-                                        <Grid ColumnSpacing="12">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <StackPanel Grid.Column="0" Spacing="2">
-                                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                                    <TextBlock VerticalAlignment="Center"
-                                                                DoubleTapped="TextBlock_AddonName_DoubleTapped"
-                                                                Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                                                Text="{x:Bind Name, Mode=OneWay}"
-                                                                ToolTipService.ToolTip="双击改显示名 / 版本号；右键有更多操作" />
-                                                    <Border Padding="6,1"
-                                                            VerticalAlignment="Center"
-                                                            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                            CornerRadius="3"
-                                                            Visibility="{x:Bind DisabledVisibility}">
-                                                        <TextBlock FontSize="11" Text="全局已禁用" />
-                                                    </Border>
-                                                    <Border Padding="6,1"
-                                                            VerticalAlignment="Center"
-                                                            Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
-                                                            CornerRadius="3"
-                                                            Visibility="{x:Bind DllRequiredVisibility}">
-                                                        <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
-                                                    </Border>
-                                                    <Border Padding="6,1"
-                                                            VerticalAlignment="Center"
-                                                            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                                                            CornerRadius="3"
-                                                            Visibility="{x:Bind DllRecommendedVisibility}">
-                                                        <TextBlock FontSize="11" Text="{x:Bind DllStatusText}" />
-                                                    </Border>
-                                                </StackPanel>
-                                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                                           Text="{x:Bind MetaText}"
-                                                           TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-
-                                            <StackPanel Grid.Column="1"
-                                                        Orientation="Horizontal"
-                                                        Spacing="8"
-                                                        VerticalAlignment="Center">
-                                                <ToggleSwitch MinWidth="0"
-                                                              VerticalAlignment="Center"
-                                                              IsOn="{x:Bind Enabled, Mode=TwoWay}"
-                                                              OffContent="全局关"
-                                                              OnContent="全局开"
-                                                              ToolTipService.ToolTip="全局开关 = 改文件名后缀（.addon64  .addon64x）" />
-                                                <Button MinWidth="0"
-                                                        Padding="8,3"
-                                                        VerticalAlignment="Center"
-                                                        Click="Button_DeleteAddonFile_Click"
-                                                            ToolTipService.ToolTip="把这个插件文件从插件目录里删掉（会先弹一次确认），并清掉各游戏 ini 里指向它的条目）">
-                                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon FontSize="13" Glyph="&#xE74D;" />
-                                                        <TextBlock FontSize="12" Text="删除" />
-                                                    </StackPanel>
-                                                </Button>
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
 
                         <!--  还没装的扩展包：紧凑一行，点开才摊描述 / 安装  -->
                         <ItemsControl x:Name="PluginList" ItemsSource="{x:Bind VisibleItems}">
@@ -1068,8 +986,8 @@
                                                             IsEnabled="{x:Bind CanInteract, Mode=OneWay}" />
                                                 </StackPanel>
 
-                                                <!--  注入时机（按模块，两处共用同一个值）：0~30 秒，留空 = 跟随全局  -->
-                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <!--  注入时机（按模块，两处共用同一个值）：暂时隐藏，固定 0（AppConfig.GetModuleInjectDelayEffective）  -->
+                                                <StackPanel Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
                                                     <TextBlock VerticalAlignment="Center"
                                                                Style="{ThemeResource CaptionTextBlockStyle}"
                                                                Text="注入时机" />

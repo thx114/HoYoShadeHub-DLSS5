@@ -86,6 +86,7 @@ public sealed partial class DllConfigPage : PageBase
         ProgressBar_Overall.IsIndeterminate = true;
         ProgressBar_Overall.Visibility = Visibility.Visible;
         TextBlock_Status.Text = "正在读插件目录与组件清单…";
+        TextBlock_RuntimeOk.Visibility = Visibility.Collapsed;
 
         try
         {
@@ -189,6 +190,7 @@ public sealed partial class DllConfigPage : PageBase
             try
             {
                 vm.SetInstalledVersions(store.ListVersions(family.Id)
+                    .OrderByDescending(stored => stored.Version.Contains("Lecram", StringComparison.OrdinalIgnoreCase))
                     .Select(stored => new InstalledDllVersionRow(
                         family.Id,
                         stored.Version,
@@ -216,19 +218,23 @@ public sealed partial class DllConfigPage : PageBase
 
         if (status.Severity == 2)
         {
+            TextBlock_RuntimeOk.Visibility = Visibility.Collapsed;
             ShowInfo("DLSS5 插件缺必需文件",
                 status.Summary + " —— DLSS5 那几个插件现在起不来。点右上角「安装必要组件」可以一次装上。",
                 InfoBarSeverity.Error);
         }
         else if (status.Severity == 1)
         {
+            TextBlock_RuntimeOk.Visibility = Visibility.Collapsed;
             ShowInfo("Streamline 不全",
                 status.Summary + " —— 插件能加载，但可能不出画面。",
                 InfoBarSeverity.Warning);
         }
         else
         {
-            ShowInfo("DLSS5 需要的运行时齐了", "nvngx_dlssnr.dll 和 Streamline 都在插件目录里。", InfoBarSeverity.Success);
+            // 齐了：标题右侧的常驻绿字（不再用占一整行的 InfoBar）
+            InfoBar_Status.IsOpen = false;
+            TextBlock_RuntimeOk.Visibility = Visibility.Visible;
         }
     }
 
@@ -539,8 +545,9 @@ public partial class DllFamilyViewModel : ObservableObject
         Note = $"{family.FilePattern} · {requirement} —— {family.Note}";
         RequiredBadgeVisibility = family.Level == DllRequirementLevel.Required ? Visibility.Visible : Visibility.Collapsed;
 
-        // 版本列表：带上备注（RTX40 / SF 这种）
-        Versions = [.. components.Select(DisplayOf)];
+        // 版本列表：带上备注（RTX40 / SF / Lecram 这种）。Lecram 固定在顶部（用户要求）。
+        Versions = [.. components.Select(DisplayOf)
+            .OrderByDescending(v => v.Contains("Lecram", StringComparison.OrdinalIgnoreCase))];
 
         // 盘上这一份是哪个变体：记账 + 字节数 / 归档同名同大小 / 数字段兜底（见 DllVariantResolver 的注释）。
         // 以前只用 SameNumbers：Lecram 的 PE 是 310.8.3.0，数字段对不上就回退成 310.8.0（「识别成 50 系」）。

@@ -104,9 +104,6 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>「可下载」：目录里还没装的扩展包</summary>
     public ObservableCollection<PluginItemViewModel> VisibleItems { get; } = [];
 
-    /// <summary>「当前」里那截「没匹配到目录条目的插件文件」</summary>
-    public ObservableCollection<AddonFileItemViewModel> OrphanAddonFiles { get; } = [];
-
     /// <summary>OptiScaler「当前」：已经下载到本地的构建</summary>
     public ObservableCollection<OptiScalerBuildItemViewModel> OptiScalerBuilds { get; } = [];
 
@@ -129,7 +126,6 @@ public sealed partial class GlobalPluginPage : PageBase
     protected override void OnLoaded()
     {
         InstalledPluginList.ItemsSource = InstalledItems;
-        OrphanAddonFileList.ItemsSource = OrphanAddonFiles;
         PluginList.ItemsSource = VisibleItems;
         OptiScalerBuildList.ItemsSource = OptiScalerBuilds;
         OptiScalerSourceList.ItemsSource = OptiScalerSources;
@@ -355,7 +351,6 @@ public sealed partial class GlobalPluginPage : PageBase
         Items.Clear();
         InstalledItems.Clear();
         VisibleItems.Clear();
-        OrphanAddonFiles.Clear();
         OptiScalerBuilds.Clear();
         OptiScalerSources.Clear();
         CurrentModules.Clear();
@@ -1083,14 +1078,7 @@ public sealed partial class GlobalPluginPage : PageBase
             }
         }
 
-        OrphanAddonFiles.Clear();
-        foreach (AddonFileItemViewModel file in _allAddonFiles)
-        {
-            if (!owned.Contains(file.FileName) && MatchSearch(file.Name, file.FileName, file.Slug))
-            {
-                OrphanAddonFiles.Add(file);
-            }
-        }
+        // 孤儿插件文件区块已从「当前」页移除（用户要求），_allAddonFiles 仍保留用于统计与开关回调。
 
         // 展开的卡片如果被搜索过滤掉了，收起来
         foreach (PluginItemViewModel item in Items)
@@ -1105,9 +1093,7 @@ public sealed partial class GlobalPluginPage : PageBase
             ? "没有符合搜索条件的插件。"
             : _manager is null ? "没有可管理的 HoYoShade 目录。" : "插件目录里没有插件。";
         TextBlock_PluginsCurrentEmpty.Visibility =
-            InstalledItems.Count == 0 && OrphanAddonFiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-
-        TextBlock_OrphanCaption.Visibility = OrphanAddonFiles.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            InstalledItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         TextBlock_PluginsAvailableEmpty.Text = hasSearch
             ? "没有符合搜索条件的插件。"

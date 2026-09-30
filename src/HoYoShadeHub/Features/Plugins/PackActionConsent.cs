@@ -145,6 +145,7 @@ public static class PackActionDescriber
             "run_compat_check" => "执行 DLSS5 兼容性检测",
             "add_game_from_registry" => $"从注册表寻找游戏目录并添加：{step.GetString("key")}",
             "launch_game" or "launch" or "start_game" => "启动游戏",
+            "stop_game" or "close_game" or "kill_game" or "stopgame" => "结束游戏进程",
             _ => $"未知道具 {step.Action}",
         };
     }

@@ -104,9 +104,11 @@
                                                Text="{x:Bind VersionHint}"
                                                TextWrapping="Wrap"
                                                Visibility="{x:Bind VersionHintVisibility}" />
+                                    <!--  注入时机：暂时隐藏，固定 0（AppConfig.GetModuleInjectDelayEffective）  -->
                                     <TextBlock VerticalAlignment="Center"
                                                Style="{ThemeResource CaptionTextBlockStyle}"
-                                               Text="注入时机" />
+                                               Text="注入时机"
+                                               Visibility="Collapsed" />
                                     <NumberBox Width="150"
                                                Minimum="0"
                                                Maximum="30"
@@ -114,6 +116,7 @@
                                                SpinButtonPlacementMode="Compact"
                                                PlaceholderText="{x:Bind InjectDelayPlaceholder, Mode=OneWay}"
                                                Value="{x:Bind InjectDelayValue, Mode=TwoWay}"
+                                               Visibility="Collapsed"
                                                ToolTipService.ToolTip="启动游戏时这个模块等几秒再注入。越早注入越省事，但游戏刚启动就注可能把它带崩；默认 0 秒（立即注入，和以前一样），调大才会等；留空 = 跟随全局。" />
                                     <TextBlock VerticalAlignment="Center"
                                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"

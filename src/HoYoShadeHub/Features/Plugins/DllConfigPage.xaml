@@ -22,6 +22,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Spacing="0">
@@ -33,7 +34,16 @@
                            TextTrimming="CharacterEllipsis" />
             </StackPanel>
 
-            <StackPanel Grid.Column="1"
+            <!--  运行时齐了：常驻绿字挂在标题右侧（以前是常驻 InfoBar，占一整行）  -->
+            <TextBlock x:Name="TextBlock_RuntimeOk"
+                       Grid.Column="1"
+                       VerticalAlignment="Center"
+                       Foreground="{ThemeResource SystemFillColorSuccessBrush}"
+                       Style="{ThemeResource CaptionTextBlockStyle}"
+                       Text="DLSS5 运行时齐了（nvngx_dlssnr.dll + Streamline）"
+                       Visibility="Collapsed" />
+
+            <StackPanel Grid.Column="2"
                         Orientation="Horizontal"
                         Spacing="8"
                         VerticalAlignment="Center">
@@ -82,13 +92,17 @@
 
                     <ListView x:Name="InstalledList" Grid.Row="1" Padding="0" SelectionMode="None">
                         <ListView.ItemTemplate>
+                            <!--  一个 dll 一行：文件名 + 版本挤一行，大小贴最右（用户要求，别两行）  -->
                             <DataTemplate x:DataType="local:InstalledDllViewModel">
                                 <Grid Margin="0,2" ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
+                                    <StackPanel Grid.Column="0"
+                                                Orientation="Horizontal"
+                                                Spacing="6"
+                                                VerticalAlignment="Center">
                                         <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind FileName, Mode=OneWay}" />
                                         <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                                    Style="{ThemeResource CaptionTextBlockStyle}"
@@ -149,48 +163,36 @@
                                                    Text="{x:Bind Note, Mode=OneWay}"
                                                    TextWrapping="Wrap" />
 
-                                        <TextBlock Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind InstalledText, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-
-                                        <!--  需求6：这一类 dll 装过的版本（归档 <CacheRoot>\dlls\<family>\<version>\），每行一个删除  -->
+                                        <!--  需求6：这一类 dll 装过的版本（每行一个删除）。
+                                              删除按钮贴着版本名（用户要求，别甩到行尾）；「使用中」角标跟在后面。
+                                              「已装 xx」/「已安装版本：N 个」已删 —— 和下面列表重复。  -->
                                         <ItemsControl ItemsSource="{x:Bind InstalledVersionRows, Mode=OneWay}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate x:DataType="local:InstalledDllVersionRow">
-                                                    <Grid Margin="0,1" ColumnSpacing="8">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0"
-                                                                    Orientation="Horizontal"
-                                                                    Spacing="6"
-                                                                    VerticalAlignment="Center">
-                                                            <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind DisplayText, Mode=OneWay}" />
-                                                            <Border Padding="6,1"
-                                                                    Background="{ThemeResource AccentFillColorDefaultBrush}"
-                                                                    CornerRadius="3"
-                                                                    Visibility="{x:Bind CurrentVisibility, Mode=OneWay}">
-                                                                <TextBlock FontSize="11"
-                                                                           Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                                                           Text="使用中" />
-                                                            </Border>
-                                                        </StackPanel>
-                                                        <Button Grid.Column="1"
-                                                                MinWidth="0"
-                                                                Padding="8,2"
+                                                    <StackPanel Margin="0,1"
+                                                                Orientation="Horizontal"
+                                                                Spacing="6"
+                                                                VerticalAlignment="Center">
+                                                        <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind DisplayText, Mode=OneWay}" />
+                                                        <Button MinWidth="0"
+                                                                Padding="6,0"
+                                                                Height="20"
                                                                 Click="Button_DeleteDllVersion_Click"
                                                                 ToolTipService.ToolTip="删除归档里的这个版本（共享目录里当前生效的那份不动）">
-                                                            <FontIcon FontSize="13" Glyph="&#xE74D;" />
+                                                            <FontIcon FontSize="11" Glyph="&#xE74D;" />
                                                         </Button>
-                                                    </Grid>
+                                                        <Border Padding="6,1"
+                                                                Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                                CornerRadius="3"
+                                                                Visibility="{x:Bind CurrentVisibility, Mode=OneWay}">
+                                                            <TextBlock FontSize="11"
+                                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                                                       Text="使用中" />
+                                                        </Border>
+                                                    </StackPanel>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
-                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind InstalledVersionsSummary, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
 
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <ComboBox MinWidth="200"

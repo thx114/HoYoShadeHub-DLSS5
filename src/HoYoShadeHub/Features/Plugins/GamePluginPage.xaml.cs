@@ -298,7 +298,6 @@ public sealed partial class GamePluginPage : PageBase
             ShowInfo("读不了这个游戏的 ReShade.ini", profileError, InfoBarSeverity.Error);
             TextBlock_AddonsEmpty.Text = "ReShade.ini 读取失败：" + profileError;
             TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
-            TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -313,7 +312,6 @@ public sealed partial class GamePluginPage : PageBase
                 InfoBarSeverity.Warning);
             TextBlock_AddonsEmpty.Text = "该游戏没有 ReShade.ini —— 插件开关暂时不可用。";
             TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
-            TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -356,8 +354,6 @@ public sealed partial class GamePluginPage : PageBase
 
         TextBlock_AddonsEmpty.Text = "插件目录里还没有 addon。到左下角「全局插件」里装一个。";
         TextBlock_AddonsEmpty.Visibility = Addons.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        TextBlock_AddonSummary.Text = $"{Addons.Count} 个插件，启用 {Addons.Count(a => a.Enabled)} 个";
-        TextBlock_AddonSummary.Visibility = Visibility.Visible;
         UpdatePathHint(_plugins.AddonDirectory);
         UpdateDriverWarning();
         HideInfo();
@@ -426,7 +422,6 @@ public sealed partial class GamePluginPage : PageBase
         Addons.Clear();
         Presets.Clear();
         TextBlock_PresetsEmpty.Visibility = Visibility.Collapsed;
-        TextBlock_AddonSummary.Visibility = Visibility.Collapsed;
         Button_CopyIni.Visibility = Visibility.Collapsed;
         TextBlock_AddonsEmpty.Text = message;
         TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
