@@ -444,12 +444,7 @@ internal static class GameCatalog
                 return;
             }
 
-            var service = new GamePluginService(
-                entry,
-                host,
-                PluginHostLocator.AddonNameCachePath,
-                AddonCandidateNames(),
-                TagsOfAddonFile);
+            var service = GamePluginServiceFactory.Create(entry, host);
 
             service.SyncDlss5FeedPreset(out _);
         }

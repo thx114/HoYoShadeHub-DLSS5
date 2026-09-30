@@ -2072,12 +2072,7 @@ public sealed partial class GameLauncherPage : PageBase
                 return true;
             }
 
-            var service = new GamePluginService(
-                _currentGameEntry,
-                host,
-                PluginHostLocator.AddonNameCachePath,
-                GameCatalog.AddonCandidateNames(),
-                GameCatalog.TagsOfAddonFile);
+            var service = GamePluginServiceFactory.Create(_currentGameEntry, host);
 
             List<GameAddonState> broken =
             [
@@ -3252,12 +3247,9 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
-            var service = new GamePluginService(
+            var service = GamePluginServiceFactory.Create(
                 _currentGameEntry,
-                PluginHostLocator.Resolve(out _),
-                PluginHostLocator.AddonNameCachePath,
-                GameCatalog.AddonCandidateNames(),
-                GameCatalog.TagsOfAddonFile);
+                PluginHostLocator.Resolve(out _));
 
             if (service.HasReShadeIni && service.SetHookPoint(0))
             {

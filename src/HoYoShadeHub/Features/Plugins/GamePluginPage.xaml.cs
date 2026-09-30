@@ -181,6 +181,9 @@ public sealed partial class GamePluginPage : PageBase
                 return;
             }
 
+            // 进插件页先自动收拾这个游戏自己的 ReShade.ini（缺了补、指错了拉回），再读它
+            AutoFixGameIni(_entry);
+
             LoadGame(_entry);
         }
         catch (Exception ex)
@@ -191,6 +194,71 @@ public sealed partial class GamePluginPage : PageBase
         finally
         {
             _isWorking = false;
+        }
+    }
+
+    /// <summary>
+    /// 进插件页时自动收拾这个游戏的 ReShade.ini（用户要求，等于把「复制模板」「指回当前 HoYoShade」两个按钮跑一遍）：
+    /// ini 不存在 → 拿当前 HoYoShade 的模板复制一份过去；ini 指向<strong>别的</strong> HoYoShade → 自动对齐回当前宿主。
+    ///
+    /// <para>两种例外不动：每游戏插件包目录（专属包是正常状态）和当前宿主根目录里面的子目录 —
+    /// 与 <see cref="UpdatePathHint"/> / 「指回当前 HoYoShade」按钮同一判定口径；对齐器本身也会跳过
+    /// 这两种，这里提前返回只是少写一次盘。</para>
+    /// <para>失败只记日志不弹错 —— 原来的提示条和手动按钮都还在。</para>
+    /// </summary>
+    private void AutoFixGameIni(GameEntry entry)
+    {
+        if (_host is null || entry.ReShadeIniPath is not { } ini)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!File.Exists(ini))
+            {
+                if (File.Exists(_host.ReShadeIniPath))
+                {
+                    File.Copy(_host.ReShadeIniPath, ini);
+                    _logger.LogInformation("Auto-created game ReShade.ini: {Template} -> {Ini}", _host.ReShadeIniPath, ini);
+                }
+
+                return;   // 新复制的模板本来就指向当前宿主，无需再对齐
+            }
+
+            string? addonDir = ReShadeProfile.Load(ini).ResolveAddonDirectory();
+
+            // 专属插件包 / 宿主根目录内的子目录：正常状态，不算「指错了」
+            if (GameAddonPack.IsPackDirectory(addonDir) || IsInsideHostRoot(addonDir, _host.RootPath))
+            {
+                return;
+            }
+
+            string? hostAddons = _host.AddonsPath;
+            if (string.IsNullOrWhiteSpace(addonDir) || string.IsNullOrWhiteSpace(hostAddons))
+            {
+                return;
+            }
+
+            bool differs = !string.Equals(
+                addonDir.TrimEnd('\\', '/'),
+                hostAddons.TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase);
+            if (!differs)
+            {
+                return;
+            }
+
+            ShadePathAlignResult align = ShadePathAligner.Align(ini, _host);
+            if (align.Changed)
+            {
+                _logger.LogInformation("Auto-aligned game ReShade.ini {Ini}: {Old} -> {New} ({Keys})",
+                    ini, align.PreviousRoot, _host.RootPath, string.Join(", ", align.ChangedKeys));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Auto-fix game ReShade.ini for {Game}", entry.DisplayName);
         }
     }
 
@@ -217,12 +285,7 @@ public sealed partial class GamePluginPage : PageBase
         // 注入时机（HoYoShade / ReShade 这一步）：按游戏，独立于插件列表是否可用
         UpdateShadeInjectDelayUi();
 
-        _plugins = new GamePluginService(
-            entry,
-            _host,
-            PluginHostLocator.AddonNameCachePath,
-            GameCatalog.AddonCandidateNames(),
-            GameCatalog.TagsOfAddonFile);
+        _plugins = GamePluginServiceFactory.Create(entry, _host);
 
         Addons.Clear();
 
@@ -254,13 +317,6 @@ public sealed partial class GamePluginPage : PageBase
         // 跟着这个游戏的插件开关同步一次；切游戏时还会走 GameCatalog.SyncDlss5FeedPreset
         _plugins.SyncDlss5FeedPreset(out _);
 
-        // DLSS5 类插件：只要开着就默认从 DllMain 加载（用户要求）
-        int synced = _plugins.SyncDlss5LoadFromDllMain();
-        if (synced > 0)
-        {
-            _logger.LogInformation("Auto-added {Count} DLSS5 addons to LoadFromDllMain for {Game}", synced, entry.DisplayName);
-        }
-
         // 需求1：同一个插件装了多个版本时，版本下拉就长在**这张插件卡片里**
         var versionStore = new AddonVersionStore(AppConfig.CacheRoot);
         var tagsByExtension = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -287,7 +343,7 @@ public sealed partial class GamePluginPage : PageBase
                 feedConfig?.WarmupRebuild ?? Dlss5FeedConfig.DefaultWarmupRebuild,
                 feedConfig?.Path,
                 Dx11SourceToIndex(item.IsRenoDxDlss5Main ? _plugins.GetDx11Source() : null),
-                item.IsRenoDxDlss5Main && _plugins.IsEnableHooksOn(),
+                item.IsRenoDxDlss5Main ? _plugins.GetEnableHooksMode() : 0,
                 CurrentGameId is { } gid && AppConfig.GetForceHookOffOnLaunch(gid.GameBiz));
             Addons.Add(item);
         }
@@ -301,7 +357,6 @@ public sealed partial class GamePluginPage : PageBase
 
         int brokenCount = Addons.Count(a => a.Enabled && a.CanToggle && a.HasMissingDll);
         TextBlock_Status.Text = $"{entry.DisplayName}：{Addons.Count} 个插件，启用 {Addons.Count(a => a.Enabled)} 个。" +
-                                (synced > 0 ? $"（{synced} 个 DLSS5 插件自动加入 LoadFromDllMain）" : string.Empty) +
                                 (brokenCount > 0 ? $"　⚠ {brokenCount} 个缺运行时 dll" : string.Empty) +
                                 (entry.ReShadeIniPath is null ? string.Empty : $"　ini：{entry.ReShadeIniPath}");
 
@@ -706,6 +761,15 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
+        // 插件开关和下拉事件可能在同一个 UI 帧内交错到达，禁用后不再允许写盘。
+        if (!item.CanEditHookPoint)
+        {
+            item.RefreshHookPoint(item.IsRenoDxDlss5Main
+                ? _plugins.GetDlss5HookPoint()
+                : _plugins.GetHookPoint());
+            return;
+        }
+
         bool ok = item.IsRenoDxDlss5Main ? _plugins.SetDlss5HookPoint(value) : _plugins.SetHookPoint(value);
         if (!ok)
         {
@@ -725,6 +789,12 @@ public sealed partial class GamePluginPage : PageBase
     {
         if (_plugins is null)
         {
+            return;
+        }
+
+        if (!item.CanEditDx11Source)
+        {
+            item.RefreshDx11Source(Dx11SourceToIndex(_plugins.GetDx11Source()));
             return;
         }
 
@@ -757,25 +827,31 @@ public sealed partial class GamePluginPage : PageBase
         _ => 0,
     };
 
-    /// <summary>卡片上的 EnableHooks 开关：开 = 写 [RenoDX.DLSS5] EnableHooks=1（Streamline 挂钩），关 = 删键回默认</summary>
-    private void OnAddonEnableHooksChanged(AddonItemViewModel item, bool value)
+    /// <summary>卡片上的 EnableHooks：0 = 无（删键），1 / 2 = 写入对应数字</summary>
+    private void OnAddonEnableHooksChanged(AddonItemViewModel item, int value)
     {
         if (_plugins is null)
         {
             return;
         }
 
+        if (!item.CanEditEnableHooks)
+        {
+            item.RefreshEnableHooks(_plugins.GetEnableHooksMode());
+            return;
+        }
+
         if (_plugins.SetEnableHooks(value))
         {
-            TextBlock_Status.Text = value
-                ? "已写入 [RenoDX.DLSS5] EnableHooks=1（Streamline 挂钩）。重启游戏生效。"
-                : "已删掉 EnableHooks 键（回插件默认）。重启游戏生效。";
+            TextBlock_Status.Text = value == 0
+                ? "已删掉 EnableHooks 键（回插件默认）。重启游戏生效。"
+                : $"已写入 [RenoDX.DLSS5] EnableHooks={value}。重启游戏生效。";
             WarnIfGameRunning();
         }
         else
         {
             TextBlock_Status.Text = "EnableHooks 写不进去 —— 要么没有 ReShade.ini，要么插件没启用。";
-            item.RefreshEnableHooks(_plugins.IsEnableHooksOn());
+            item.RefreshEnableHooks(_plugins.GetEnableHooksMode());
         }
     }
 
@@ -949,9 +1025,9 @@ public sealed partial class GamePluginPage : PageBase
             int dx11Index = Dx11SourceToIndex(_plugins is { HasReShadeIni: true } plugins
                 ? plugins.GetDx11Source()
                 : null);
-            bool enableHooks = _plugins is { HasReShadeIni: true }
-                ? _plugins.IsEnableHooksOn()
-                : false;
+            int enableHooks = _plugins is { HasReShadeIni: true }
+                ? _plugins.GetEnableHooksMode()
+                : 0;
             foreach (AddonItemViewModel card in Addons)
             {
                 card.RefreshDx11Source(dx11Index);
@@ -1043,12 +1119,7 @@ public sealed partial class GamePluginPage : PageBase
         {
             try
             {
-                plugins = new GamePluginService(
-                    _entry,
-                    host,
-                    PluginHostLocator.AddonNameCachePath,
-                    GameCatalog.AddonCandidateNames(),
-                    GameCatalog.TagsOfAddonFile);
+                plugins = GamePluginServiceFactory.Create(_entry, host);
             }
             catch
             {
@@ -1425,7 +1496,7 @@ public partial class AddonItemViewModel : ObservableObject
 
     /// <summary>能改的时候才可点（关掉插件 / 不相干的插件 / 自己会登记的都是灰的）</summary>
     public bool CanEditLoadFromDllMain =>
-        CanToggle && Enabled
+        IsPluginConfigEnabled
         && (IsDlss5 || IsRenoDxDlssFamily)
         && (!SelfRegistersInIni || IsRenoDxDlssFamily);
 
@@ -1477,8 +1548,14 @@ public partial class AddonItemViewModel : ObservableObject
     public Visibility Dx11SourceVisibility =>
         IsRenoDxDlss5Main ? Visibility.Visible : Visibility.Collapsed;
 
+    /// <summary>当前插件配置是否可编辑：插件必须既能切换，又处于启用状态。</summary>
+    public bool IsPluginConfigEnabled => CanToggle && Enabled;
+
+    /// <summary>HookPoint 可点条件：插件启用且属于 RenoDX DLSS 家族。</summary>
+    public bool CanEditHookPoint => IsPluginConfigEnabled && IsRenoDxDlssFamily;
+
     /// <summary>DX11Source 可点条件：插件启用 + 可改（门槛和 HookPoint 一致）</summary>
-    public bool CanEditDx11Source => CanToggle && Enabled && IsRenoDxDlss5Main;
+    public bool CanEditDx11Source => IsPluginConfigEnabled && IsRenoDxDlss5Main;
 
     /// <summary>
     /// EnableHooks（[RenoDX.DLSS5] EnableHooks=1）：游戏完全走 NVIDIA Streamline 时，
@@ -1487,7 +1564,7 @@ public partial class AddonItemViewModel : ObservableObject
     public Visibility EnableHooksVisibility =>
         IsRenoDxDlss5Main ? Visibility.Visible : Visibility.Collapsed;
 
-    public bool CanEditEnableHooks => CanToggle && Enabled && IsRenoDxDlss5Main;
+    public bool CanEditEnableHooks => IsPluginConfigEnabled && IsRenoDxDlss5Main;
 
     /// <summary>
     /// 「永远 off」（启动/注入前把挂钩点写成 0）：只属于旧 RenoDX DLSS —— 键是
@@ -1512,8 +1589,9 @@ public partial class AddonItemViewModel : ObservableObject
     [ObservableProperty]
     private int dx11Source;
 
+    /// <summary>0 = 无（删键）、1 / 2 = 写入对应数字</summary>
     [ObservableProperty]
-    private bool enableHooks;
+    private int enableHooks;
 
     /// <summary>「永远 off」：启动/注入这个游戏之前把旧 DLSS 的挂钩点写成 0（按游戏记在 AppConfig）</summary>
     [ObservableProperty]
@@ -1532,7 +1610,7 @@ public partial class AddonItemViewModel : ObservableObject
     internal Action<AddonItemViewModel, int>? Dx11SourceChanged { get; set; }
 
     /// <summary>用户改了 EnableHooks（页面写盘；写失败页面会调 <see cref="RefreshEnableHooks"/> 拨回来）</summary>
-    internal Action<AddonItemViewModel, bool>? EnableHooksChanged { get; set; }
+    internal Action<AddonItemViewModel, int>? EnableHooksChanged { get; set; }
 
     /// <summary>用户改了「永远 off」（页面记到 AppConfig；失败页面会调 <see cref="RefreshForceHookOff"/> 拨回来）</summary>
     internal Action<AddonItemViewModel, bool>? ForceHookOffChanged { get; set; }
@@ -1541,7 +1619,7 @@ public partial class AddonItemViewModel : ObservableObject
     internal Action<AddonItemViewModel>? FeedConfigChanged { get; set; }
 
     /// <summary>程序填专属配置的初值（不算用户改的）</summary>
-    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath, int dx11Source, bool enableHooks, bool forceHookOffOnLaunch)
+    public void ConfigureDedicatedConfig(int hookPoint, double feedCreateDelay, double feedWarmupRebuild, string? feedConfigPath, int dx11Source, int enableHooks, bool forceHookOffOnLaunch)
     {
         _suppress = true;
         try
@@ -1552,7 +1630,7 @@ public partial class AddonItemViewModel : ObservableObject
             FeedConfigPath = feedConfigPath ?? string.Empty;
             HasFeedConfig = !string.IsNullOrWhiteSpace(feedConfigPath);
             Dx11Source = Math.Clamp(dx11Source, 0, 2);
-            EnableHooks = enableHooks;
+            EnableHooks = Math.Clamp(enableHooks, 0, 2);
             ForceHookOffOnLaunch = forceHookOffOnLaunch;
         }
         finally
@@ -1595,12 +1673,12 @@ public partial class AddonItemViewModel : ObservableObject
     }
 
     /// <summary>跟盘上对齐 EnableHooks</summary>
-    public void RefreshEnableHooks(bool value)
+    public void RefreshEnableHooks(int value)
     {
         _suppress = true;
         try
         {
-            EnableHooks = value;
+            EnableHooks = Math.Clamp(value, 0, 2);
         }
         finally
         {
@@ -1681,9 +1759,9 @@ public partial class AddonItemViewModel : ObservableObject
         Dx11SourceChanged?.Invoke(this, value);
     }
 
-    partial void OnEnableHooksChanged(bool value)
+    partial void OnEnableHooksChanged(int value)
     {
-        if (_suppress)
+        if (_suppress || value is < 0 or > 2)
         {
             return;
         }
@@ -1876,6 +1954,11 @@ public partial class AddonItemViewModel : ObservableObject
 
     partial void OnEnabledChanged(bool value)
     {
+        // x:Bind OneWay 不会自动追踪计算属性；插件开关变化时主动刷新所有相关权限。
+        OnPropertyChanged(nameof(IsPluginConfigEnabled));
+        OnPropertyChanged(nameof(CanEditHookPoint));
+        OnPropertyChanged(nameof(CanEditDx11Source));
+        OnPropertyChanged(nameof(CanEditEnableHooks));
         OnPropertyChanged(nameof(CanEditLoadFromDllMain));
 
         if (_suppress)

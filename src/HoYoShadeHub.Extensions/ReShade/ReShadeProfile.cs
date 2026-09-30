@@ -630,23 +630,29 @@ public sealed class ReShadeProfile
     /// <summary>EnableHooks 的原始值；键不存在返回 null</summary>
     public string? GetEnableHooks() => _ini.GetValue(Dlss5Section, EnableHooksKey)?.Trim();
 
-    /// <summary>是否已经打开（=1）。键不存在 / 值不是 1 都算关</summary>
-    public bool IsEnableHooksOn() =>
-        string.Equals(_ini.GetValue(Dlss5Section, EnableHooksKey)?.Trim(), "1", StringComparison.Ordinal);
-
-    /// <summary>
-    /// 开 = 写 <c>EnableHooks=1</c>（addon 提示「NR 需要 Streamline 设置」时要的就是这个，写完重启游戏）；
-    /// 关 = 删键（回插件默认）。
-    /// </summary>
-    public void SetEnableHooks(bool enabled)
+    /// <summary>下拉框对应值：0 = 无（删键）、1 / 2 = 写入对应数字；其他旧值显示为「无」</summary>
+    public int GetEnableHooksMode() => GetEnableHooks() switch
     {
-        if (enabled)
+        "1" => 1,
+        "2" => 2,
+        _ => 0,
+    };
+
+    /// <summary>0 = 删键回插件默认；1 / 2 = 写入 [RenoDX.DLSS5] EnableHooks</summary>
+    public void SetEnableHooks(int mode)
+    {
+        if (mode is < 0 or > 2)
         {
-            _ini.SetValue(Dlss5Section, EnableHooksKey, "1");
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if (mode == 0)
+        {
+            _ini.RemoveKey(Dlss5Section, EnableHooksKey);
         }
         else
         {
-            _ini.RemoveKey(Dlss5Section, EnableHooksKey);
+            _ini.SetValue(Dlss5Section, EnableHooksKey, mode.ToString());
         }
     }
 

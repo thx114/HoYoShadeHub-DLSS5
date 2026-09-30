@@ -773,6 +773,26 @@ Check(profile.GetDx11Source() is null, "关掉 = 删键（跟随插件默认）"
 profile.Save();
 Check(!File.ReadAllText(profilePath).Contains("DX11Source"), "关掉后文件里不再有 DX11Source");
 
+Console.WriteLine("-- EnableHooks（无 / 1 / 2 三态）--");
+profile.SetEnableHooks(0);
+profile.Save();
+Check(profile.GetEnableHooksMode() == 0 && profile.GetEnableHooks() is null, "无 = 删掉 EnableHooks 键");
+profile.SetEnableHooks(1);
+profile.Save();
+Check(ReShadeProfile.Load(profilePath).GetEnableHooksMode() == 1, "EnableHooks=1 保存并重载");
+profile.SetEnableHooks(2);
+profile.Save();
+Check(ReShadeProfile.Load(profilePath).GetEnableHooksMode() == 2, "EnableHooks=2 保存并重载");
+string enableHooksText = File.ReadAllText(profilePath);
+int enableHooksSectionStart = enableHooksText.IndexOf("[RenoDX.DLSS5]", StringComparison.Ordinal);
+int enableHooksSectionEnd = enableHooksText.IndexOf("\n[", enableHooksSectionStart + 1, StringComparison.Ordinal);
+string enableHooksSection = enableHooksSectionEnd < 0 ? enableHooksText[enableHooksSectionStart..] : enableHooksText[enableHooksSectionStart..enableHooksSectionEnd];
+Check(enableHooksSection.Contains("EnableHooks=2"), "2 写在 [RenoDX.DLSS5] 段");
+Check(enableHooksText.IndexOf("EnableHooks", StringComparison.Ordinal) == enableHooksText.LastIndexOf("EnableHooks", StringComparison.Ordinal), "全文件只有一处 EnableHooks");
+profile.SetEnableHooks(0);
+profile.Save();
+Check(ReShadeProfile.Load(profilePath).GetEnableHooksMode() == 0 && !File.ReadAllText(profilePath).Contains("EnableHooks"), "重新选择无后文件不再含 EnableHooks");
+
 Console.WriteLine("-- 旧版本误写在 [ADDON] 的那份要能读、并自动搬家 --");
 string legacyPath = Path.Combine(root, "legacy", "ReShade.ini");
 Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
@@ -1078,6 +1098,14 @@ Check(dx11Raw.IndexOf("DX11Source", StringComparison.Ordinal) == dx11Raw.LastInd
 Check(serviceA.SetDx11SourceNative(false), "关掉 DX11Source");
 Check(!File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("DX11Source"), "关掉后盘上没了");
 
+Console.WriteLine("-- EnableHooks（服务层）--");
+Check(serviceA.SetEnableHooks(1) && serviceA.GetEnableHooksMode() == 1, "服务层写入并读回 EnableHooks=1");
+Check(serviceA.SetEnableHooks(2) && serviceA.GetEnableHooksMode() == 2, "服务层写入并读回 EnableHooks=2");
+Check(File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("EnableHooks=2"), "服务层将 2 保存到游戏 ini");
+Check(serviceA.SetEnableHooks(0) && serviceA.GetEnableHooksMode() == 0, "服务层选择无后读回 0");
+Check(!File.ReadAllText(Path.Combine(gameA, "ReShade.ini")).Contains("EnableHooks"), "服务层选择无后删除键");
+Check(!serviceA.SetEnableHooks(3), "服务层拒绝不支持的 EnableHooks 值");
+
 string plainDlss = "renodx-dlss(9.17.12).addon64";
 
 // 用户反馈过：文件名里常常没有 ShortFuse 分支信息（装的就是 renodx-dlss.addon64），
@@ -1110,6 +1138,7 @@ Check(!servicePlain.SetHookPoint(4), "不可改的时候写不进去");
 Check(!File.ReadAllText(Path.Combine(Path.GetDirectoryName(onlyPlain)!, "ReShade.ini")).Contains("DirectNeuralRenderingHookPoint"), "盘上确实没写");
 Check(!servicePlain.SetDx11SourceNative(true), "不可改的时候 DX11Source 也写不进去");
 Check(!File.ReadAllText(Path.Combine(Path.GetDirectoryName(onlyPlain)!, "ReShade.ini")).Contains("DX11Source"), "盘上确实没写 DX11Source");
+Check(!servicePlain.SetEnableHooks(2), "非 RenoDX DLSS5 插件不能写 EnableHooks=2");
 
 Console.WriteLine("-- 启用 RenoDX DLSS5 时自动补写 DX11Source=native --");
 Check(!GamePluginService.IsRenoDxDlss5Addon("renodx-dlss5-super-anus(1.0.8.18).addon64"), "super-anus 不是主插件（另一款实现，段名不同）");
@@ -1129,7 +1158,7 @@ Check(GamePluginService.IsRenoDxDlss5Addon("renodx-dlss5.addon64"), "主插件�
 Check(serviceAuto.SetAddonEnabled("renodx-dlss5(1.0.8.18).addon64", true), "启用 RenoDX DLSS5");
 string autoIni = File.ReadAllText(Path.Combine(Path.GetDirectoryName(autoExe)!, "ReShade.ini"));
 Check(autoIni.Contains("DX11Source=native"), "启用时自动补写 DX11Source=native（进游戏插件不再弹提示）");
-Check(serviceAuto.GetAddons().First(a => a.Slug == "renodx-dlss5").LoadFromDllMain, "DLSS5 家族顺带进 LoadFromDllMain（原有规则不回退）");
+Check(!serviceAuto.GetAddons().First(a => a.Slug == "renodx-dlss5").LoadFromDllMain, "启用 DLSS5 不会强制改动独立的 LoadFromDllMain");
 
 Console.WriteLine("-- DLSS5 Feed 的 cfg（create_delay / warmup_rebuild 做成可调）--");
 string feedDir = Path.Combine(root, "feed-cfg");
@@ -1187,10 +1216,9 @@ Check(!GamePluginService.IsRenoDxDlss5Addon("renodx-dlss.addon64"), "renodx-dlss
 
 Check(serviceDlss5Hook.NeedsLoadFromDllMain("renodx-dlss.addon64"), "RenoDX DLSS 属于「该从 DllMain 加载」那一族（用户第 6 条）");
 Check(serviceDlss5Hook.SetAddonEnabled("renodx-dlss.addon64", true), "启用 RenoDX DLSS");
-Check(serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "启用时自动进了 LoadFromDllMain（开启开关要复原）");
-int dlss5Synced = serviceDlss5Hook.SyncDlss5LoadFromDllMain();
-Check(serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "同步规则不会把 RenoDX DLSS 摘掉（以前会被当脏数据清掉）");
-Check(dlss5Synced == 1, $"顺带把没勾的 DLSS5 插件补上（实际补了 {dlss5Synced} 个）");
+Check(!serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "启用插件不会强制改动独立的 LoadFromDllMain");
+Check(serviceDlss5Hook.SetLoadFromDllMain("renodx-dlss.addon64", true), "用户可以手动勾选这个选项");
+Check(serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "手动勾选后读回来是已勾选");
 Check(serviceDlss5Hook.SetLoadFromDllMain("renodx-dlss.addon64", false), "用户也能手动取消这个勾");
 Check(!serviceDlss5Hook.IsLoadFromDllMain("renodx-dlss.addon64"), "取消后读回来是没勾的");
 
@@ -1350,7 +1378,7 @@ File.WriteAllText(Path.Combine(pickRoot, "a", "b", "c", "deep", "DeepGame.exe"),
 Check(!GameFolderLocator.Locate(pickRoot, "DeepGame.exe").Found, "超过 2 层就不找了（不做全盘遍历）");
 
 Console.WriteLine();
-Console.WriteLine("== 21. DLSS5 的 dll 依赖 + LoadFromDllMain 自动勾 ==");
+Console.WriteLine("== 21. DLSS5 的 dll 依赖 + LoadFromDllMain 独立设置 ==");
 Check(!DlssDllRequirements.IsDlss5(["hdr", "tonemap"]), "非 dlss5 标签不算 dlss5 插件");
 Check(DlssDllRequirements.IsDlss5(["dlss5", "neural"]), "带 dlss5 标签就算");
 
@@ -1379,20 +1407,20 @@ var dlssService = new GamePluginService(
 
 string superAnusFile = "renodx-dlss5-super-anus(1.0.8.18).addon64";
 string renoDlssFile = "renodx-dlss(9.17.12).addon64";
-dlssService.SetAddonEnabled(superAnusFile, false);   // 先关掉，把 DllMain 那串清一下
-dlssService.SetAddonEnabled(superAnusFile, true);    // 再打开 → 应该自动进 LoadFromDllMain
-Check(dlssService.GetAddons().First(a => a.FileName == superAnusFile).LoadFromDllMain,
-    "打开 dlss5 插件时自动勾上 LoadFromDllMain");
+dlssService.SetAddonEnabled(superAnusFile, false);   // 禁用会移除 DllMain 槽位
+dlssService.SetAddonEnabled(superAnusFile, true);    // 重新启用不覆盖独立设置
+Check(!dlssService.GetAddons().First(a => a.FileName == superAnusFile).LoadFromDllMain,
+    "重新启用 dlss5 插件不会自动勾上 LoadFromDllMain");
 Check(dlssService.GetAddons().First(a => a.FileName == superAnusFile).IsDlss5, "这条被认成 dlss5 插件");
 
 // 真机最常见的那种：文件名没有 dlss5、扩展目录也没给 dlss5 标签的 renodx-dlss。
-// 它同样引用 nvngx_dlssnr.dll，所以也必须能自动进 LoadFromDllMain（用户报的正是这个）
+// 它同样属于 RenoDX DLSS 家族，但 LoadFromDllMain 仍由用户独立控制。
 dlssService.SetAddonEnabled(renoDlssFile, false);
 dlssService.SetAddonEnabled(renoDlssFile, true);
 Check(dlssService.GetAddons().First(a => a.FileName == renoDlssFile).IsDlss5,
     "renodx-dlss 按文件名兜底认成 dlss5 一类");
-Check(dlssService.GetAddons().First(a => a.FileName == renoDlssFile).LoadFromDllMain,
-    "打开 renodx-dlss 时也自动勾上 LoadFromDllMain");
+Check(!dlssService.GetAddons().First(a => a.FileName == renoDlssFile).LoadFromDllMain,
+    "重新启用 renodx-dlss 时不会自动勾上 LoadFromDllMain");
 Check(!dlssService.SetLoadFromDllMain("hdr-tonemap.addon64", true),
     "真正无关的插件仍然不许勾进 LoadFromDllMain");
 

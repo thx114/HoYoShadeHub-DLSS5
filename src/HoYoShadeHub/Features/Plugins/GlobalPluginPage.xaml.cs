@@ -649,12 +649,7 @@ public sealed partial class GlobalPluginPage : PageBase
                 return set;
             }
 
-            var service = new GamePluginService(
-                entry,
-                _manager.Host,
-                PluginHostLocator.AddonNameCachePath,
-                GameCatalog.AddonCandidateNames(),
-                GameCatalog.TagsOfAddonFile);
+            var service = GamePluginServiceFactory.Create(entry, _manager.Host);
 
             if (service.ProfileError is not null)
             {
@@ -2709,12 +2704,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
             if (entry is not null)
             {
-                var plugins = new GamePluginService(
-                    entry,
-                    host,
-                    PluginHostLocator.AddonNameCachePath,
-                    GameCatalog.AddonCandidateNames(),
-                    GameCatalog.TagsOfAddonFile);
+                var plugins = GamePluginServiceFactory.Create(entry, host);
 
                 context = new Dlss5CompatContext
                 {

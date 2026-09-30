@@ -24,38 +24,58 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <!--  「插件」标题右边紧跟 NV 驱动提示（用户要求：放右侧，不放下面）  -->
-            <StackPanel Grid.Column="0" Spacing="2">
-                <StackPanel Orientation="Horizontal" Spacing="12">
-                    <TextBlock VerticalAlignment="Center" Style="{ThemeResource TitleTextBlockStyle}" Text="插件" />
-                    <!--  用 DLSS5 插件时检查 NVIDIA 驱动版本（用户要求的红/黄区间）  -->
-                    <TextBlock x:Name="TextBlock_DriverWarning"
-                              VerticalAlignment="Center"
-                              Style="{ThemeResource CaptionTextBlockStyle}"
-                              TextWrapping="Wrap"
-                              Visibility="Collapsed" />
-                </StackPanel>
-                <!--  第 1 列：游戏名 - 主程序；第 2 列：插件目录  -->
-                <StackPanel Margin="0,2,0,0" Orientation="Horizontal" Spacing="16">
+            <!--  标题占左侧两行；右侧第一行是驱动状态，第二行是游戏/插件路径。
+                  不再让整行标题压在状态行上方，给下面的插件卡片腾出一行高度。  -->
+            <Grid Grid.Column="0" ColumnSpacing="12" RowSpacing="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.RowSpan="2"
+                           VerticalAlignment="Top"
+                           Style="{ThemeResource TitleTextBlockStyle}"
+                           Text="插件" />
+                <!--  用 DLSS5 插件时检查 NVIDIA 驱动版本（用户要求的红/黄区间）  -->
+                <TextBlock x:Name="TextBlock_DriverWarning"
+                           Grid.Column="1"
+                           VerticalAlignment="Center"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           TextTrimming="CharacterEllipsis"
+                           Visibility="Collapsed" />
+                <!--  游戏信息和插件目录在驱动状态下方，长路径不撑开操作按钮。  -->
+                <Grid Grid.Row="1" Grid.Column="1" ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock x:Name="TextBlock_GameMeta"
-                              VerticalAlignment="Center"
-                              Style="{ThemeResource CaptionTextBlockStyle}"
-                              TextWrapping="Wrap" />
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               TextTrimming="CharacterEllipsis" />
                     <TextBlock x:Name="TextBlock_TargetPath"
-                              VerticalAlignment="Center"
-                              Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                              Style="{ThemeResource CaptionTextBlockStyle}"
-                              Text="正在检测 HoYoShade…"
-                              TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-                <!--  这份 ini 的 AddonPath 和当前 HoYoShade 不一致时提示（红黄标是按这个游戏的目录算的）  -->
+                               Grid.Column="1"
+                               VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Text="正在检测 HoYoShade…"
+                               TextTrimming="CharacterEllipsis" />
+                </Grid>
+                <!--  路径不匹配时仍保留整行提示，避免隐藏修复信息。  -->
                 <TextBlock x:Name="TextBlock_PathHint"
-                          Margin="0,4,0,0"
-                          Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                          Style="{ThemeResource CaptionTextBlockStyle}"
-                          TextWrapping="Wrap"
-                          Visibility="Collapsed" />
-            </StackPanel>
+                           Grid.Row="2"
+                           Grid.ColumnSpan="2"
+                           Margin="0,4,0,0"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed" />
+            </Grid>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <Button x:Name="Button_Refresh" Click="Button_Refresh_Click" ToolTipService.ToolTip="重新检测">
@@ -264,6 +284,7 @@
                                             <TextBlock VerticalAlignment="Center" Text="HookPoint" />
                                             <ComboBox MinWidth="140"
                                                      SelectedIndex="{x:Bind HookPoint, Mode=TwoWay}"
+                                                     IsEnabled="{x:Bind CanEditHookPoint, Mode=OneWay}"
                                                      ToolTipService.ToolTip="0 = off。数字对应的阶段在游戏里 ReShade 覆盖层的 Hook Method 里看">
                                                 <ComboBoxItem Content="off" />
                                                 <ComboBoxItem Content="1" />
@@ -292,13 +313,19 @@
                                             </ComboBox>
                                         </StackPanel>
 
-                                        <!--  EnableHooks：游戏完全走 NVIDIA Streamline、addon 弹「NR 需要 Streamline 设置」时
-                                              勾这个（写 [RenoDX.DLSS5] EnableHooks=1，重启游戏）。同样只有 DLSS5 主插件显示。  -->
-                                        <CheckBox Content="EnableHooks=1（Streamline 挂钩）"
-                                                 IsChecked="{x:Bind EnableHooks, Mode=TwoWay}"
-                                                 IsEnabled="{x:Bind CanEditEnableHooks, Mode=OneWay}"
-                                                 ToolTipService.ToolTip="游戏完全走 NVIDIA Streamline、插件提示「NR 需要 Streamline 设置 / 请在 [RenoDX.DLSS5] 设置 EnableHooks=1」时勾上；取消 = 删键回默认。重启游戏生效"
-                                                 Visibility="{x:Bind EnableHooksVisibility, Mode=OneWay}" />
+                                        <!--  EnableHooks 仅 RenoDX DLSS5 主插件显示：无 = 删键，1 / 2 = 写对应值。  -->
+                                        <StackPanel Orientation="Horizontal" Spacing="8"
+                                                    Visibility="{x:Bind EnableHooksVisibility, Mode=OneWay}">
+                                            <TextBlock VerticalAlignment="Center" Text="EnableHooks" />
+                                            <ComboBox MinWidth="170"
+                                                      SelectedIndex="{x:Bind EnableHooks, Mode=TwoWay}"
+                                                      IsEnabled="{x:Bind CanEditEnableHooks, Mode=OneWay}"
+                                                      ToolTipService.ToolTip="写入 [RenoDX.DLSS5] EnableHooks；无 = 删除此键并跟随插件默认。修改后重启游戏生效">
+                                                <ComboBoxItem Content="无（不写键）" />
+                                                <ComboBoxItem Content="1" />
+                                                <ComboBoxItem Content="2" />
+                                            </ComboBox>
+                                        </StackPanel>
 
                                         <!--  需求4：LoadFromDllMain 属于专属配置，搬进展开区（RenoDX DLSS 也补上了）  -->
                                         <CheckBox Content="LoadFromDllMain"

@@ -55,6 +55,24 @@ public sealed class GameAddonState
 }
 
 /// <summary>
+/// 创建 <see cref="GamePluginService"/> 所需的外部依赖。
+///
+/// <para>
+/// 这些依赖原来由多个页面分别拼接并传入，导致插件页面、启动页面和全局插件页面
+/// 很容易出现行为不一致。把它们收拢成配置对象后，业务服务只关心插件逻辑，
+/// 页面也不再需要知道插件名称缓存和目录账本的组装细节。
+/// </para>
+/// </summary>
+public sealed class GamePluginServiceOptions
+{
+    public string? NameCachePath { get; init; }
+
+    public IReadOnlyList<string> CandidateNames { get; init; } = [];
+
+    public Func<string, IEnumerable<string>?>? TagsOfAddon { get; init; }
+}
+
+/// <summary>
 /// 一个游戏的插件开关。
 ///
 /// 层次（docs/GAMES-AND-INJECT.md §3）：
@@ -76,19 +94,53 @@ public sealed class GamePluginService
     /// <summary>扩展账本缓存：addon 文件名 → hub 装的时候那个版本 tag</summary>
     private Dictionary<string, string>? _ledgerVersions;
 
+    /// <summary>
+    /// 兼容旧调用方的构造函数。新代码应优先传入 <see cref="GamePluginServiceOptions"/>，
+    /// 这样未来增加插件元数据时不需要继续扩大构造函数参数列表。
+    /// </summary>
     public GamePluginService(
         GameEntry game,
         ShadeHost? host,
         string? nameCachePath = null,
         IEnumerable<string>? candidateNames = null,
         Func<string, IEnumerable<string>?>? tagsOfAddon = null)
+        : this(game, host, new GamePluginServiceOptions
+        {
+            NameCachePath = nameCachePath,
+            CandidateNames = [.. candidateNames ?? []],
+            TagsOfAddon = tagsOfAddon,
+        })
     {
-        _tagsOfAddon = tagsOfAddon;
+    }
+
+    /// <summary>
+    /// 使用结构化选项创建服务。保留为静态工厂，避免和旧的三参数兼容构造函数
+    /// 在传入 null 时产生重载歧义。
+    /// </summary>
+    public static GamePluginService Create(
+        GameEntry game,
+        ShadeHost? host,
+        GamePluginServiceOptions options)
+    {
+        return new GamePluginService(game, host, options);
+    }
+
+    private GamePluginService(
+        GameEntry game,
+        ShadeHost? host,
+        GamePluginServiceOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+        ArgumentNullException.ThrowIfNull(options);
+
+        _tagsOfAddon = options.TagsOfAddon;
         Game = game;
         Host = host;
-        _nameCachePath = nameCachePath;
-        _candidateNames = [.. candidateNames ?? []];
-        _nameCache = string.IsNullOrWhiteSpace(nameCachePath) ? new AddonNameCache() : AddonNameCache.Load(nameCachePath!);
+        _nameCachePath = options.NameCachePath;
+        _candidateNames = [.. options.CandidateNames];
+        _nameCache = string.IsNullOrWhiteSpace(_nameCachePath)
+            ? new AddonNameCache()
+            : AddonNameCache.Load(_nameCachePath);
         Reload();
     }
 
@@ -413,58 +465,6 @@ public sealed class GamePluginService
     /// <summary>这个 addon 现在是不是挂在该游戏的 <c>LoadFromDllMain</c> 上</summary>
     public bool IsLoadFromDllMain(string addonFileName) => Profile?.IsLoadFromDllMain(addonFileName) == true;
 
-    /// <summary>
-    /// 把 LoadFromDllMain 对齐「DLSS5 类 + RenoDX DLSS 才该在里面」这条规则：
-    /// <list type="bullet">
-    /// <item>开着但没勾的 DLSS5 / RenoDX DLSS 插件 —— 补上（用户要求：这类插件启用就默认从 DllMain 加载）</item>
-    /// <item>这两族之外的却已经在里面的 —— 摘掉（老版本留下的脏数据）</item>
-    /// </list>
-    /// </summary>
-    /// <returns>补了几个</returns>
-    public int SyncDlss5LoadFromDllMain()
-    {
-        if (Profile is null)
-        {
-            return 0;
-        }
-
-        int added = 0;
-        bool pruned = false;
-
-        foreach (AddonFileInfo file in AddonFileInfo.ScanDirectory(AddonDirectory ?? string.Empty))
-        {
-            bool wanted = NeedsLoadFromDllMain(file.FileName);
-            bool inList = Profile.IsLoadFromDllMain(file.FileName);
-
-            // 既不是 DLSS5、也不是 RenoDX DLSS 却挂在 LoadFromDllMain 上 —— 清掉
-            if (!wanted)
-            {
-                if (inList)
-                {
-                    Profile.RemoveLoadFromDllMain(file.FileName);
-                    pruned = true;
-                }
-
-                continue;
-            }
-
-            if (file.IsRenamedDisabled || Profile.IsDisabled(file.FileName) || inList)
-            {
-                continue;
-            }
-
-            Profile.AddLoadFromDllMain(file.FileName);
-            added++;
-        }
-
-        if (added > 0 || pruned)
-        {
-            Profile.Save();
-        }
-
-        return added;
-    }
-
     /// <summary>hook 点能不能改：装了 super-anus 或 renodx-dlss(ShortFuse) 才行</summary>
     public bool CanEditHookPoint(IEnumerable<GameAddonState>? addons = null) =>
         (addons ?? GetAddons()).Any(a => a.IsHookPointCapable);
@@ -577,8 +577,7 @@ public sealed class GamePluginService
 
     /// <summary>
     /// 按游戏开关一个插件（写/删该游戏 ini 的 DisabledAddons）。
-    /// 打开的是 DLSS5 类插件时，顺带把它加进 <c>LoadFromDllMain</c>
-    /// （用户要求：DLSS5 插件只要启用就默认从 DllMain 加载）。
+    /// LoadFromDllMain 是独立的用户设置：启用插件时不覆盖用户之前的勾选状态。
     /// 打开神经插帧器时还要把 <c>nvngx_dlssnr.dll</c> 复制到游戏目录（见 <see cref="EnsureInterposerDlls"/>）。
     /// </summary>
     public bool SetAddonEnabled(string addonFileName, bool enabled)
@@ -591,11 +590,6 @@ public sealed class GamePluginService
         if (enabled)
         {
             Profile.EnableAddon(addonFileName);
-
-            if (NeedsLoadFromDllMain(addonFileName))
-            {
-                Profile.AddLoadFromDllMain(addonFileName);
-            }
 
             if (IsNeuralInterposer(addonFileName))
             {
@@ -829,18 +823,18 @@ public sealed class GamePluginService
     /// <summary>写 DX11Source：开 = native，关 = 删键（跟随插件默认）</summary>
     public bool SetDx11SourceNative(bool enabled) => SetDx11Source(enabled ? "native" : null);
 
-    /// <summary>[RenoDX.DLSS5] EnableHooks 是否已经打开（=1）</summary>
-    public bool IsEnableHooksOn() => Profile?.IsEnableHooksOn() ?? false;
+    /// <summary>读取 [RenoDX.DLSS5] EnableHooks：0 = 无、1 / 2 = 对应数字</summary>
+    public int GetEnableHooksMode() => Profile?.GetEnableHooksMode() ?? 0;
 
-    /// <summary>写 EnableHooks：开 = 1（游戏全走 Streamline 时 addon 要的挂钩开关），关 = 删键（跟随插件默认）</summary>
-    public bool SetEnableHooks(bool enabled)
+    /// <summary>写 EnableHooks：0 = 删键；1 / 2 = 写入对应数字</summary>
+    public bool SetEnableHooks(int mode)
     {
-        if (Profile is null || !CanEditDx11Source())
+        if (mode is < 0 or > 2 || Profile is null || !CanEditDx11Source())
         {
             return false;
         }
 
-        Profile.SetEnableHooks(enabled);
+        Profile.SetEnableHooks(mode);
         Profile.Save();
         return true;
     }
