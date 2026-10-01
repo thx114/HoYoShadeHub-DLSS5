@@ -13,6 +13,21 @@
 
 ## 进行中（2026-10-02）
 
+### 崩铁卡旧帧/NR 空转 —— 注入顺序竞态修复，待用户验证
+
+- **根因假设**（前三个假设均被推翻：安装卫生→插件构成→NR 钩点配置，见记忆
+  `hsr-stale-frame-replay-bug`）：inject.exe 注 ReShade 与启动器注 OptiScaler 是两条
+  并行路径，各自等进程出现就注。OptiScaler 抢先 hook 上 D3D11/DXGI 时 NR 吃不到原生
+  DLSS 数据 → 无 DLSS 时段卡旧帧 + NR 空转。时好时坏 = 竞态特征。
+- 提交 `7bdd2d9`：`DllInjector.WaitForModuleAsync`（轮询模块表等目标模块）；
+  `InjectDllSpec`/`InjectSpec` 新增 `WaitForModule`；shade 走 inject.exe 时 OptiScaler
+  带 `WaitForModule: "ReShade64.dll"`（黑名单绕行/跳过注入器路径 shade 是 specs[0]
+  顺序已保证，不等）；页面 + CLI 两条注入循环统一在 Inject 前等 60s，超时降级照旧注。
+- **部署状态**：已 publish 到 `build/deploy-skipinject/HoYoShadeHub/`（和跳过注入器
+  开关同一个暂存目录），后台任务等启动器退出后把这 6 个主二进制补拷进
+  `app-1.3.9.9`。**用户需关一次启动器**，重开后连开崩铁多次验证（竞态是概率性的，
+  单次成功不算数）。日志判据：`injection ordered after ReShade64.dll (pid ...)`。
+
 ### 「不用 HoYoShade 注入器」开关 —— 待用户实测
 
 - 提交 `5d71012`：启动选项（勾了 HoYoShade / OpenHoYoShade 时显示）新增按游戏开关
