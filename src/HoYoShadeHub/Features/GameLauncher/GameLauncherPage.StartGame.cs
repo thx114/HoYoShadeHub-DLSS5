@@ -441,7 +441,10 @@ public sealed partial class GameLauncherPage : PageBase
         string? BuildDirectory = null,
         string? GameKey = null,
         bool WaitForReady = false,
-        int DelaySeconds = 0);
+        int DelaySeconds = 0,
+        // 注入前等目标进程加载某个模块（如 ReShade64.dll）：把 shade 先注 / OptiScaler 后注定死成
+        // 确定顺序，治两条注入路径抢跑导致的 NR 吃不到原生 DLSS 数据（崩铁卡旧帧案）
+        string? WaitForModule = null);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
@@ -592,6 +595,12 @@ public sealed partial class GameLauncherPage : PageBase
                 // 没桥的游戏（星铁/绝区零）仍走外部注入，行为不变。
                 InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s =>
                     string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+                // shade 走 inject.exe 时（正常启动路径），OptiScaler 必须排在 ReShade64 之后注：
+                // 两条路径各自抢跑，OptiScaler 先 hook 上 D3D11/DXGI 会让 NR 吃不到原生 DLSS 数据
+                // （崩铁卡旧帧案，时好时坏 = 竞态）。黑名单绕行时 shade 是本列表 spec[0] 顺序已保证，不用等。
+                string? waitForShadeModule = shadeReShadeDll is null && (UseHoYoShade || UseOpenHoYoShade)
+                    ? "ReShade64.dll"
+                    : null;
                 if (bridgeSpec is not null)
                 {
                     string? bridgeDirectory = Path.GetDirectoryName(bridgeSpec.Path);
@@ -607,14 +616,16 @@ public sealed partial class GameLauncherPage : PageBase
                         _logger.LogWarning(
                             "写 FSR Bridge autoload 清单失败，回退外部注入：{Directory}", bridgeDirectory);
                         specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
-                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
+                            WaitForModule: waitForShadeModule));
                     }
                 }
                 else
                 {
                     // 没桥：照旧外部注入
                     specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
-                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
+                        WaitForModule: waitForShadeModule));
                 }
             }
         }
@@ -812,6 +823,28 @@ public sealed partial class GameLauncherPage : PageBase
                     {
                         warmupLost = true;
                         break;
+                    }
+
+                    // 「模块排序」：shade 走 inject.exe 时 OptiScaler 排在它之后注 ——
+                    // 等 ReShade64.dll 真正落进进程模块表。两条注入路径并行抢跑会让
+                    // hook 顺序随机（OptiScaler 先 hook 上 → NR 吃不到原生 DLSS 数据，
+                    // 崩铁卡旧帧案）。超时 / 进程没了记警告照样注，退化为旧行为。
+                    if (!string.IsNullOrWhiteSpace(spec.WaitForModule))
+                    {
+                        bool moduleSeen = await DllInjector.WaitForModuleAsync(
+                            pid, spec.WaitForModule, TimeSpan.FromSeconds(60), cancellationToken);
+                        if (moduleSeen)
+                        {
+                            _logger.LogInformation(
+                                "{Label} injection ordered after {Module} (pid {Pid})",
+                                label, spec.WaitForModule, pid);
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "{Label} injection ordering: {Module} not loaded within 60s (pid {Pid}); injecting anyway",
+                                label, spec.WaitForModule, pid);
+                        }
                     }
 
                     bool ok = DllInjector.Inject(pid, spec.Path, out string error);

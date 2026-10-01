@@ -217,6 +217,58 @@ internal static partial class DllInjector
         }
     }
 
+    /// <summary>
+    /// 等目标进程把 <paramref name="moduleName"/>（如 ReShade64.dll）加载进模块表。
+    /// 用于把「shade 先注、OptiScaler 后注」定死成确定顺序 —— 两条注入路径各自抢跑时，
+    /// OptiScaler 抢先 hook D3D11/DXGI 会让 NR 吃不到原生 DLSS 数据（崩铁卡旧帧案）。
+    /// 超时返回 false（调用方决定要不要照常注）；进程死了也返回 false。
+    /// </summary>
+    public static async Task<bool> WaitForModuleAsync(
+        int processId,
+        string moduleName,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        string name = Path.GetFileName(moduleName);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                using Process process = Process.GetProcessById(processId);
+                if (process.HasExited)
+                {
+                    return false;
+                }
+
+                // x64 对 x64，Process.Modules 直接能用；权限和注入同级（都过了 OpenProcess）
+                foreach (ProcessModule module in process.Modules)
+                {
+                    if (string.Equals(module.ModuleName, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // 进程枚举失败（权限抖动 / 进程正退）：下次循环再试
+            }
+
+            await Task.Delay(400, cancellationToken);
+        }
+
+        return false;
+    }
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);
 

@@ -40,7 +40,10 @@ public static class GameLaunchPipeline
         bool WaitForReady = false,
         int DelaySeconds = 0,
         string? BuildDirectory = null,
-        string? GameKey = null);
+        string? GameKey = null,
+        // 注入前等目标进程加载某个模块（如 ReShade64.dll）：shade 走 inject.exe 时
+        // 把 OptiScaler 定死排在 shade 之后，治两条注入路径抢跑（崩铁卡旧帧案）
+        string? WaitForModule = null);
 
     /// <summary>
     /// 按启动选项完整启动一个游戏。
@@ -185,8 +188,14 @@ public static class GameLaunchPipeline
 
         report?.Invoke($"游戏已启动（PID {process.Id}）");
 
-        // ④ 模块 / OptiScaler 注入
-        List<InjectSpec> specs = BuildSpecs(gameId, useOptiScaler);
+        // ④ 模块 / OptiScaler 注入。
+        // shade 走 inject.exe 时（正常路径，非黑名单绕行 / 跳过注入器），OptiScaler 排在
+        // ReShade64 之后注 —— 等模块表出现 ReShade64.dll。shadeViaOwnInjector 时 ReShade64
+        // 是 specs[0] 顺序已保证，不用等。
+        List<InjectSpec> specs = BuildSpecs(gameId, useOptiScaler,
+            waitForShadeModule: (useHoYoShade || useOpenHoYoShade) && shadeReShadeDll is null
+                ? "ReShade64.dll"
+                : null);
 
         // 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll 补进 specs 最前，随第④步一起注
         if (shadeReShadeDll is not null
@@ -423,7 +432,7 @@ public static class GameLaunchPipeline
 
     // ==================== ④ 模块 / OptiScaler 注入（页面 StartExtraDllInjection 的移植）====================
 
-    private static List<InjectSpec> BuildSpecs(GameId gameId, bool useOptiScaler)
+    private static List<InjectSpec> BuildSpecs(GameId gameId, bool useOptiScaler, string? waitForShadeModule = null)
     {
         var specs = new List<InjectSpec>();
 
@@ -494,14 +503,16 @@ public static class GameLaunchPipeline
                     {
                         specs.Add(new InjectSpec(optiScaler, "OptiScaler",
                             BuildDirectory: buildDirectory, GameKey: gameKey,
-                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz)));
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
+                            WaitForModule: waitForShadeModule));
                     }
                 }
                 else
                 {
                     specs.Add(new InjectSpec(optiScaler, "OptiScaler",
                         BuildDirectory: buildDirectory, GameKey: gameKey,
-                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz)));
+                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
+                        WaitForModule: waitForShadeModule));
                 }
             }
         }
@@ -606,6 +617,28 @@ public static class GameLaunchPipeline
                 if (warmupLost)
                 {
                     break;
+                }
+
+                // 「模块排序」：shade 走 inject.exe 时 OptiScaler 排在它之后注 ——
+                // 等 ReShade64.dll 真正落进进程模块表（两条注入路径并行抢跑会让
+                // hook 顺序随机 → NR 吃不到原生 DLSS 数据，崩铁卡旧帧案）。
+                // 超时 / 进程没了记警告照样注，退化为旧行为。
+                if (!string.IsNullOrWhiteSpace(spec.WaitForModule))
+                {
+                    bool moduleSeen = await DllInjector.WaitForModuleAsync(
+                        pid, spec.WaitForModule, TimeSpan.FromSeconds(60), ct);
+                    if (moduleSeen)
+                    {
+                        _logger.LogInformation(
+                            "{Label} injection ordered after {Module} (pid {Pid})",
+                            spec.Label, spec.WaitForModule, pid);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "{Label} injection ordering: {Module} not loaded within 60s (pid {Pid}); injecting anyway",
+                            spec.Label, spec.WaitForModule, pid);
+                    }
                 }
 
                 bool ok = DllInjector.Inject(pid, spec.Path, out string error);
