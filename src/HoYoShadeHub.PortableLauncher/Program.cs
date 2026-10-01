@@ -54,6 +54,14 @@ internal static class Program
             AttachConsole(unchecked((uint)-1));
         }
 
+        // 命令行动词：启动壳不能直接 fire-and-forget —— 调用方等的是退出码和进度输出。
+        // 挂到父控制台，把子进程的 stdout/stderr 原样泵过来，等它跑完回传退出码。
+        bool cliMode = args.Length > 0 && IsCliVerb(args[0]);
+        if (cliMode && !AttachConsole(unchecked((uint)-1)))
+        {
+            AllocConsole();
+        }
+
         try
         {
             string baseFolder = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -83,6 +91,11 @@ internal static class Program
 
             string? workDirectory = Path.GetDirectoryName(targetExe);
 
+            if (cliMode)
+            {
+                return RunCliChild(targetExe, arguments, workDirectory ?? baseFolder);
+            }
+
             Process? process = Process.Start(new ProcessStartInfo(targetExe)
             {
                 Arguments = arguments,
@@ -104,6 +117,64 @@ internal static class Program
             Log(trace, ex.ToString());
             return 1;
         }
+    }
+
+
+    /// <summary>命令行动词（和 App 的 Program.Main 分发保持一致）。</summary>
+    private static bool IsCliVerb(string arg) => arg.ToLowerInvariant() is
+        "run" or "auto" or "action" or "stopgame" or "killgame" or "startgame" or "testgame" or "test-game" or "selftest";
+
+
+    /// <summary>
+    /// 命令行模式跑子进程：stdout/stderr 泵到当前控制台，等退出，回传退出码。
+    /// </summary>
+    private static int RunCliChild(string targetExe, string arguments, string workDirectory)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo(targetExe)
+            {
+                Arguments = arguments,
+                WorkingDirectory = workDirectory,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            },
+            EnableRaisingEvents = true,
+        };
+
+        var stderrDone = new ManualResetEventSlim(false);
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is not null)
+            {
+                Console.Out.WriteLine(e.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is null)
+            {
+                stderrDone.Set();
+            }
+            else
+            {
+                Console.Error.WriteLine(e.Data);
+            }
+        };
+
+        if (!process.Start())
+        {
+            return 1;
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        process.WaitForExit();
+        stderrDone.Wait(TimeSpan.FromSeconds(5));
+        return process.ExitCode;
     }
 
     /// <summary>version.ini 里的 <c>exe_path</c>（build.ps1 写进去的那行）</summary>
@@ -218,9 +289,50 @@ internal static class Program
         }
     }
 
-    /// <summary>把参数原样传下去（每个都加引号，免得路径带空格被拆开）</summary>
+    /// <summary>把参数原样传下去（含空格/引号的按 Win32 规则加引号转义，免得 JSON 被拆开）</summary>
     private static string BuildArguments(string[] args) =>
-        args.Length == 0 ? string.Empty : string.Join(' ', args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+        args.Length == 0 ? string.Empty : string.Join(' ', args.Select(QuoteArg));
+
+    private static string QuoteArg(string a)
+    {
+        if (a.Length == 0)
+        {
+            return "\"\"";
+        }
+
+        if (!a.Any(c => c is ' ' or '"' or '\t'))
+        {
+            return a;
+        }
+
+        var sb = new StringBuilder(a.Length + 2);
+        sb.Append('"');
+        int backslashes = 0;
+        foreach (char c in a)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                sb.Append('\\', backslashes * 2 + 1);
+                sb.Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            sb.Append('\\', backslashes);
+            backslashes = 0;
+            sb.Append(c);
+        }
+
+        sb.Append('\\', backslashes * 2);
+        sb.Append('"');
+        return sb.ToString();
+    }
 
     /// <summary>启动之后把其它 app-* 目录删掉（上游也是这么清旧版本的）</summary>
     private static void CleanupOldAppFolders(string baseFolder, string? currentFolderName, bool trace)
@@ -325,3 +437,4 @@ internal static class Program
         }
     }
 }
+

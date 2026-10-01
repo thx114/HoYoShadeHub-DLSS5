@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using HoYoShadeHub.Extensions.Conditions;
 
 namespace HoYoShadeHub.Extensions.ReShade;
 
@@ -742,39 +743,19 @@ public sealed partial class AddonFileInfo
     public bool IsAddon { get; init; }
 
     /// <summary>
-    /// 允许改 hook 的插件：所有 <c>renodx-dlss*</c>（<c>renodx-dlss</c> / <c>renodx-dlss5</c> /
-    /// <c>renodx-dlss5-super-anus</c> / <c>renodx-dlss-SF</c> …）。
-    ///
-    /// <para>
-    /// 早先写成「必须是 <c>renodx-dlss</c> 且分支是 ShortFuse」，但**文件名里常常根本没有分支信息**
-    /// （用户装的是 <c>renodx-dlss.addon64</c>，用的就是 SF 那版）→ 下拉框被灰掉，用户报过。
-    /// </para>
+    /// 允许改 hook 的插件：conditions.json 的 addonConditions 里 hookPointCapable=true 的 slug 前缀
+    /// （默认 <c>renodx-dlss*</c> 整族）。远端表没配/读不到时走内置默认，行为不变。
     /// </summary>
     public bool IsHookPointCapable =>
-        Slug is not null && Slug.StartsWith("renodx-dlss", StringComparison.OrdinalIgnoreCase);
+        Slug is not null && AddonConditions.MatchAddon(Slug).HookPointCapable;
 
     /// <summary>
-    /// 按**文件名**判断是不是 DLSS5 那一类插件。
-    ///
-    /// <para>
-    /// 扩展目录里的 tags 是首选判据，但那个表可能没配到 / 没更新 —— 光靠 tags 会把用户
-    /// 手里明明是 DLSS5 的插件判成「不是」，于是「从 DllMain 加载」被灰掉、写盘也被拒。
-    /// 文件名里认得出 <c>dlss5</c> 也算，两条判据取并集。
-    /// </para>
-    ///
-    /// <para>
-    /// <c>renodx-dlss*</c> 整族都算。最典型的 <c>renodx-dlss.addon64</c>（RenoDX DLSS，显示名
-    /// 「RenoDX DLSS」）名字里没有 <c>dlss5</c> 字样，扩展目录给它的 tag 又是 <c>dlss</c> 而不是
-    /// <c>dlss5</c>；但它二进制里同样引用 <c>nvngx_dlssnr.dll</c> + <c>sl.interposer</c>、同样在
-    /// <c>[RENODX-DLSS]</c> 段做 <c>DirectNeuralRendering</c> —— 就是 DLSS5 那一类。
-    /// 漏判的后果：「从 DllMain 加载」对它整条消失（勾选框不显示、写盘被拒、启用也不自动加），
-    /// 用户报过。
-    /// </para>
+    /// 按**文件名**判断是不是 DLSS5 那一类插件（tags 之外的兜底判据，两路取并集）。
+    /// 判定表在 catalog/conditions.json 的 addonConditions（dlss5=true 的 slug 前缀，
+    /// 默认 <c>dlss5*</c> + <c>renodx-dlss*</c> 整族）；读不到时用内置默认。
     /// </summary>
     public bool IsDlss5ByName =>
-        Slug is not null
-        && (Slug.Contains("dlss5", StringComparison.OrdinalIgnoreCase)
-            || Slug.StartsWith("renodx-dlss", StringComparison.OrdinalIgnoreCase));
+        Slug is not null && AddonConditions.MatchAddon(Slug).Dlss5;
 
     /// <summary>文件被重命名为 .addon64x 之类 —— 这是「全局禁用」</summary>
     public bool IsRenamedDisabled { get; init; }

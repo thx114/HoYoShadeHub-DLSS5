@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HoYoShadeHub.Extensions.Conditions;
 using HoYoShadeHub.Extensions.Networking;
 
 namespace HoYoShadeHub.Extensions.Dlls;
@@ -51,21 +52,35 @@ public static class DllComponentCatalog
 
     private const string RhiRepoDownload = "https://github.com/RankFTW/rhi-repo/releases/download";
 
-    /// <summary>界面上的分组顺序 / 说明</summary>
-    public static readonly IReadOnlyList<DllFamily> Families =
-    [
-        new("dlssnr", "DLSS5 神经渲染运行时", "nvngx_dlssnr.dll", DllRequirementLevel.Required,
-            "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"),
-        new("streamline", "Streamline 运行时", "sl.*.dll", DllRequirementLevel.Required,
-            "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。\n注意：2.14.1.0 起的包里已经没有 sl.interposer.dll，默认装 2.14.0.0。",
-            PreferredVersion: "2.14.0.0"),
-        new("dlss", "DLSS 超分", "nvngx_dlss.dll", DllRequirementLevel.Recommended,
-            "普通 DLSS 超分用的运行时。"),
-        new("dlssd", "光线重建", "nvngx_dlssd.dll", DllRequirementLevel.Recommended,
-            "Ray Reconstruction 用的运行时。"),
-        new("dlssg", "帧生成", "nvngx_dlssg.dll", DllRequirementLevel.Recommended,
-            "Frame Generation 用的运行时。"),
-    ];
+    /// <summary>
+    /// 界面上的分组顺序 / 说明。可被 catalog/conditions.json 的 dllFamilies 整表替换
+    /// （按 id 对齐到清单数据；读不到/为空用这份内置默认）。
+    /// </summary>
+    public static IReadOnlyList<DllFamily> Families =>
+        Conditions.AddonConditions.Current?.DllFamilies is { Length: > 0 } remote
+            ? [.. remote.Select(f => new DllFamily(
+                f.Id,
+                f.DisplayName,
+                f.FilePattern,
+                string.Equals(f.Level, "required", StringComparison.OrdinalIgnoreCase)
+                    ? DllRequirementLevel.Required
+                    : DllRequirementLevel.Recommended,
+                f.Note ?? string.Empty,
+                f.PreferredVersion))]
+            :
+            [
+                new("dlssnr", "DLSS5 神经渲染运行时", "nvngx_dlssnr.dll", DllRequirementLevel.Required,
+                    "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"),
+                new("streamline", "Streamline 运行时", "sl.*.dll", DllRequirementLevel.Required,
+                    "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。\n注意：2.14.1.0 起的包里已经没有 sl.interposer.dll，默认装 2.14.0.0。",
+                    PreferredVersion: "2.14.0.0"),
+                new("dlss", "DLSS 超分", "nvngx_dlss.dll", DllRequirementLevel.Recommended,
+                    "普通 DLSS 超分用的运行时。"),
+                new("dlssd", "光线重建", "nvngx_dlssd.dll", DllRequirementLevel.Recommended,
+                    "Ray Reconstruction 用的运行时。"),
+                new("dlssg", "帧生成", "nvngx_dlssg.dll", DllRequirementLevel.Recommended,
+                    "Frame Generation 用的运行时。"),
+            ];
 
     private static readonly JsonSerializerOptions _options = new()
     {
@@ -144,30 +159,46 @@ public static class DllComponentCatalog
             error = ex.Message;
         }
 
-        // **dlssnr 2.14.1.0 黑名单**：这个包本身缺 2 个文件，装上去 DLSS5 直接起不来
-        // （用户实测报 0xBAD0000B FAIL_UnableToInitializeFeature）。别让「补全 / 安装必要组件」选到它，
-        // 界面上也就不列了  版本列表里少一条比装上去崩一次强。
-        if (components.TryGetValue("dlssnr", out List<DllComponent>? blockedNrdll))
+        // 屏蔽清单：conditions.json 的 blockedVersions（默认屏蔽 dlssnr 2.14.1.0 ——
+        // 这个包本身缺 2 个文件，装上去 DLSS5 直接起不来（用户实测报 0xBAD0000B
+        // FAIL_UnableToInitializeFeature）。版本列表里少一条比装上去崩一次强。
+        IReadOnlyList<BlockedVersionEntry> blocked = AddonConditions.Current?.BlockedVersions is { Length: > 0 } remoteBlocked
+            ? remoteBlocked
+            : [new BlockedVersionEntry { Family = "dlssnr", Version = "2.14.1.0", Reason = "该包缺文件，装上会 FAIL_UnableToInitializeFeature" }];
+
+        foreach (BlockedVersionEntry block in blocked)
         {
-            int removed = blockedNrdll.RemoveAll(c => string.Equals(c.Version, "2.14.1.0", StringComparison.OrdinalIgnoreCase));
-            if (removed > 0)
+            if (components.TryGetValue(block.Family, out List<DllComponent>? blockedList))
             {
-                error = string.IsNullOrWhiteSpace(error)
-                    ? "已屏蔽 nvngx_dlssnr 2.14.1.0（该包缺文件，装上会 FAIL_UnableToInitializeFeature）"
-                    : error + "；已屏蔽 nvngx_dlssnr 2.14.1.0（缺文件）";
+                int removed = blockedList.RemoveAll(c => string.Equals(c.Version, block.Version, StringComparison.OrdinalIgnoreCase));
+                if (removed > 0)
+                {
+                    error = string.IsNullOrWhiteSpace(error)
+                        ? $"已屏蔽 {block.Family} {block.Version}（{block.Reason}）"
+                        : error + $"；已屏蔽 {block.Family} {block.Version}";
+                }
             }
         }
 
-        // 清单里没有、但 rhi-repo 上确实有的 dlssnr 变体（30/40 系、ShortFuse 分支）
-        AddIfMissing(components, "dlssnr", "310.8.0-RTX40", $"{RhiRepoDownload}/dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip", "30/40 系");
-        AddIfMissing(components, "dlssnr", "310.8.SF-v2", $"{RhiRepoDownload}/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", "ShortFuse 分支");
-        AddIfMissing(components, "dlssnr", "310.8.SF", $"{RhiRepoDownload}/dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip", "ShortFuse 分支");
+        // 补充变体：conditions.json 的 dllExtras（默认补 rhi-repo 上的 dlssnr 变体，
+        // 清单里没有但确实存在：30/40 系、ShortFuse 分支、Lecram 修改版）
+        IReadOnlyList<DllExtraEntry> extras = AddonConditions.Current?.DllExtras is { Length: > 0 } remoteExtras
+            ? remoteExtras
+            :
+            [
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.0-RTX40", Url = $"{RhiRepoDownload}/dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip", Note = "30/40 系" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF-v2", Url = $"{RhiRepoDownload}/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", Note = "ShortFuse 分支" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF", Url = $"{RhiRepoDownload}/dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip", Note = "ShortFuse 分支" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.Lecram", Url = $"{RhiRepoDownload}/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip", Note = "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）" },
+            ];
 
-        // Lecram（RenoDX 组）改的 NR：PE 版本号 310.8.3.0（NV 官方最新 310.8.0）。
-        // 社区实测：40 系 5~10%+，50 系更高；全 RTX 通用，30/20 系与 A 卡未广泛验证。
-        // 单文件 zip（nvngx_dlssnr.dll，158MB），2026-09-24 上架 RHI，21k+ 下载（Chiphell/A9VG 讨论帖印证）。
-        AddIfMissing(components, "dlssnr", "310.8.Lecram", $"{RhiRepoDownload}/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip",
-            "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）");
+        foreach (DllExtraEntry extra in extras)
+        {
+            if (!string.IsNullOrWhiteSpace(extra.Family) && !string.IsNullOrWhiteSpace(extra.Version) && !string.IsNullOrWhiteSpace(extra.Url))
+            {
+                AddIfMissing(components, extra.Family, extra.Version, extra.Url, extra.Note ?? string.Empty);
+            }
+        }
 
         return new DllCatalog(components, error);
     }

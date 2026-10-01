@@ -1,3 +1,5 @@
+using HoYoShadeHub.Extensions.Conditions;
+
 namespace HoYoShadeHub.Extensions.Dlls;
 
 /// <summary>缺这个 dll 时该怎么标</summary>
@@ -74,9 +76,36 @@ public static class DlssDllRequirements
     public static bool IsDlss5(IEnumerable<string>? tags) =>
         tags?.Any(t => string.Equals(t?.Trim(), Dlss5Tag, StringComparison.OrdinalIgnoreCase)) == true;
 
-    /// <summary>这个插件要哪些 dll（不是 DLSS5 类就返回空）</summary>
-    public static IReadOnlyList<DllRequirement> For(IEnumerable<string>? tags) =>
-        IsDlss5(tags) ? [DlssNr, Streamline] : [];
+    /// <summary>
+    /// 这个插件要哪些 dll（不是 DLSS5 类就返回空）。
+    /// 清单来自 catalog/conditions.json（按 tag 配的 required/recommended 文件组），
+    /// 读不到时用 <see cref="AddonConditions.DefaultDlss5Required"/> —— 行为与硬编码时代一致。
+    /// </summary>
+    public static IReadOnlyList<DllRequirement> For(IEnumerable<string>? tags)
+    {
+        if (!IsDlss5(tags))
+        {
+            return [];
+        }
+
+        var result = new List<DllRequirement>();
+        (IReadOnlyList<(string[] Files, string? Note)> required, IReadOnlyList<(string[] Files, string? Note)> recommended) =
+            AddonConditions.DllRequirementsOf(Dlss5Tag);
+
+        foreach ((string[] files, string? note) in required)
+        {
+            result.Add(new DllRequirement(files, DllRequirementLevel.Required,
+                !string.IsNullOrWhiteSpace(note) ? note! : string.Join(" + ", files)));
+        }
+
+        foreach ((string[] files, string? note) in recommended)
+        {
+            result.Add(new DllRequirement(files, DllRequirementLevel.Recommended,
+                !string.IsNullOrWhiteSpace(note) ? note! : string.Join(" + ", files)));
+        }
+
+        return result;
+    }
 }
 
 /// <summary>拿插件目录里的文件名去核对要求</summary>

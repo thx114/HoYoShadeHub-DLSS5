@@ -130,8 +130,28 @@
                                        SpinButtonPlacementMode="Inline"
                                        Value="{x:Bind FpsUnlockTargetValue, Mode=TwoWay}" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="8">
+                            <TextBlock VerticalAlignment="Center"
+                                       Text="数据版本" />
+                            <ComboBox x:Name="ComboBox_FpsUnlockVersion"
+                                      Width="280"
+                                      SelectionChanged="ComboBox_FpsUnlockVersion_SelectionChanged" />
+                            <Button x:Name="Button_FpsUnlockCheckUpdate"
+                                    Click="Button_FpsUnlockCheckUpdate_Click"
+                                    Content="检查上游更新" />
+                        </StackPanel>
+                        <TextBlock x:Name="TextBlock_FpsUnlockSyncState"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap" />
+                        <InfoBar x:Name="InfoBar_FpsUnlockMismatch"
+                                 IsClosable="False"
+                                 IsOpen="False"
+                                 Severity="Warning"
+                                 Title="解锁数据可能没适配当前游戏版本"
+                                 Message="上次同步的数据对应的版本和现在的游戏不一致，扫描很可能失败。可以点「检查上游更新」拉最新数据，或在上游适配前先用旧版本顶着。" />
                         <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Text="帧率解锁开关在启动页「启动选项」里；启用后游戏启动时由启动器原生注入，扫描帧率变量并同步目标值。游戏以管理员启动时，Hub 也要用管理员启动。特征和注入代码跟随上游 GitHub 更新。"
+                                   Text="帧率解锁开关在启动页「启动选项」里；启用后游戏启动时由启动器原生注入，扫描帧率变量并同步目标值。游戏以管理员启动时，Hub 也要用管理员启动。特征和注入代码跟随上游 GitHub 更新，可在此查看和切换历史数据版本。"
                                    TextWrapping="Wrap" />
                     </StackPanel>
 

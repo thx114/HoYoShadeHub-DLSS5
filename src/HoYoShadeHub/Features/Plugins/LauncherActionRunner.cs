@@ -16,8 +16,10 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -125,6 +127,11 @@ public static class LauncherActionRunner
             // ===== 启动 / 结束游戏（CLI / auto.json 都能用）=====
             "launch_game" or "launch" or "start_game" => await LaunchGameAsync(context),
             "stop_game" or "close_game" or "kill_game" or "stopgame" => await StopGameAsync(context),
+            "wait" or "sleep" or "delay" => await WaitAsync(step),
+            "click_game" or "click_window" => await ClickGameAsync(step, context),
+            "press_key" or "send_key" => await PressGameKeyAsync(step, context),
+            "test_game" or "launch_wait_stop" or "self_test" => await TestGameAsync(step, context),
+            "test_map" or "map_test" => await TestMapAsync(step, context),
 
             _ => $"✗ 不支持的接口：{step.Action}",
         };
@@ -168,6 +175,202 @@ public static class LauncherActionRunner
         return process is null ? "✗ 启动游戏失败（看日志）" : $"已启动游戏（PID {process.Id}）";
     }
 
+
+    // ==================== 游戏窗口输入 ====================
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(nint hWnd, out NativeRect rect);
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(nint hWnd, ref NativePoint point);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(nint hWnd, int command);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(nint hWnd);
+    [DllImport("user32.dll")]
+    private static extern void SwitchToThisWindow(nint hWnd, bool altTab);
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(nint hWnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(nint hWnd);
+    [DllImport("user32.dll")]
+    private static extern nint SetFocus(nint hWnd);
+    [DllImport("user32.dll")]
+    private static extern nint SetActiveWindow(nint hWnd);
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint hWnd, nint processId);
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachState);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, nint extraInfo);
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte key, byte scan, uint flags, nint extraInfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeInput { public uint Type; public NativeInputUnion Data; }
+    [StructLayout(LayoutKind.Explicit)]
+    private struct NativeInputUnion
+    {
+        [FieldOffset(0)] public NativeMouseInput Mouse;
+        [FieldOffset(0)] public NativeKeyboardInput Keyboard;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMouseInput
+    {
+        public int Dx, Dy;
+        public uint MouseData, Flags, Time;
+        public nint ExtraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeKeyboardInput
+    {
+        public ushort VirtualKey, ScanCode;
+        public uint Flags, Time;
+        public nint ExtraInfo;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, NativeInput[] inputs, int size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpShowWindow = 0x0040;
+    private static readonly nint HwndTop = new(-1);
+    private static readonly nint HwndNoTopMost = new(-2);
+
+
+    private static bool SendMouseButton(uint flags)
+    {
+        var input = new NativeInput {
+            Type = 0,
+            Data = new NativeInputUnion { Mouse = new NativeMouseInput { Flags = flags } }
+        };
+        return SendInput(1, new[] { input }, Marshal.SizeOf<NativeInput>()) == 1;
+    }
+
+    private static bool SendKey(byte virtualKey, bool keyUp)
+    {
+        var input = new NativeInput {
+            Type = 1,
+            Data = new NativeInputUnion { Keyboard = new NativeKeyboardInput {
+                VirtualKey = virtualKey, Flags = keyUp ? 0x0002u : 0u
+            } }
+        };
+        return SendInput(1, new[] { input }, Marshal.SizeOf<NativeInput>()) == 1;
+    }
+
+    private static async Task<(bool Ok, string Error)> ActivateGameWindowAsync(nint hwnd)
+    {
+        ShowWindowAsync(hwnd, 9);
+        uint currentThread = GetCurrentThreadId();
+        uint targetThread = GetWindowThreadProcessId(hwnd, nint.Zero);
+        bool attached = targetThread != 0 && currentThread != targetThread &&
+            AttachThreadInput(currentThread, targetThread, true);
+        SetForegroundWindow(hwnd);
+        SwitchToThisWindow(hwnd, true);
+        SetWindowPos(hwnd, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+        SetWindowPos(hwnd, HwndNoTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+        BringWindowToTop(hwnd);
+        SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+        await Task.Delay(200);
+        nint foreground = GetForegroundWindow();
+        if (attached)
+            AttachThreadInput(currentThread, targetThread, false);
+        if (foreground != hwnd)
+            return (false, $"前台激活失败 hwnd=0x{hwnd.ToInt64():X} foreground=0x{foreground.ToInt64():X}");
+        return (true, string.Empty);
+    }
+
+    /// <summary>
+    /// click_game：把游戏窗口激活后点击客户区。x/y 默认是归一化坐标，便于不同分辨率的登录按钮自动化。
+    /// 传入 x/y 大于 1 时按客户区像素解释。
+    /// </summary>
+    private static async Task<string> ClickGameAsync(PackActionStep step, LauncherActionContext context)
+    {
+        GameId? gameId = ResolveGameId(context);
+        if (gameId is null)
+            return "✗ click_game 需要先指定游戏（--biz xxx）";
+
+        Process? process = await AppConfig.GetService<GameLauncherService>().GetGameProcessAsync(gameId);
+        if (process is null || process.HasExited || process.MainWindowHandle == nint.Zero)
+            return "✗ 游戏窗口不存在";
+
+        process.Refresh();
+        nint hwnd = process.MainWindowHandle;
+        var activation = await ActivateGameWindowAsync(hwnd);
+        if (!activation.Ok)
+            return "✗ " + activation.Error;
+        if (!GetClientRect(hwnd, out NativeRect rect) || rect.Right <= rect.Left || rect.Bottom <= rect.Top)
+            return "✗ 无法读取游戏客户区";
+
+        double xValue = step.GetNumber("x") ?? 0.5;
+        double yValue = step.GetNumber("y") ?? 0.92;
+        int clientX = xValue > 1.0 ? (int)Math.Round(xValue) : (int)Math.Round((rect.Right - rect.Left) * xValue);
+        int clientY = yValue > 1.0 ? (int)Math.Round(yValue) : (int)Math.Round((rect.Bottom - rect.Top) * yValue);
+        clientX = Math.Clamp(clientX, 0, rect.Right - rect.Left - 1);
+        clientY = Math.Clamp(clientY, 0, rect.Bottom - rect.Top - 1);
+        var point = new NativePoint { X = clientX, Y = clientY };
+        if (!ClientToScreen(hwnd, ref point))
+            return "✗ 无法转换游戏坐标";
+
+        SetCursorPos(point.X, point.Y);
+        bool down = SendMouseButton(MouseLeftDown);
+        await Task.Delay(60);
+        bool up = SendMouseButton(MouseLeftUp);
+        await Task.Delay(250);
+        if (!down || !up)
+            return $"✗ 鼠标注入失败 win32={Marshal.GetLastWin32Error()}";
+        return $"已点击游戏窗口（{clientX},{clientY}）";
+    }
+
+
+    private static async Task<string> PressGameKeyAsync(PackActionStep step, LauncherActionContext context)
+    {
+        GameId? gameId = ResolveGameId(context);
+        if (gameId is null)
+            return "✗ press_key 需要先指定游戏（--biz xxx）";
+        Process? process = await AppConfig.GetService<GameLauncherService>().GetGameProcessAsync(gameId);
+        if (process is null || process.HasExited || process.MainWindowHandle == nint.Zero)
+            return "✗ 游戏窗口不存在";
+        string key = (step.GetString("key") ?? "enter").Trim().ToLowerInvariant();
+        byte vk = key switch
+        {
+            "enter" or "return" => 0x0D,
+            "space" => 0x20,
+            "escape" or "esc" => 0x1B,
+            "f5" => 0x74,
+            "f6" => 0x75,
+            "f10" => 0x79,
+            "home" => 0x24,
+            _ => 0
+        };
+        if (vk == 0) return $"✗ 不支持按键：{key}";
+        var activation = await ActivateGameWindowAsync(process.MainWindowHandle);
+        if (!activation.Ok)
+            return "✗ " + activation.Error;
+        bool down = SendKey(vk, false);
+        await Task.Delay(60);
+        bool up = SendKey(vk, true);
+        await Task.Delay(250);
+        if (!down || !up)
+            return $"✗ 键盘注入失败 win32={Marshal.GetLastWin32Error()}";
+        return $"已发送按键：{key}";
+    }
+
+
     // ==================== 结束游戏 ====================
 
     /// <summary>stop_game：结束上下文指定的游戏。先给主窗口发关闭消息（游戏有机会存档收尾），5 秒不退再强杀。</summary>
@@ -206,6 +409,78 @@ public static class LauncherActionRunner
         {
             return "✗ 结束游戏失败：" + ex.Message;
         }
+    }
+
+    /// <summary>
+    /// test_game：启动 → 等待 → 关闭，压缩成一个 CLI 步骤，适合自动采集日志。
+    /// 参数同 wait：seconds / milliseconds / ms / duration_ms；默认 60 秒。
+    /// </summary>
+    private static async Task<string> TestGameAsync(PackActionStep step, LauncherActionContext context)
+    {
+        string launched = await LaunchGameAsync(context);
+        if (launched.StartsWith("✗", StringComparison.Ordinal))
+        {
+            return launched;
+        }
+
+        string waited = await WaitAsync(step, 60_000);
+        if (waited.StartsWith("✗", StringComparison.Ordinal))
+        {
+            await StopGameAsync(context);
+            return waited;
+        }
+
+        string stopped = await StopGameAsync(context);
+        return $"{launched}；{waited}；{stopped}";
+    }
+
+
+    /// <summary>test_map：启动 → 等待 → 点击登录/进入 → 发送按键 → 等待 → 关闭。</summary>
+    private static async Task<string> TestMapAsync(PackActionStep step, LauncherActionContext context)
+    {
+        string launched = await LaunchGameAsync(context);
+        if (launched.StartsWith("✗", StringComparison.Ordinal))
+            return launched;
+
+        double preSeconds = step.GetNumber("pre_seconds") ?? 50.0;
+        double postSeconds = step.GetNumber("post_seconds") ?? 30.0;
+        if (!double.IsFinite(preSeconds) || !double.IsFinite(postSeconds) ||
+            preSeconds < 0 || postSeconds < 0 || preSeconds > 600 || postSeconds > 600)
+            return "✗ test_map 的 pre_seconds/post_seconds 必须在 0 到 600 之间";
+
+        await Task.Delay((int)Math.Round(preSeconds * 1000.0, MidpointRounding.AwayFromZero));
+        string clicked = await ClickGameAsync(step, context);
+        string pressed = await PressGameKeyAsync(step, context);
+        await Task.Delay((int)Math.Round(postSeconds * 1000.0, MidpointRounding.AwayFromZero));
+        string stopped = await StopGameAsync(context);
+        return $"{launched}；{clicked}；{pressed}；已等待 {postSeconds:0.###} s；{stopped}";
+    }
+
+    /// <summary>wait / sleep / delay：按毫秒或秒暂停后续动作，供 CLI 自动测试使用。</summary>
+    private static async Task<string> WaitAsync(PackActionStep step, double? defaultMilliseconds = null)
+    {
+        double? milliseconds = step.GetNumber("milliseconds")
+            ?? step.GetNumber("ms")
+            ?? step.GetNumber("duration_ms");
+        if (milliseconds is null && step.GetNumber("seconds") is { } seconds)
+        {
+            milliseconds = seconds * 1000.0;
+        }
+
+        milliseconds ??= defaultMilliseconds;
+        if (milliseconds is null)
+        {
+            return "✗ wait 需要 milliseconds/ms/duration_ms 或 seconds 参数";
+        }
+
+        if (!double.IsFinite(milliseconds.Value) || milliseconds.Value < 0 || milliseconds.Value > 3_600_000)
+        {
+            return "✗ wait 时间必须在 0 到 3600000 毫秒之间";
+        }
+
+        int delay = (int)Math.Round(milliseconds.Value, MidpointRounding.AwayFromZero);
+        await Task.Delay(delay);
+        return $"已等待 {delay} ms";
     }
 
     // ==================== 插件 ====================
@@ -1197,3 +1472,4 @@ public static class LauncherActionRunner
         }
     }
 }
+

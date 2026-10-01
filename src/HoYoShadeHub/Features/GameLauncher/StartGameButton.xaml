@@ -11,6 +11,64 @@
              mc:Ignorable="d">
 
     <UserControl.Resources>
+        <!--  关闭游戏专用：红色实心常驻，悬停 / 按下只压暗，不跳回主题色  -->
+        <Style x:Key="CloseGameButtonStyle"
+               BasedOn="{StaticResource DefaultButtonStyle}"
+               TargetType="Button">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <ContentPresenter x:Name="ContentPresenter"
+                                          Padding="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                          Background="{TemplateBinding Background}"
+                                          BackgroundSizing="InnerBorderEdge"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="{TemplateBinding BorderThickness}"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTransitions="{TemplateBinding ContentTransitions}"
+                                          CornerRadius="{TemplateBinding CornerRadius}"
+                                          Foreground="{TemplateBinding Foreground}">
+                            <ContentPresenter.BackgroundTransition>
+                                <BrushTransition Duration="0:0:0.083" />
+                            </ContentPresenter.BackgroundTransition>
+                            <VisualStateManager.VisualStateGroups>
+                                <VisualStateGroup x:Name="CommonStates">
+                                    <VisualState x:Name="Normal" />
+                                    <VisualState x:Name="PointerOver">
+                                        <Storyboard>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#D96B72" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="Pressed">
+                                        <Storyboard>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#B8545B" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                        </Storyboard>
+                                    </VisualState>
+                                    <VisualState x:Name="Disabled">
+                                        <Storyboard>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource ControlFillColorDisabledBrush}" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextFillColorDisabledBrush}" />
+                                            </ObjectAnimationUsingKeyFrames>
+                                        </Storyboard>
+                                    </VisualState>
+                                </VisualStateGroup>
+                            </VisualStateManager.VisualStateGroups>
+                        </ContentPresenter>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="GameButtonStyle"
                BasedOn="{StaticResource DefaultButtonStyle}"
                TargetType="Button">
@@ -234,20 +292,21 @@
         </Button>
 
 
-        <!--  关闭游戏（游戏运行中才出现；和设置齿轮一样叠在主按钮边上）  -->
+        <!--  关闭游戏（游戏运行中才出现；和设置齿轮一样叠在主按钮边上）。
+              红色实心：强警示，一眼区别于旁边的设置齿轮  -->
         <Button x:Name="Button_CloseGame"
                 Width="44"
                 Height="44"
                 Padding="12"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Stretch"
-                Background="Transparent"
+                Background="{ThemeResource SystemFillColorCriticalBrush}"
                 BorderThickness="0"
                 Command="{x:Bind CloseGameCommand}"
                 CornerRadius="22"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Foreground="White"
                 IsEnabled="{x:Bind CloseGameEnabled}"
-                Style="{ThemeResource GameButtonStyle}"
+                Style="{StaticResource CloseGameButtonStyle}"
                 ToolTipService.ToolTip="关闭正在运行的游戏"
                 Visibility="{x:Bind IsCloseGameVisible}">
             <FontIcon FontSize="14"

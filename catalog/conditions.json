@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-10-01T00:00:00Z",
+  "_readme": [
+    "远端条件表：插件的判定条件 / dll 需求 / OptiScaler 依赖清单全部从这里下发，启动器代码零硬编码。",
+    "启动器读不到本文件（离线+无种子）时用内置默认值，行为与硬编码时代完全一致。",
+    "addonConditions：按 addon 文件名的 slug 前缀匹配（不区分大小写），命中的条件取并集。",
+    "dllRequirements：按扩展目录 tags 里的 tag 名匹配；files 数组内多文件是『与』关系（必须同时在目录里）。",
+    "兼容性：旧客户端不认识本文件，照旧走内置默认；新字段缺了按默认补。"
+  ],
+
+  "addonConditions": [
+    {
+      "slugPrefix": "renodx-dlss5-super-anus",
+      "dlss5": true,
+      "loadFromDllMain": true,
+      "hookPointCapable": true,
+      "renoDxDlss5": false,
+      "note": "super-anus 实现，段名不同，不算 RenoDX DLSS5 主插件。必须排在 renodx-dlss5 前面（前缀重叠，先匹配先生效）"
+    },
+    {
+      "slugPrefix": "renodx-dlss5",
+      "dlss5": true,
+      "loadFromDllMain": true,
+      "hookPointCapable": true,
+      "renoDxDlss5": true,
+      "note": "RenoDX DLSS5 主插件（renodx-dlss5.addon64 / (x.y.z).addon64）；呈现模式要 DX11Source=native"
+    },
+    {
+      "slugPrefix": "renodx-dlss",
+      "dlss5": true,
+      "loadFromDllMain": true,
+      "hookPointCapable": true,
+      "note": "RenoDX DLSS（DLSS 版，名字里没有 dlss5 字样但二进制引用同一套运行时）"
+    },
+    {
+      "slugPrefix": "dlss5",
+      "dlss5": true,
+      "loadFromDllMain": true,
+      "note": "其余名字带 dlss5 的（dlss5-bridge 等）"
+    },
+    {
+      "slugPrefix": "dlss5-feed",
+      "feed": true,
+      "note": "DLSS5 Feed：预设同步对象（Lumenite_Kernel + DLSS5_Feed 两个 technique）"
+    }
+  ],
+
+  "dllRequirements": [
+    {
+      "tag": "dlss5",
+      "required": [
+        ["nvngx_dlssnr.dll"],
+        ["sl.interposer.dll", "sl.dlss_nr.dll"]
+      ],
+      "recommended": [],
+      "notes": {
+        "nvngx_dlssnr.dll": "DLSS5 的神经渲染运行时（nvngx_dlssnr.dll）",
+        "sl.interposer.dll": "Streamline 运行时（sl.interposer.dll / sl.dlss_nr.dll）"
+      }
+    }
+  ],
+
+  "dllFamilies": [
+    {
+      "id": "dlssnr",
+      "displayName": "DLSS5 神经渲染运行时",
+      "filePattern": "nvngx_dlssnr.dll",
+      "level": "required",
+      "note": "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"
+    },
+    {
+      "id": "streamline",
+      "displayName": "Streamline 运行时",
+      "filePattern": "sl.*.dll",
+      "level": "required",
+      "note": "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。\n注意：2.14.1.0 起的包里已经没有 sl.interposer.dll，默认装 2.14.0.0。",
+      "preferredVersion": "2.14.0.0"
+    },
+    {
+      "id": "dlss",
+      "displayName": "DLSS 超分",
+      "filePattern": "nvngx_dlss.dll",
+      "level": "recommended",
+      "note": "普通 DLSS 超分用的运行时。"
+    },
+    {
+      "id": "dlssd",
+      "displayName": "光线重建",
+      "filePattern": "nvngx_dlssd.dll",
+      "level": "recommended",
+      "note": "Ray Reconstruction 用的运行时。"
+    },
+    {
+      "id": "dlssg",
+      "displayName": "帧生成",
+      "filePattern": "nvngx_dlssg.dll",
+      "level": "recommended",
+      "note": "Frame Generation 用的运行时。"
+    }
+  ],
+
+  "dllExtras": [
+    {
+      "family": "dlssnr",
+      "version": "310.8.0-RTX40",
+      "url": "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip",
+      "note": "30/40 系"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.8.SF-v2",
+      "url": "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip",
+      "note": "ShortFuse 分支"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.8.SF",
+      "url": "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip",
+      "note": "ShortFuse 分支"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.8.Lecram",
+      "url": "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip",
+      "note": "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）"
+    }
+  ],
+
+  "blockedVersions": [
+    {
+      "family": "dlssnr",
+      "version": "2.14.1.0",
+      "reason": "该包缺 2 个文件，装上 DLSS5 直接起不来（FAIL_UnableToInitializeFeature）"
+    }
+  ],
+
+  "optiscaler": {
+    "streamlineFolder": "streamline",
+    "streamlineFiles": [
+      "sl.interposer.dll",
+      "sl.common.dll",
+      "sl.dlss.dll",
+      "sl.dlss_g.dll",
+      "sl.reflex.dll",
+      "sl.pcl.dll",
+      "sl.nis.dll"
+    ],
+    "dlssgFile": "nvngx_dlssg.dll",
+    "upscalerRuntimeDlls": ["nvngx.dll", "libxess.dll"]
+  },
+
+  "internalNames": {
+    "renodx-dlss5-super-anus": "RenoDX DLSS_A",
+    "renodx-dlss": "RenoDX DLSS",
+    "dlss5-bridge": "DLSS 5 Bridge"
+  },
+
+  "feedAddon": {
+    "slugPrefix": "dlss5-feed",
+    "techniques": [
+      "Lumenite_Kernel@lumenite_Kernel.fx",
+      "DLSS5_Feed@DLSS5_Feed.fx"
+    ],
+    "effectFiles": [
+      "lumenite_Kernel.fx",
+      "DLSS5_Feed.fx"
+    ],
+    "motionVectorProviderName": "DLSS5_MV_PROVIDER",
+    "motionVectorProviderValue": "3"
+  }
+}

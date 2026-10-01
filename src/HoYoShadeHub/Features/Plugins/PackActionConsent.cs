@@ -146,6 +146,7 @@ public static class PackActionDescriber
             "add_game_from_registry" => $"从注册表寻找游戏目录并添加：{step.GetString("key")}",
             "launch_game" or "launch" or "start_game" => "启动游戏",
             "stop_game" or "close_game" or "kill_game" or "stopgame" => "结束游戏进程",
+            "test_game" or "launch_wait_stop" or "self_test" => "启动、等待并结束游戏（自动测试）",
             _ => $"未知道具 {step.Action}",
         };
     }

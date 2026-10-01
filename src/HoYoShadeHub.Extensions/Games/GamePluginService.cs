@@ -432,10 +432,10 @@ public sealed class GamePluginService
            || (AddonFileInfo.Parse(addonFileName)?.IsDlss5ByName ?? false);
 
     /// <summary>
-    /// 是不是 RenoDX DLSS5 主插件（<c>renodx-dlss5.addon64</c> / <c>renodx-dlss5(x.y.z).addon64</c>）。
+    /// 是不是 RenoDX DLSS5 主插件。条件在 catalog/conditions.json 的 addonConditions
+    /// （renoDxDlss5=true 的 slug 前缀，默认 <c>renodx-dlss5.</c> / <c>renodx-dlss5(</c>）。
     /// 它启用「呈现模式」时硬性要求 ReShade.ini 里有 <c>[RenoDX.DLSS5] DX11Source=native</c>，
     /// 缺了进游戏就一直弹提示 —— 所以启用时要自动补写（见 <see cref="SetAddonEnabled"/>）。
-    /// <c>renodx-dlss5-super-anus*</c> 是另一款实现（段名不同）不匹配；<c>renodx-dlss*</c>（DLSS 版）也不匹配。
     /// </summary>
     public static bool IsRenoDxDlss5Addon(string? addonFileName)
     {
@@ -444,23 +444,27 @@ public sealed class GamePluginService
             return false;
         }
 
-        return addonFileName.StartsWith("renodx-dlss5.", StringComparison.OrdinalIgnoreCase)
-               || addonFileName.StartsWith("renodx-dlss5(", StringComparison.OrdinalIgnoreCase);
+        // 只拿 slug 部分匹配（文件名可能带版本括号）
+        string? slug = AddonFileInfo.Parse(Path.GetFileName(addonFileName))?.Slug;
+        slug ??= Path.GetFileNameWithoutExtension(addonFileName);
+
+        return Conditions.AddonConditions.MatchAddon(slug).RenoDxDlss5;
     }
 
     /// <summary>
-    /// 「该从 DllMain 加载」的这一族：DLSS5 类 <b>+</b> RenoDX DLSS（<c>renodx-dlss*</c>）。
-    ///
-    /// <para>
-    /// 原来是「只有 DLSS5 类」，结果 <c>renodx-dlss.addon64</c> 卡片的那个勾整条消失、
-    /// 启用时也不会自动加进去（用户报的第 6 条）。DLSS 版同样要在 DllMain 阶段就在，
-    /// 所以两族都算；<see cref="AddonFileInfo.IsHookPointCapable"/> 正好就是
-    /// <c>renodx-dlss*</c> 这一族。
-    /// </para>
+    /// 「该从 DllMain 加载」：DLSS5 类（tags 或文件名命中 addonConditions）<b>+</b> hook 点族。
+    /// 条件来自 catalog/conditions.json，读不到用内置默认。
     /// </summary>
     public bool NeedsLoadFromDllMain(string addonFileName)
-        => IsDlss5Addon(addonFileName)
-           || (AddonFileInfo.Parse(addonFileName)?.IsHookPointCapable ?? false);
+    {
+        if (IsDlss5Addon(addonFileName))
+        {
+            return true;
+        }
+
+        AddonFileInfo? parsed = AddonFileInfo.Parse(addonFileName);
+        return parsed is not null && Conditions.AddonConditions.MatchAddon(parsed.Slug).HookPointCapable;
+    }
 
     /// <summary>这个 addon 现在是不是挂在该游戏的 <c>LoadFromDllMain</c> 上</summary>
     public bool IsLoadFromDllMain(string addonFileName) => Profile?.IsLoadFromDllMain(addonFileName) == true;
@@ -497,12 +501,13 @@ public sealed class GamePluginService
     ///
     /// nvngx.dll (the ~10 KB shim) forwards the game's DLSS calls to FSR, which is what a
     /// FSR-only title like Genshin needs -- without it OptiScaler has nothing to hook.
+    ///
+    /// 清单可被 catalog/conditions.json 的 optiscaler.upscalerRuntimeDlls 覆盖。
     /// </summary>
-    public static readonly string[] UpscalerRuntimeDlls =
-    [
-        "nvngx.dll",
-        "libxess.dll",
-    ];
+    public static string[] UpscalerRuntimeDlls =>
+        Conditions.AddonConditions.Current?.OptiScaler?.UpscalerRuntimeDlls is { Length: > 0 } remote
+            ? remote
+            : ["nvngx.dll", "libxess.dll"];
 
     /// <summary>
     /// Copies the upscaler runtime into the game directory. Sources are tried in order

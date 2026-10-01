@@ -1180,10 +1180,25 @@ public sealed partial class GameLauncherPage : PageBase
             return;
         }
 
+        if (unlocker.SkippedGameExited)
+        {
+            // 游戏在等主模块 / 附加期间被关了 —— 正常流程，不算失败，不弹错误
+            _logger.LogInformation("FPS unlock skipped: game exited before attach (pid {Pid})", game.Id);
+            unlocker.Dispose();
+            return;
+        }
+
         string detail = string.IsNullOrWhiteSpace(unlocker.LastError)
             ? "特征扫描或注入失败，游戏版本可能已更新。"
             : unlocker.LastError!;
         _logger.LogWarning("FPS unlock failed: {Detail}", detail);
+        if (unlocker.PatternNotFound)
+        {
+            // 特征对不上 = 本地数据大概率滞后于游戏版本；清掉同步戳，下次启动重新拉上游
+            AppConfig.SetFpsUnlockDataVersion(gameId, null);
+            detail += " 已清除同步记录，下次启动会重新检查上游数据。";
+        }
+
         DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error("帧率解锁", detail, 10000));
         unlocker.Dispose();
     }

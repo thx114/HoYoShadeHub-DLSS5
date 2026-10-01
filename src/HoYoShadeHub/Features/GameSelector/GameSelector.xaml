@@ -531,7 +531,6 @@
                               IsTapEnabled="True"
                               PointerEntered="Grid_GameIcon_PointerEntered"
                               PointerExited="Grid_GameIcon_PointerExited"
-                              Shadow="{ThemeResource ThemeShadow}"
                               Tag="{x:Bind GameId}"
                               Tapped="Grid_GameIcon_Tapped"
                               ToolTipService.ToolTip="{x:Bind GameName}"
@@ -572,14 +571,11 @@
                                     <MenuFlyoutItem Click="GameIcon_UninstallShade_Click" Text="删除 HoYoShade（这个客户端）" />
                                 </MenuFlyout>
                             </Grid.ContextFlyout>
-                            <sc:CachedImage Width="40"
+                            <sc:CachedImage x:Name="GameIconImage"
+                                            Width="40"
                                             Height="40"
-                                            Opacity="{x:Bind ImageOpacity}"
-                                            Source="{x:Bind GameIcon}">
-                                <sc:CachedImage.OpacityTransition>
-                                    <ScalarTransition />
-                                </sc:CachedImage.OpacityTransition>
-                            </sc:CachedImage>
+                                            Shadow="{ThemeResource ThemeShadow}"
+                                            Source="{x:Bind GameIcon}" />
                             <Image Width="20"
                                    Height="20"
                                    HorizontalAlignment="Right"
@@ -591,6 +587,19 @@
                                                  UriSource="{x:Bind ServerIcon}" />
                                 </Image.Source>
                             </Image>
+                            <!--  黑色压暗遮罩：Loaded 时用 Composition MaskBrush（黑 = Source，
+                                  图标同图的 alpha = Mask）裁形，黑只落在图标不透明像素上 ——
+                                  圆形图标的透明外圈不再被填成方黑底。
+                                  注意 WinUI 3 没有 OpacityMask（UWP 才有），写在 DataTemplate
+                                  里还会让 XamlCompiler 直接崩，所以只能后台代码里挂  -->
+                            <Rectangle x:Name="Rectangle_GameIconDim"
+                                       Fill="Transparent"
+                                       Opacity="{x:Bind MaskOpacity}"
+                                       Loaded="Rectangle_GameIconDim_Loaded">
+                                <Rectangle.OpacityTransition>
+                                    <ScalarTransition />
+                                </Rectangle.OpacityTransition>
+                            </Rectangle>
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>

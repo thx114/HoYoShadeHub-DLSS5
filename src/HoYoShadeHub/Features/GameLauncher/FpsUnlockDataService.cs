@@ -2,6 +2,7 @@ using HoYoShadeHub.Core.HoYoPlay;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
@@ -49,11 +50,163 @@ public static class FpsUnlockDataService
     private static string ShellcodePath => Path.Combine(FolderPath, "shellcode.bin");
     private static string MetaPath => Path.Combine(FolderPath, "meta.json");
 
+    /// <summary>历史快照根目录：<c>versions\&lt;sha256&gt;\{shellcode.bin, meta.json}</c></summary>
+    private static string VersionsPath => Path.Combine(FolderPath, "versions");
+
+    private static string ActivePointerPath => Path.Combine(FolderPath, "active.txt");
+
+    /// <summary>
+    /// 上次「自动跟随上游」激活过的快照。手动选版本只改 active.txt 不动这里；
+    /// 拉取到上游发布了新数据（hash 和这里不同）才自动切过去 —— 手动钉住的旧版本
+    /// 不会被每次同步顶掉，上游真出新版本时才覆盖。
+    /// </summary>
+    private static string AutoPointerPath => Path.Combine(FolderPath, "auto.txt");
+
+    /// <summary>一个已下载的解锁数据版本（上游每次改 main.cpp 就是一个新版本）</summary>
+    public sealed record VersionInfo(string Hash, DateTimeOffset? UpdatedAt, bool IsActive)
+    {
+        public string ShortHash => Hash.Length > 12 ? Hash[..12] : Hash;
+    }
+
+    /// <summary>列出本地全部数据版本（新的在前）；从未同步过返回空表</summary>
+    public static IReadOnlyList<VersionInfo> ListVersions()
+    {
+        MigrateFlatToSnapshot();
+
+        var result = new List<VersionInfo>();
+        string? active = ReadActiveHash();
+
+        if (!Directory.Exists(VersionsPath))
+        {
+            return result;
+        }
+
+        foreach (string dir in Directory.EnumerateDirectories(VersionsPath))
+        {
+            string hash = Path.GetFileName(dir);
+            if (hash.Length < 8)
+            {
+                continue;
+            }
+
+            Meta? meta = ReadMeta(Path.Combine(dir, "meta.json"));
+            result.Add(new VersionInfo(hash, meta?.updated_at is long unix ? DateTimeOffset.FromUnixTimeSeconds(unix) : null,
+                active is not null && hash.Equals(active, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        return [.. result.OrderByDescending(v => v.UpdatedAt ?? DateTimeOffset.MinValue)];
+    }
+
+    /// <summary>当前生效的数据版本（active.txt 指向的快照）</summary>
+    public static VersionInfo? GetActiveVersion() =>
+        ListVersions().FirstOrDefault(v => v.IsActive);
+
+    /// <summary>
+    /// 切换生效的数据版本：把指定快照复制回扁平的 shellcode.bin / meta.json
+    /// （加载路径不用动），并写 active.txt。
+    /// </summary>
+    /// <returns>找到快照并切换成功返回 true</returns>
+    public static bool SetActiveVersion(string hash)
+    {
+        if (string.IsNullOrWhiteSpace(hash))
+        {
+            return false;
+        }
+
+        string dir = Path.Combine(VersionsPath, hash);
+        string shellcode = Path.Combine(dir, "shellcode.bin");
+        string meta = Path.Combine(dir, "meta.json");
+        if (!File.Exists(shellcode) || !File.Exists(meta))
+        {
+            return false;
+        }
+
+        Directory.CreateDirectory(FolderPath);
+        File.Copy(shellcode, ShellcodePath, overwrite: true);
+        File.Copy(meta, MetaPath, overwrite: true);
+        File.WriteAllText(ActivePointerPath, hash);
+        return true;
+    }
+
+    private static string? ReadActiveHash() =>
+        File.Exists(ActivePointerPath) ? File.ReadAllText(ActivePointerPath).Trim() : null;
+
+    private static Meta? ReadMeta(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? JsonSerializer.Deserialize<Meta>(File.ReadAllText(path)) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 旧布局（只有扁平 shellcode.bin/meta.json，没有 versions\）→ 导入成第一个快照。
+    /// 幂等：已有 versions\ 或没有扁平数据时什么都不做。
+    /// </summary>
+    private static void MigrateFlatToSnapshot()
+    {
+        if (Directory.Exists(VersionsPath) || !HasLocalData())
+        {
+            return;
+        }
+
+        Meta? meta = ReadMeta(MetaPath);
+        string hash = meta?.sha256;
+        if (string.IsNullOrWhiteSpace(hash))
+        {
+            hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(ShellcodePath)));
+        }
+
+        string dir = Path.Combine(VersionsPath, hash);
+        Directory.CreateDirectory(dir);
+        File.Copy(ShellcodePath, Path.Combine(dir, "shellcode.bin"), overwrite: true);
+        File.Copy(MetaPath, Path.Combine(dir, "meta.json"), overwrite: true);
+        File.WriteAllText(ActivePointerPath, hash);
+        File.WriteAllText(AutoPointerPath, hash);
+    }
+
+    /// <summary>写一个快照到 versions\（已存在则只刷新 meta）；不改动生效指针</summary>
+    private static void StoreSnapshot(ParsedData parsed)
+    {
+        string dir = Path.Combine(VersionsPath, parsed.Sha256);
+        Directory.CreateDirectory(dir);
+
+        string shellcodePath = Path.Combine(dir, "shellcode.bin");
+        if (!File.Exists(shellcodePath))
+        {
+            File.WriteAllBytes(shellcodePath, parsed.Shellcode);
+        }
+
+        Meta meta = new()
+        {
+            sha256 = parsed.Sha256,
+            pattern = parsed.Pattern,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+        File.WriteAllText(Path.Combine(dir, "meta.json"), JsonSerializer.Serialize(meta));
+    }
+
+    /// <summary>把某个快照设为生效：复制回扁平 shellcode.bin / meta.json（加载路径不动）+ 写 active.txt</summary>
+    private static void Activate(string hash)
+    {
+        string dir = Path.Combine(VersionsPath, hash);
+        File.Copy(Path.Combine(dir, "shellcode.bin"), ShellcodePath, overwrite: true);
+        File.Copy(Path.Combine(dir, "meta.json"), MetaPath, overwrite: true);
+        File.WriteAllText(ActivePointerPath, hash);
+    }
+
+    private static string? ReadAutoHash() =>
+        File.Exists(AutoPointerPath) ? File.ReadAllText(AutoPointerPath).Trim() : null;
+
     /// <summary>本地是否已有可用数据</summary>
     public static bool HasLocalData()
         => File.Exists(ShellcodePath) && File.Exists(MetaPath);
 
-    /// <summary>拉取上游并更新本地数据</summary>
+    /// <summary>拉取上游并更新本地数据（新版本存为快照并设为生效；与本地一致则不动）</summary>
     public static async Task<UpdateResult> UpdateAsync(CancellationToken ct = default)
     {
         string? source = await FetchSourceAsync(ct);
@@ -72,37 +225,40 @@ public static class FpsUnlockDataService
             return UpdateResult.Failed;
         }
 
-        string oldHash = HasLocalData() ? ComputeFileHash(ShellcodePath) : string.Empty;
-        bool changed = oldHash != parsed.Sha256;
+        MigrateFlatToSnapshot();
+
+        string oldHash = ReadActiveHash() ?? (HasLocalData() ? ComputeFileHash(ShellcodePath) : string.Empty);
+        // 首次拉取（oldHash 为空）也算 Updated
+        bool changed = !oldHash.Equals(parsed.Sha256, StringComparison.OrdinalIgnoreCase);
 
         Directory.CreateDirectory(FolderPath);
+        StoreSnapshot(parsed);
 
-        string tempBin = ShellcodePath + ".tmp";
-        await File.WriteAllBytesAsync(tempBin, parsed.Shellcode, ct);
-        File.Move(tempBin, ShellcodePath, overwrite: true);
-
-        Meta meta = new()
+        // 自动跟随：上游出了 auto.txt 之外的新数据才切换生效；手动钉住的旧版本不动
+        string? auto = ReadAutoHash();
+        if (auto is null || !parsed.Sha256.Equals(auto, StringComparison.OrdinalIgnoreCase))
         {
-            sha256 = parsed.Sha256,
-            pattern = parsed.Pattern,
-            updated_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-        };
-
-        string tempMeta = MetaPath + ".tmp";
-        await File.WriteAllTextAsync(tempMeta, JsonSerializer.Serialize(meta), ct);
-        File.Move(tempMeta, MetaPath, overwrite: true);
+            Activate(parsed.Sha256);
+            File.WriteAllText(AutoPointerPath, parsed.Sha256);
+        }
+        else if (ReadActiveHash() is null)
+        {
+            // 数据没变且还没生效指针（理论上 Migrate 已兜住）：补上
+            Activate(parsed.Sha256);
+        }
 
         return changed ? UpdateResult.Updated : UpdateResult.Unchanged;
     }
 
     /// <summary>
     /// 设置页手动检查：强制拉取，并把结果应用到指定游戏（记录数据版本与检查时间）。
+    /// 拉取成功（无论有没有新数据）都记戳 —— 用户手动确认过当前数据适配这个游戏版本。
     /// 返回结果状态用于界面提示。
     /// </summary>
     public static async Task<UpdateResult> CheckManuallyAsync(GameId gameId, string gameVersion, CancellationToken ct = default)
     {
         UpdateResult result = await UpdateAsync(ct);
-        if (result is UpdateResult.Updated)
+        if (result is UpdateResult.Updated or UpdateResult.Unchanged)
         {
             AppConfig.SetFpsUnlockDataVersion(gameId, gameVersion);
             AppConfig.SetFpsUnlockLastCheckTicks(gameId, DateTime.UtcNow.Ticks);

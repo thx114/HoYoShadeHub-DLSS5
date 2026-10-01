@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -115,26 +116,15 @@ internal sealed class GameBananaModInstaller
 
     private string ResolveInstance(string importer)
     {
-        // 扩展协议没有 GameBiz 上下文，按期望实例名在已发现的 XXMI 根下直接找。
+        // 扩展协议没有 GameBiz 上下文，按期望实例名在已发现的 XXMI 根下找
+        //（裸名 ZZMI 和版本化名 ZZMI-PACKAGE-V1.4.5 都算）。
         string? root = XxmiLocator.FindRoot();
         if (root is not null)
         {
-            string dir = Path.Combine(root, importer);
-            if (XxmiLocator.IsInstance(dir))
+            string? found = XxmiLocator.ListInstances(root).FirstOrDefault(d => XxmiLocator.IsInstanceForImporter(d, importer));
+            if (found is not null)
             {
-                return dir;
-            }
-        }
-
-        // 兜底：把所有已知实例扫一遍，找名字匹配的（手动指定过的非标准位置）。
-        if (root is not null)
-        {
-            foreach (string candidate in XxmiLocator.ListInstances(root))
-            {
-                if (string.Equals(Path.GetFileName(candidate), importer, StringComparison.OrdinalIgnoreCase))
-                {
-                    return candidate;
-                }
+                return found;
             }
         }
 

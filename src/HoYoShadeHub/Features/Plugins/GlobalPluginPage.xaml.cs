@@ -104,6 +104,9 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>「可下载」：目录里还没装的扩展包</summary>
     public ObservableCollection<PluginItemViewModel> VisibleItems { get; } = [];
 
+    /// <summary>「当前」里、目录条目认领不到的本地插件文件（无独立标题，直接跟在扩展卡片后面）</summary>
+    public ObservableCollection<AddonFileItemViewModel> OrphanAddonFiles { get; } = [];
+
     /// <summary>OptiScaler「当前」：已经下载到本地的构建</summary>
     public ObservableCollection<OptiScalerBuildItemViewModel> OptiScalerBuilds { get; } = [];
 
@@ -126,6 +129,7 @@ public sealed partial class GlobalPluginPage : PageBase
     protected override void OnLoaded()
     {
         InstalledPluginList.ItemsSource = InstalledItems;
+        OrphanAddonFileList.ItemsSource = OrphanAddonFiles;
         PluginList.ItemsSource = VisibleItems;
         OptiScalerBuildList.ItemsSource = OptiScalerBuilds;
         OptiScalerSourceList.ItemsSource = OptiScalerSources;
@@ -351,6 +355,7 @@ public sealed partial class GlobalPluginPage : PageBase
         Items.Clear();
         InstalledItems.Clear();
         VisibleItems.Clear();
+        OrphanAddonFiles.Clear();
         OptiScalerBuilds.Clear();
         OptiScalerSources.Clear();
         CurrentModules.Clear();
@@ -1048,13 +1053,15 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>插件页：已装 = 已装扩展（+ 没归属的插件文件），未装 = 可下载的扩展</summary>
     private void UpdatePluginLists()
     {
-        // 已经归到某个扩展卡片下面的插件文件，不再单独列一遍
+        // 已经归到某个扩展卡片下面的插件文件，不再单独列一遍。
+        // 统一按「启用名」比对：全局禁用时盘上文件名是 .addon64x，账本记的可能是老名字，
+        // 两边都要归一化，否则禁用过的已下载插件会被当成孤儿再列一遍。
         HashSet<string> owned = new(StringComparer.OrdinalIgnoreCase);
         foreach (PluginItemViewModel item in Items)
         {
             foreach (string file in item.GlobalAddonFiles)
             {
-                owned.Add(Path.GetFileName(file));
+                owned.Add(AddonFileSwitcher.EnabledNameOf(Path.GetFileName(file)));
             }
         }
 
@@ -1078,7 +1085,17 @@ public sealed partial class GlobalPluginPage : PageBase
             }
         }
 
-        // 孤儿插件文件区块已从「当前」页移除（用户要求），_allAddonFiles 仍保留用于统计与开关回调。
+        // 没被任何目录条目认领的本地插件文件：并进「已装」列表流（在扩展卡片后面）。
+        // 每次重算前必须清空 —— 本方法会被搜索 keystroke / 开关切换 / 刷新反复调用，
+        // 不清的话孤儿行每调一次翻倍（用户实测「加载了一堆重复的插件」）。
+        OrphanAddonFiles.Clear();
+        foreach (AddonFileItemViewModel file in _allAddonFiles)
+        {
+            if (!owned.Contains(AddonFileSwitcher.EnabledNameOf(file.FileName)) && MatchSearch(file.Name, file.FileName, file.Slug))
+            {
+                OrphanAddonFiles.Add(file);
+            }
+        }
 
         // 展开的卡片如果被搜索过滤掉了，收起来
         foreach (PluginItemViewModel item in Items)
@@ -1093,7 +1110,7 @@ public sealed partial class GlobalPluginPage : PageBase
             ? "没有符合搜索条件的插件。"
             : _manager is null ? "没有可管理的 HoYoShade 目录。" : "插件目录里没有插件。";
         TextBlock_PluginsCurrentEmpty.Visibility =
-            InstalledItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            InstalledItems.Count == 0 && OrphanAddonFiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         TextBlock_PluginsAvailableEmpty.Text = hasSearch
             ? "没有符合搜索条件的插件。"

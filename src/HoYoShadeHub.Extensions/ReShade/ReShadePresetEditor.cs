@@ -25,28 +25,53 @@ namespace HoYoShadeHub.Extensions.ReShade;
 /// </summary>
 public static class ReShadePresetEditor
 {
-    /// <summary>DLSS5 Feed 那个 addon 的 slug 前缀</summary>
-    public const string FeedAddonSlug = "dlss5-feed";
+    /// <summary>DLSS5 Feed 那个 addon 的 slug 前缀（远端 conditions.json 的 feedAddon.slugPrefix 可覆盖）</summary>
+    private const string DefaultFeedAddonSlug = "dlss5-feed";
 
-    /// <summary>动作矢量来源的预处理器定义名</summary>
-    public const string MotionVectorProviderName = "DLSS5_MV_PROVIDER";
+    /// <summary>动作矢量来源的预处理器定义名（远端可覆盖）</summary>
+    private const string DefaultMotionVectorProviderName = "DLSS5_MV_PROVIDER";
 
-    /// <summary>3 = LumeniteFX Kernel（手册推荐的来源）</summary>
-    public const string MotionVectorProviderValue = "3";
+    /// <summary>3 = LumeniteFX Kernel（手册推荐的来源）（远端可覆盖）</summary>
+    private const string DefaultMotionVectorProviderValue = "3";
 
-    /// <summary>要打开的两个 technique —— **顺序有意义**：provider 必须排在 Feed 前面</summary>
-    public static readonly string[] FeedTechniques =
+    private static readonly string[] DefaultFeedTechniques =
     [
         "Lumenite_Kernel@lumenite_Kernel.fx",
         "DLSS5_Feed@DLSS5_Feed.fx",
     ];
 
-    /// <summary>这两个 technique 所在的 .fx 文件名（删除时按文件认，不认 technique 名）</summary>
-    public static readonly string[] FeedEffectFiles =
+    private static readonly string[] DefaultFeedEffectFiles =
     [
         "lumenite_Kernel.fx",
         "DLSS5_Feed.fx",
     ];
+
+    public static string FeedAddonSlug =>
+        Conditions.AddonConditions.Current?.FeedAddon?.SlugPrefix is { Length: > 0 } slug
+            ? slug
+            : DefaultFeedAddonSlug;
+
+    public static string MotionVectorProviderName =>
+        Conditions.AddonConditions.Current?.FeedAddon?.MotionVectorProviderName is { Length: > 0 } name
+            ? name
+            : DefaultMotionVectorProviderName;
+
+    public static string MotionVectorProviderValue =>
+        Conditions.AddonConditions.Current?.FeedAddon?.MotionVectorProviderValue is { Length: > 0 } value
+            ? value
+            : DefaultMotionVectorProviderValue;
+
+    /// <summary>要打开的两个 technique —— **顺序有意义**：provider 必须排在 Feed 前面</summary>
+    public static IReadOnlyList<string> FeedTechniques =>
+        Conditions.AddonConditions.Current?.FeedAddon?.Techniques is { Length: > 0 } techniques
+            ? techniques
+            : DefaultFeedTechniques;
+
+    /// <summary>这两个 technique 所在的 .fx 文件名（删除时按文件认，不认 technique 名）</summary>
+    public static IReadOnlyList<string> FeedEffectFiles =>
+        Conditions.AddonConditions.Current?.FeedAddon?.EffectFiles is { Length: > 0 } files
+            ? files
+            : DefaultFeedEffectFiles;
 
     /// <summary>这个 addon 文件名是不是 DLSS5 Feed（<c>dlss5-feed.addon64*</c>）</summary>
     public static bool IsFeedAddon(string? addonFileName)

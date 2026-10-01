@@ -146,7 +146,7 @@ internal sealed class XxmiLocator
             return true;
         }
 
-        return ImporterNames.Any(name => IsInstance(Path.Combine(dir, name)));
+        return ListInstances(dir).Count > 0;
     }
 
     /// <summary>这个目录是不是一个 MI 实例（有 3DMigoto 的 d3dx.ini 或 d3d11.dll）</summary>
@@ -156,14 +156,45 @@ internal sealed class XxmiLocator
             && (File.Exists(Path.Combine(dir, "d3dx.ini")) || File.Exists(Path.Combine(dir, "d3d11.dll")));
     }
 
+    /// <summary>
+    /// 这个目录是不是<b>指定 importer 的</b> MI 实例。
+    /// 新版 XXMI 的实例目录名自带版本后缀（<c>ZZMI-PACKAGE-V1.4.5</c> 这种，不再叫裸 <c>ZZMI</c>），
+    /// 所以匹配规则是：实例特征文件齐全 + 目录名等于 importer 名，或以 importer 名开头且
+    /// 不落在**别的** importer 名前缀下（各 importer 名互相都不是前缀，安全）。
+    /// </summary>
+    public static bool IsInstanceForImporter(string dir, string importerName)
+    {
+        if (!IsInstance(dir) || string.IsNullOrWhiteSpace(importerName))
+        {
+            return false;
+        }
+
+        string name = Path.GetFileName(dir.TrimEnd('\\', '/'));
+
+        if (name.Equals(importerName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return name.StartsWith(importerName, StringComparison.OrdinalIgnoreCase)
+               && !ImporterNames.Any(n =>
+                   !n.Equals(importerName, StringComparison.OrdinalIgnoreCase)
+                   && name.StartsWith(n, StringComparison.OrdinalIgnoreCase));
+    }
+
     public static string ModsDirectory(string instance) => Path.Combine(instance, "Mods");
 
     public static string LoaderPath(string instance) => Path.Combine(instance, "d3d11.dll");
 
-    /// <summary>根目录下所有 MI 实例目录</summary>
+    /// <summary>根目录下所有 MI 实例目录（裸名 <c>ZZMI</c> 和版本化名 <c>ZZMI-PACKAGE-V1.4.5</c> 都算）</summary>
     public static List<string> ListInstances(string root)
     {
         List<string> list = [];
+
+        if (!Directory.Exists(root))
+        {
+            return list;
+        }
 
         foreach (string name in ImporterNames)
         {
@@ -172,6 +203,21 @@ internal sealed class XxmiLocator
             if (IsInstance(dir))
             {
                 list.Add(dir);
+                continue;
+            }
+
+            // 版本化目录名：扫根下子目录，找「属于这个 importer」的实例
+            foreach (string sub in SafeEnumerateDirectories(root))
+            {
+                if (Path.GetFileName(sub).Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;   // 上面已处理（不管是存在还是不存在）
+                }
+
+                if (IsInstanceForImporter(sub, name))
+                {
+                    list.Add(sub);
+                }
             }
         }
 
@@ -417,13 +463,13 @@ internal sealed class XxmiLocator
 
             if (!string.IsNullOrWhiteSpace(manual) && IsInstance(manual))
             {
-                if (string.Equals(Path.GetFileName(manual.TrimEnd('\\', '/')), importerName, StringComparison.OrdinalIgnoreCase))
+                if (IsInstanceForImporter(manual, importerName))
                 {
                     return manual;
                 }
 
                 Logger.LogWarning(
-                    "忽略不匹配的 XXMI 手动指定：{Manual} 不是 {Importer} 目录（{Game} 只能加载自己的 MI 实例）",
+                    "忽略不匹配的 XXMI 手动指定：{Manual} 不是 {Importer} 实例（{Game} 只能加载自己的 MI 实例）",
                     manual, importerName, gameName ?? gameBiz);
             }
         }
@@ -435,8 +481,9 @@ internal sealed class XxmiLocator
             return null;
         }
 
-        string dir = Path.Combine(root, importerName);
-        return IsInstance(dir) ? dir : null;
+        // 裸名（ZZMI）和版本化名（ZZMI-PACKAGE-V1.4.5）都认；同一 importer 多个时取第一个
+        string expectedImporter = importerName;
+        return ListInstances(root).FirstOrDefault(d => IsInstanceForImporter(d, expectedImporter));
     }
 
     private static IEnumerable<string> RootCandidates()

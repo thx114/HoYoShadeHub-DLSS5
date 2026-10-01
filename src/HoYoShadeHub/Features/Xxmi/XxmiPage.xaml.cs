@@ -436,11 +436,12 @@ public sealed partial class XxmiPage : PageBase
         // 别的实例不往里塞（FindInstance 那边同样会拒掉不匹配的目录）
         if (root is not null && expected is not null)
         {
-            string dir = Path.Combine(root, expected);
-
-            if (XxmiLocator.IsInstance(dir))
+            foreach (string dir in XxmiLocator.ListInstances(root))
             {
-                items.Add(new XxmiInstanceItem(Path.GetFileName(dir), dir));
+                if (XxmiLocator.IsInstanceForImporter(dir, expected))
+                {
+                    items.Add(new XxmiInstanceItem(Path.GetFileName(dir), dir));
+                }
             }
         }
 
@@ -466,7 +467,7 @@ public sealed partial class XxmiPage : PageBase
 
             if (!string.IsNullOrWhiteSpace(manual)
                 && XxmiLocator.IsInstance(manual)
-                && !Path.GetFileName(manual.TrimEnd('\\', '/')).Equals(expected, StringComparison.OrdinalIgnoreCase))
+                && !XxmiLocator.IsInstanceForImporter(manual, expected))
             {
                 status += $"　注意：之前指定的 {manual} 是 {Path.GetFileName(manual)} 实例，这个游戏只能用 {expected}，已忽略该指定。";
             }
@@ -778,7 +779,7 @@ public sealed partial class XxmiPage : PageBase
                 return;
             }
 
-            if (!Path.GetFileName(folder.TrimEnd('\\', '/')).Equals(expected, StringComparison.OrdinalIgnoreCase))
+            if (!XxmiLocator.IsInstanceForImporter(folder, expected))
             {
                 TextBlock_Status.Text = $"{folder} 是 {Path.GetFileName(folder)} 实例；{ _gameName ?? "这个游戏" }只能用 {expected}（MI 实例和游戏是一对一的）。";
                 return;

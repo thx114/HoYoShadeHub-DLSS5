@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HoYoShadeHub.Extensions.Conditions;
 
 namespace HoYoShadeHub.Extensions.ReShade;
 
@@ -38,18 +39,15 @@ public static class AddonNameResolver
     /// <summary>
     /// 实测拿到的 slug → 内部注册名（docs/RESHADE-INI.md §6.3 那张表）。
     /// PE 版本资源读不出名字的那些（renodx-dlss 两兄弟）就靠这张表。
+    /// 注意这是**类型加载时**的一次快照；运行时查询走 <see cref="GetKnownInternalName"/>，
+    /// 那里每次都会把远端 catalog/conditions.json 的 internalNames 覆盖合并进来。
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> KnownInternalNames =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["renodx-dlss5-super-anus"] = "RenoDX DLSS_A",
-            ["renodx-dlss"] = "RenoDX DLSS",
-            ["dlss5-bridge"] = "DLSS 5 Bridge",
-        };
+        AddonConditions.InternalNames();
 
-    /// <summary>查已知映射；没有返回 null</summary>
+    /// <summary>查已知映射（默认表 + 远端 conditions.json 覆盖）；没有返回 null</summary>
     public static string? GetKnownInternalName(string? slug) =>
-        slug is not null && KnownInternalNames.TryGetValue(slug, out string? name) ? name : null;
+        slug is not null && AddonConditions.InternalNames().TryGetValue(slug, out string? name) ? name : null;
 
     /// <summary>
     /// 按优先级拿名字：学到缓存 &gt; 版本资源 &gt; 已知映射 &gt; slug 兜底。

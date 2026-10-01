@@ -59,6 +59,10 @@ public static class GameLaunchPipeline
 
         ApplyForceHookOff(gameId, entry);
 
+        // 和启动页同一步骤：覆盖包 auto.json 里标了 runOnLaunch 的动作（含文件覆盖层）先跑。
+        // 没同意过 / 被单独禁用的不跑 —— 与页面行为一致（CLI 不替用户做同意决定）。
+        await RunPackAutoActionsOnLaunchAsync(gameId, entry, report, ct);
+
         bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(gameId);
         EnsureGameDlssgForMfg(gameId, entry, useOptiScaler);
 
@@ -185,6 +189,76 @@ public static class GameLaunchPipeline
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Force hook point off before launch");
+        }
+    }
+
+    // ==================== ①' 覆盖包 runOnLaunch 动作（页面 RunPackAutoActionsOnLaunchAsync 的 headless 版）====================
+
+    private static async Task RunPackAutoActionsOnLaunchAsync(
+        GameId gameId, GameEntry? entry, Action<string>? report, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            string packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
+
+            // 与页面一致：没同意过（或 auto.json 变了还没重新确认）一律不跑；被单独禁用的跳过
+            string consentHash = PackActionConsent.ComputeHash(packRoot);
+            if (!PackActionConsent.IsConsented(gameId.GameBiz.Value, consentHash))
+            {
+                return;
+            }
+
+            HashSet<string> disabled = PackActionConsent.DisabledActions(gameId.GameBiz.Value, consentHash);
+            List<PackAutoAction> actions = [.. PackAutoActionFile.Load(packRoot)
+                .Where(a => a.RunOnLaunch && !disabled.Contains(a.Name))];
+            if (actions.Count == 0)
+            {
+                return;
+            }
+
+            ShadeHost? host = PluginHostLocator.Resolve(out _);
+            GamePluginService? plugins = null;
+            if (entry is not null)
+            {
+                try
+                {
+                    plugins = GamePluginServiceFactory.Create(entry, host);
+                }
+                catch
+                {
+                    // 读不出插件状态就只跑不依赖 ini 的步骤
+                }
+            }
+
+            var context = new LauncherActionContext
+            {
+                GameId = gameId,
+                GameBiz = gameId.GameBiz,
+                Entry = entry,
+                Host = host,
+                Plugins = plugins,
+                LauncherPage = null,
+                PackRoot = packRoot,
+                XamlRoot = null,
+                Interactive = false,
+                Report = report ?? (text => _logger.LogInformation("{Text}", text)),
+            };
+
+            foreach (PackAutoAction action in actions)
+            {
+                ct.ThrowIfCancellationRequested();
+                string summary = await LauncherActionRunner.RunAsync(action, context);
+                _logger.LogInformation("runOnLaunch「{Name}」：{Summary}", action.Name, summary);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Run pack auto actions on launch (pipeline)");
         }
     }
 
@@ -661,6 +735,11 @@ public static class GameLaunchPipeline
             else
             {
                 _logger.LogWarning("FPS unlock failed: {Detail}", unlocker.LastError);
+                if (unlocker.PatternNotFound)
+                {
+                    // 特征对不上 = 数据滞后于游戏版本；清戳，下次启动重新拉上游
+                    AppConfig.SetFpsUnlockDataVersion(gameId, null);
+                }
             }
         }
         catch (OperationCanceledException)

@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Win32;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
@@ -27,6 +28,7 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -843,6 +845,133 @@ public sealed partial class GameSelector : UserControl
 
             CurrentGameChanged?.Invoke(this, (icon.GameId, true));
             AppConfig.CurrentGameBiz = icon.GameBiz;
+        }
+    }
+
+
+    /// <summary>
+    /// 游戏图标黑色压暗遮罩：黑只落在图标不透明像素上（圆形图标的透明外圈不再被填成方黑底）。
+    /// WinUI 3 没有 OpacityMask（UWP 才有，写在模板里还会把 XamlCompiler 搞崩），
+    /// 用 Composition MaskBrush 实现：Source = 黑色，Mask = 同一张图标的 alpha。
+    /// </summary>
+    /// <summary>
+    /// 黑色压暗遮罩：把图标本身调暗（alpha 不动）后当 Rectangle.Fill ——
+    /// 黑只落在图标不透明的像素上，圆形图标的透明外圈不再被填成方黑底。
+    /// WinUI 3 没有 OpacityMask（UWP 才有，写在 DataTemplate 里还会把 XamlCompiler 搞崩），
+    /// 所以只能 Loaded 时在后台代码里挂。
+    /// </summary>
+    private async void Rectangle_GameIconDim_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: GameBizIcon icon } element)
+        {
+            return;
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(icon.GameIcon) || !Uri.TryCreate(icon.GameIcon, UriKind.Absolute, out Uri? uri))
+            {
+                return;
+            }
+
+            ImageSource? darkened = await CreateDarkenedIconAsync(uri);
+            if (darkened is not null && ReferenceEquals(element.DataContext, icon))
+            {
+                element.SetValue(Microsoft.UI.Xaml.Shapes.Rectangle.FillProperty, new ImageBrush
+                {
+                    Stretch = Stretch.Uniform,
+                    ImageSource = darkened,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppConfig.GetLogger<GameSelector>().LogDebug(ex, "Game icon dim mask");
+        }
+    }
+
+
+    /// <summary>解码图标 → RGB 乘 0.4（≈ 原来的 #99000000 叠黑），alpha 不动，透明处依旧透明</summary>
+    private static async Task<ImageSource?> CreateDarkenedIconAsync(Uri uri)
+    {
+        try
+        {
+            // 启动器是无包应用（启动壳 + 松散资源目录）：ms-appx 走 Windows.Storage
+            // 需要包身份，RandomAccessStreamReference.CreateFromUri 会直接抛异常 ——
+            // 这正是米家游戏图标压暗不生效的原因。ms-appx 直接映到 exe 旁边的松散文件。
+            Windows.Storage.Streams.IRandomAccessStream stream;
+            if (uri.IsFile)
+            {
+                stream = File.OpenRead(uri.LocalPath).AsRandomAccessStream();
+            }
+            else if (uri.Scheme.Equals("ms-appx", StringComparison.OrdinalIgnoreCase))
+            {
+                string path = Path.Combine(AppContext.BaseDirectory, uri.AbsolutePath.TrimStart('/'));
+                if (!File.Exists(path))
+                {
+                    return null;
+                }
+
+                stream = File.OpenRead(path).AsRandomAccessStream();
+            }
+            else
+            {
+                var reference = Windows.Storage.Streams.RandomAccessStreamReference.CreateFromUri(uri);
+                stream = await reference.OpenReadAsync();
+            }
+
+            using (stream)
+            {
+                var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+                uint w = decoder.PixelWidth;
+                uint h = decoder.PixelHeight;
+                const uint maxSide = 96;
+                if (Math.Max(w, h) > maxSide)
+                {
+                    double scale = maxSide / (double)Math.Max(w, h);
+                    w = Math.Max(1, (uint)(w * scale));
+                    h = Math.Max(1, (uint)(h * scale));
+                }
+
+                var transform = new Windows.Graphics.Imaging.BitmapTransform { ScaledWidth = w, ScaledHeight = h };
+                var pixelData = await decoder.GetPixelDataAsync(
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                    transform,
+                    Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                    Windows.Graphics.Imaging.ColorManagementMode.DoNotColorManage);
+                byte[] pixels = pixelData.DetachPixelData();
+
+                // RGB 乘 0.7（≈ 叠 30% 黑 #4D000000），alpha 不动 —— 透明处依旧透明
+                for (int i = 0; i + 2 < pixels.Length; i += 4)
+                {
+                    pixels[i] = (byte)(pixels[i] * 0.7);
+                    pixels[i + 1] = (byte)(pixels[i + 1] * 0.7);
+                    pixels[i + 2] = (byte)(pixels[i + 2] * 0.7);
+                }
+
+                // 不能塞 WriteableBitmap：WinUI 3 的 WriteableBitmap 渲染时忽略像素 alpha
+                // （透明角会渲成不透明黑）。重新编码成 PNG 再走 BitmapImage ——
+                // 标准图像管线是认 alpha 的（列表里图标本身能正常透明就是证明）。
+                var png = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
+                    Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, png);
+                encoder.SetPixelData(
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                    w, h, 96, 96, pixels);
+                await encoder.FlushAsync();
+                png.Seek(0);
+
+                var bitmap = new BitmapImage();
+                await bitmap.SetSourceAsync(png);
+                return bitmap;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppConfig.GetLogger<GameSelector>().LogDebug(ex, "Create darkened icon: {Uri}", uri);
+            return null;
         }
     }
 

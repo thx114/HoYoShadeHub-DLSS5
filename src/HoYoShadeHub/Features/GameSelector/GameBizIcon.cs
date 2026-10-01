@@ -27,22 +27,7 @@ public partial class GameBizIcon : ObservableObject, IEquatable<GameBizIcon>
 
     public string ServerName { get; set => SetProperty(ref field, value); }
 
-    /// <summary>非选中图标的压暗度（1 = 压暗）。只用于换算 <see cref="ImageOpacity"/>，
-    /// 不再叠黑色方块 —— 黑色遮罩会把圆形图标的透明通道填成方黑底（用户反馈）</summary>
-    public double MaskOpacity
-    {
-        get;
-        set
-        {
-            if (SetProperty(ref field, value))
-            {
-                OnPropertyChanged(nameof(ImageOpacity));
-            }
-        }
-    } = 1.0;
-
-    /// <summary>图标自身的不透明度：选中 1.0，未选中 0.45（原来靠 60% 黑遮罩压暗）</summary>
-    public double ImageOpacity => 1.0 - 0.55 * MaskOpacity;
+    public double MaskOpacity { get; set => SetProperty(ref field, value); } = 1.0;
 
     /// <summary>在顶部那行里（= 已固定）。右键菜单靠它决定显示「固定」还是「取消固定」</summary>
     public bool IsPinned

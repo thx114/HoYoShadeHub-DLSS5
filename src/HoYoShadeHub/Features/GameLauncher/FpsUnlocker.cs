@@ -77,6 +77,9 @@ internal sealed class FpsUnlocker : IDisposable
         ModuleInfo module = await WaitForBaseModuleAsync(game, timeout, _cts.Token);
         if (module.Base == IntPtr.Zero)
         {
+            // 游戏在中途被关掉了 —— 不是错误，静默跳过（调用方据此区分要不要弹提示）
+            LastError = game.HasExited ? null : $"等了 {Math.Round(timeout.TotalSeconds)} 秒主模块还没加载完。";
+            SkippedGameExited = game.HasExited;
             return false;
         }
 
@@ -85,6 +88,7 @@ internal sealed class FpsUnlocker : IDisposable
             false, game.Id);
         if (_process == IntPtr.Zero)
         {
+            LastError = $"OpenProcess 失败 win32={Marshal.GetLastWin32Error()}（多半是权限：游戏提权时 Hub 也要用管理员启动）。";
             return false;
         }
 
@@ -92,12 +96,14 @@ internal sealed class FpsUnlocker : IDisposable
         byte[] peBuffer = new byte[0x1000];
         if (!ReadProcessMemory(_process, module.Base, peBuffer, 0x1000, out _))
         {
+            LastError = $"读 PE 头失败 win32={Marshal.GetLastWin32Error()}。";
             return false;
         }
 
         int eLfanew = BitConverter.ToInt32(peBuffer, 0x3C);
         if (eLfanew <= 0 || eLfanew + 264 > peBuffer.Length || BitConverter.ToUInt32(peBuffer, eLfanew) != 0x00004550)
         {
+            LastError = "PE 头签名不对（游戏主模块被加壳/保护？）。";
             return false;
         }
 
@@ -126,6 +132,7 @@ internal sealed class FpsUnlocker : IDisposable
 
         if (textRva == 0 || textSize == 0)
         {
+            LastError = "PE 里没有 .text 节。";
             return false;
         }
 
@@ -133,12 +140,15 @@ internal sealed class FpsUnlocker : IDisposable
         byte[] textLocal = new byte[textSize];
         if (!ReadProcessMemory(_process, textRemote, textLocal, (nuint)textSize, out _))
         {
+            LastError = $"读 .text 段失败 win32={Marshal.GetLastWin32Error()}。";
             return false;
         }
 
         int patternOffset = ScanPattern(textLocal);
         if (patternOffset < 0)
         {
+            LastError = "帧率变量特征没扫描到 —— 游戏版本可能已更新，上游解锁数据还没适配。";
+            PatternNotFound = true;
             return false;
         }
 
@@ -152,11 +162,13 @@ internal sealed class FpsUnlocker : IDisposable
         _remoteShellcode = VirtualAllocEx(_process, IntPtr.Zero, 0x1000, MemCommit | MemReserve, PageExecuteReadwrite);
         if (_remoteShellcode == IntPtr.Zero)
         {
+            LastError = $"VirtualAllocEx 失败 win32={Marshal.GetLastWin32Error()}。";
             return false;
         }
 
         if (!WriteProcessMemory(_process, _remoteShellcode, shellcode, (nuint)shellcode.Length, out _))
         {
+            LastError = $"写 shellcode 失败 win32={Marshal.GetLastWin32Error()}。";
             return false;
         }
 
@@ -164,6 +176,7 @@ internal sealed class FpsUnlocker : IDisposable
             _process, IntPtr.Zero, 0, _remoteShellcode + SyncThreadOffset, IntPtr.Zero, 0, out _);
         if (thread == IntPtr.Zero)
         {
+            LastError = $"创建远程线程失败 win32={Marshal.GetLastWin32Error()}。";
             return false;
         }
         CloseHandle(thread);
@@ -171,8 +184,14 @@ internal sealed class FpsUnlocker : IDisposable
         _loopTask = Task.Run(LoopAsync, _cts.Token);
         return true;
     }
-    /// <summary>失败原因（AttachAsync 返回 false 时）</summary>
+    /// <summary>失败原因（AttachAsync 返回 false 时）；游戏已退出导致的跳过是 null 且 <see cref="SkippedGameExited"/> 为 true</summary>
     public string? LastError { get; private set; }
+
+    /// <summary>本次失败是因为游戏进程已退出（调用方不该弹错误提示）</summary>
+    public bool SkippedGameExited { get; private set; }
+
+    /// <summary>失败是「特征没扫描到」——调用方据此清同步戳，下次启动重新拉上游数据</summary>
+    public bool PatternNotFound { get; private set; }
 
     private byte[] BuildShellcode()
     {

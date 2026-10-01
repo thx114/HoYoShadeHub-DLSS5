@@ -59,17 +59,21 @@ public static class OptiScalerRuntime
     /// <summary>
     /// Streamline 核心文件清单（OptiScaler 自带的 <c>OptiScaler/streamline</c> 那一套）。
     /// FGOutput=DLSSG 时 ini 注释要求这套 + nvngx_dlssg.dll。
+    /// 远端 catalog/conditions.json 的 optiscaler.streamlineFiles 可以覆盖这份默认清单。
     /// </summary>
-    public static readonly string[] StreamlineFileNames =
-    [
-        "sl.interposer.dll",
-        "sl.common.dll",
-        "sl.dlss.dll",
-        "sl.dlss_g.dll",
-        "sl.reflex.dll",
-        "sl.pcl.dll",
-        "sl.nis.dll",
-    ];
+    public static string[] StreamlineFileNames =>
+        Conditions.AddonConditions.Current?.OptiScaler?.StreamlineFiles is { Length: > 0 } remote
+            ? remote
+            :
+            [
+                "sl.interposer.dll",
+                "sl.common.dll",
+                "sl.dlss.dll",
+                "sl.dlss_g.dll",
+                "sl.reflex.dll",
+                "sl.pcl.dll",
+                "sl.nis.dll",
+            ];
 
     /// <summary>DLSSG 后端额外需要的 NGX 实现文件</summary>
     public const string DlssgFileName = "nvngx_dlssg.dll";

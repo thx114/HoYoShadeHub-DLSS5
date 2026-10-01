@@ -1,3 +1,4 @@
+using HoYoShadeHub.Extensions.Conditions;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
 using HoYoShadeHub.Extensions.Services;
@@ -58,6 +59,25 @@ internal static class RemoteCatalogService
     /// <summary>模块目录（catalog/modules.json）的缓存</summary>
     public static string ModulesCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "modules.json");
 
+    /// <summary>条件表（catalog/conditions.json）的缓存：插件判定 / dll 需求 / OptiScaler 依赖清单</summary>
+    public static string ConditionsCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "conditions.json");
+
+    /// <summary>把缓存里的条件表喂给 Extensions 层的 <see cref="Conditions.AddonConditions"/>（同步、幂等）</summary>
+    public static void ApplyConditions()
+    {
+        try
+        {
+            AddonConditions.LoadJson(
+                !string.IsNullOrWhiteSpace(ConditionsCachePath) && File.Exists(ConditionsCachePath)
+                    ? File.ReadAllText(ConditionsCachePath)
+                    : null);
+        }
+        catch
+        {
+            // 条件表坏了/读不到 = 全部用内置默认，别影响页面
+        }
+    }
+
     /// <summary>同步读插件目录缓存（addon 文件名匹配等同步场景用；没有缓存返回 null）</summary>
     public static ExtensionCatalogDocument? LoadCachedPlugins()
         => ExtensionCatalogService.LoadFile(PluginsCachePath);
@@ -100,6 +120,7 @@ internal static class RemoteCatalogService
                 ("plugins.json", PluginsCachePath),
                 ("optiscaler.json", OptiScalerCachePath),
                 ("modules.json", ModulesCachePath),
+                ("conditions.json", ConditionsCachePath),
             })
             {
                 if (File.Exists(cachePath))
@@ -139,10 +160,11 @@ internal static class RemoteCatalogService
 
     public static async Task<RemoteCatalogResult> RefreshAsync(bool force, CancellationToken cancellationToken = default)
     {
-        // 先把随包种子落到缓存（首跑离线也能用），再把缓存里的模块目录应用上
+        // 先把随包种子落到缓存（首跑离线也能用），再把缓存里的模块目录 / 条件表应用上
         //（打开页面就能用 —— 不管这次拉不拉）
         SeedFromBundle();
         ModuleCatalogFile.Apply(ModulesCachePath);
+        ApplyConditions();
 
         if (!force && !IsRefreshDue)
         {
@@ -161,15 +183,17 @@ internal static class RemoteCatalogService
         bool plugins = await TryDownloadAsync(client, "plugins.json", PluginsCachePath, cancellationToken);
         bool optiScaler = await TryDownloadAsync(client, "optiscaler.json", OptiScalerCachePath, cancellationToken);
         bool modules = await TryDownloadAsync(client, "modules.json", ModulesCachePath, cancellationToken);
+        bool conditions = await TryDownloadAsync(client, "conditions.json", ConditionsCachePath, cancellationToken);
 
         // 一个都没拿到就不盖时间戳，下次还会再试
-        if (!plugins && !optiScaler && !modules)
+        if (!plugins && !optiScaler && !modules && !conditions)
         {
             _logger.LogWarning("Remote catalog fetch failed (base = {Base})", BaseUrl);
             return new RemoteCatalogResult(false, false, false, false, "拉取失败（网络不通或仓库里还没有 catalog/ 文件）。");
         }
 
         ModuleCatalogFile.Apply(ModulesCachePath);
+        ApplyConditions();
 
         AppConfig.LastCatalogFetchUtc = DateTimeOffset.UtcNow;
         _logger.LogInformation("Remote catalog fetched: plugins={Plugins}, optiscaler={Opti}, modules={Modules}", plugins, optiScaler, modules);

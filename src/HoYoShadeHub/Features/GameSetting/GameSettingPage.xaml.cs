@@ -218,6 +218,128 @@ public sealed partial class GameSettingPage : PageBase
         }
     }
 
+    // ==================== 帧率解锁数据版本（设置页区块） ====================
+
+    /// <summary>程序填充下拉框时抑制 SelectionChanged（否则会触发一次「切换版本」）</summary>
+    private bool _populatingFpsUnlockVersions;
+
+    /// <summary>下拉框条目：一个本地数据版本快照</summary>
+    private sealed record FpsUnlockVersionItem(string Hash, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    /// <summary>刷新数据版本下拉框 + 同步状态文案 + 版本不匹配警告</summary>
+    private async Task RefreshFpsUnlockVersionInfoAsync()
+    {
+        if (ComboBox_FpsUnlockVersion is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<FpsUnlockDataService.VersionInfo> versions = FpsUnlockDataService.ListVersions();
+
+        _populatingFpsUnlockVersions = true;
+        ComboBox_FpsUnlockVersion.Items.Clear();
+        foreach (FpsUnlockDataService.VersionInfo v in versions)
+        {
+            string label = v.ShortHash;
+            if (v.UpdatedAt is { } t)
+            {
+                label += $" · {t.LocalDateTime:yyyy-MM-dd HH:mm}";
+            }
+
+            if (v.IsActive)
+            {
+                label += "（当前）";
+            }
+
+            ComboBox_FpsUnlockVersion.Items.Add(new FpsUnlockVersionItem(v.Hash, label));
+        }
+
+        int activeIndex = versions.ToList().FindIndex(v => v.IsActive);
+        ComboBox_FpsUnlockVersion.SelectedIndex = activeIndex >= 0 ? activeIndex : 0;
+        _populatingFpsUnlockVersions = false;
+
+        Version? gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
+        string? synced = AppConfig.GetFpsUnlockDataVersion(CurrentGameId);
+        FpsUnlockDataService.VersionInfo? active = FpsUnlockDataService.GetActiveVersion();
+
+        string state;
+        if (versions.Count == 0)
+        {
+            state = "还没有同步过解锁数据：游戏启动时会自动从上游拉取（失败则用内置兜底特征）。";
+        }
+        else
+        {
+            string dataTime = active?.UpdatedAt is { } at
+                ? $"数据更新时间 {at.LocalDateTime:yyyy-MM-dd HH:mm}"
+                : "数据更新时间未知";
+            string gameText = gameVersion?.ToString() ?? "读不到（config.ini 缺失）";
+            string syncedText = string.IsNullOrWhiteSpace(synced) ? "尚未按游戏版本同步" : $"已同步到游戏版本 {synced}";
+            state = $"当前游戏版本 {gameText}；{syncedText}；{dataTime}。";
+        }
+
+        TextBlock_FpsUnlockSyncState.Text = state;
+
+        // 同步过的游戏版本和现在对不上 → 数据大概率滞后（游戏更新了 / 上游还没适配）
+        InfoBar_FpsUnlockMismatch.IsOpen = gameVersion is not null
+                                            && !string.IsNullOrWhiteSpace(synced)
+                                            && !string.Equals(synced, gameVersion.ToString(), StringComparison.Ordinal);
+    }
+
+    private async void ComboBox_FpsUnlockVersion_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_populatingFpsUnlockVersions || ComboBox_FpsUnlockVersion.SelectedItem is not FpsUnlockVersionItem item)
+        {
+            return;
+        }
+
+        if (!FpsUnlockDataService.SetActiveVersion(item.Hash))
+        {
+            InAppToast.MainWindow?.Error("帧率解锁", "切换数据版本失败：快照文件不在了。", 6000);
+            return;
+        }
+
+        // 手动钉住这个版本：把同步戳记成当前游戏版本，下次启动不会因为戳不符就重拉覆盖；
+        // 24 小时后的后台检查/上游真出新版本时才会自动跟过去。
+        Version? gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
+        AppConfig.SetFpsUnlockDataVersion(CurrentGameId, gameVersion?.ToString() ?? string.Empty);
+        AppConfig.SetFpsUnlockLastCheckTicks(CurrentGameId, DateTime.UtcNow.Ticks);
+
+        await RefreshFpsUnlockVersionInfoAsync();
+    }
+
+    private async void Button_FpsUnlockCheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        Button_FpsUnlockCheckUpdate.IsEnabled = false;
+        try
+        {
+            Version? gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
+            FpsUnlockDataService.UpdateResult result =
+                await FpsUnlockDataService.CheckManuallyAsync(CurrentGameId, gameVersion?.ToString() ?? string.Empty);
+
+            string message = result switch
+            {
+                FpsUnlockDataService.UpdateResult.Updated => "已拉到新的解锁数据并生效。",
+                FpsUnlockDataService.UpdateResult.Unchanged => "上游还没有新数据（可能还没适配当前游戏版本，稍后再试）。",
+                FpsUnlockDataService.UpdateResult.Failed => "拉取失败：连不上上游 GitHub，检查网络 / 代理。",
+                _ => "本地还没有数据。",
+            };
+            InAppToast.MainWindow?.Information("帧率解锁", message, 8000);
+            await RefreshFpsUnlockVersionInfoAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Manual FPS unlock data check failed");
+            InAppToast.MainWindow?.Error("帧率解锁", "检查更新失败：" + ex.Message, 8000);
+        }
+        finally
+        {
+            Button_FpsUnlockCheckUpdate.IsEnabled = true;
+        }
+    }
+
     public bool HDRNotSupported { get; set => SetProperty(ref field, value); }
 
     public bool HDRNotEnabled { get; set => SetProperty(ref field, value); }
@@ -258,6 +380,7 @@ public sealed partial class GameSettingPage : PageBase
                 _displayInformation = DisplayInformation.CreateForWindowId(this.XamlRoot.GetAppWindow().Id);
                 _displayInformation.AdvancedColorInfoChanged += _displayInformation_AdvancedColorInfoChanged;
                 UpdateHdrState(_displayInformation);
+                await RefreshFpsUnlockVersionInfoAsync();
             }
             StartArgument = AppConfig.GetStartArgument(CurrentGameBiz);
             UsePopupWindow = AppConfig.GetUsePopupWindow(CurrentGameBiz);

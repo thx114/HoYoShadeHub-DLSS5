@@ -595,25 +595,44 @@ public static class AppConfig
 
     private static IServiceProvider _serviceProvider;
 
+    private static bool _loggingInitialized;
+
+
+
+    /// <summary>
+    /// 初始化文件日志（幂等）。BuildServiceProvider 之外的路径（CLI run/stopgame）也先调这个，
+    /// 保证任何一次命令行调用都在日志里留得下痕迹。
+    /// </summary>
+    public static void EnsureLoggingInitialized()
+    {
+        if (_loggingInitialized)
+        {
+            return;
+        }
+
+        _loggingInitialized = true;
+        var logFolder = LogFolder;
+        Directory.CreateDirectory(logFolder);
+        LogFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
+        Log.Logger = new LoggerConfiguration().WriteTo.File(path: LogFile, shared: true, outputTemplate: $$"""[{Timestamp:HH:mm:ss.fff}] [{Level:u4}] [{{Path.GetFileName(Environment.ProcessPath)}} ({{Environment.ProcessId}})] {SourceContext}{NewLine}{Message}{NewLine}{Exception}{NewLine}""")
+                                              .Enrich.FromLogContext()
+                                              .CreateLogger();
+        Log.Information($"Welcome to HoYoShadeHub v{AppVersion}\r\nSystem: {Environment.OSVersion}\r\nCommand Line: {Environment.CommandLine}");
+        Log.Information("UserDataFolder: {folder} (source: {source}, portable: {portable}, portableLocal: {portableLocal})",
+            UserDataFolder ?? "(null)", UserDataFolderSource ?? "(unknown)", IsPortable, IsPortableLocal);
+        Log.Information("CacheFolder: {cache}; Config: {config}; Log: {log}",
+            CacheFolder ?? "(null)", ConfigPath ?? "(null)", LogFolder ?? "(null)");
+        Log.Information("Database: {database} (error: {error})",
+            DatabaseService.DatabasePath ?? "(not initialized)", DatabaseService.InitializationError ?? "(none)");
+    }
+
 
 
     private static void BuildServiceProvider()
     {
         if (_serviceProvider == null)
         {
-            var logFolder = LogFolder;
-            Directory.CreateDirectory(logFolder);
-            LogFile = Path.Combine(logFolder, $"HoYoShadeHub_{DateTime.Now:yyMMdd}.log");
-            Log.Logger = new LoggerConfiguration().WriteTo.File(path: LogFile, shared: true, outputTemplate: $$"""[{Timestamp:HH:mm:ss.fff}] [{Level:u4}] [{{Path.GetFileName(Environment.ProcessPath)}} ({{Environment.ProcessId}})] {SourceContext}{NewLine}{Message}{NewLine}{Exception}{NewLine}""")
-                                                  .Enrich.FromLogContext()
-                                                  .CreateLogger();
-            Log.Information($"Welcome to HoYoShadeHub v{AppVersion}\r\nSystem: {Environment.OSVersion}\r\nCommand Line: {Environment.CommandLine}");
-            Log.Information("UserDataFolder: {folder} (source: {source}, portable: {portable}, portableLocal: {portableLocal})",
-                UserDataFolder ?? "(null)", UserDataFolderSource ?? "(unknown)", IsPortable, IsPortableLocal);
-            Log.Information("CacheFolder: {cache}; Config: {config}; Log: {log}",
-                CacheFolder ?? "(null)", ConfigPath ?? "(null)", LogFolder ?? "(null)");
-            Log.Information("Database: {database} (error: {error})",
-                DatabaseService.DatabasePath ?? "(not initialized)", DatabaseService.InitializationError ?? "(none)");
+            EnsureLoggingInitialized();
 
             var sc = new ServiceCollection();
             sc.AddMemoryCache();
@@ -805,6 +824,22 @@ public static class AppConfig
     public static MainWindowCloseOption CloseWindowOption
     {
         get => GetValue<MainWindowCloseOption>();
+        set => SetValue(value);
+    }
+
+
+    /// <summary>主窗口宽度（逻辑像素，0 / 负 = 用默认 1200）</summary>
+    public static int MainWindowWidth
+    {
+        get => GetValue(0);
+        set => SetValue(value);
+    }
+
+
+    /// <summary>主窗口高度（逻辑像素，0 / 负 = 用默认 676）</summary>
+    public static int MainWindowHeight
+    {
+        get => GetValue(0);
         set => SetValue(value);
     }
 

@@ -1,6 +1,7 @@
 
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions;
+using HoYoShadeHub.Extensions.Conditions;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Games;
@@ -3175,6 +3176,154 @@ Check(PackAutoActionFile.Parse("""{"actions":[{"name":"A","steps":[{"action":"se
 Check(PackAutoActionFile.Parse("""[{"steps":[{"action":"set_opt","enabled":true}]},{"steps":[{"action":"clear_game_ini"}]}]""") is { Count: 2 } bareArr && bareArr[0].Steps[0].GetBool("enabled") == true, "Parse：裸数组形态");
 Check(PackAutoActionFile.Parse("""{"steps":[{"action":"set_dx12","enabled":true}]}""") is { Count: 1 } single && single[0].Steps.Count == 1 && single[0].Name.Length > 0, "Parse：单 steps 匿名动作");
 Check(PackAutoActionFile.Parse("not json").Count == 0 && PackAutoActionFile.Parse("{}").Count == 0, "Parse：坏 JSON / 空对象 → 空");
+Check(PackAutoActionFile.Parse("""{"steps":[{"action":"wait","seconds":1.5}]}""") is { Count: 1 } waitAction
+      && waitAction[0].Steps[0].GetNumber("seconds") == 1.5, "Parse：wait 秒参数");
+
+// ==================== 远端条件表（conditions.json）兼容性 ====================
+// 断言：不传任何远端文档时，各处行为必须与硬编码时代逐字节一致；喂远端文档后按文档走。
+{
+    AddonConditions.Load(null);   // 确保从干净状态开始
+
+    // --- 默认表（无远端）---
+    AddonConditionMatch super = AddonConditions.MatchAddon("renodx-dlss5-super-anus");
+    Check(super is { Dlss5: true, LoadFromDllMain: true, HookPointCapable: true, RenoDxDlss5: false, Feed: false },
+        "conditions：super-anus = DLSS5+DllMain+HookPoint，但不抢主插件名分");
+
+    AddonConditionMatch main = AddonConditions.MatchAddon("renodx-dlss5");
+    Check(main is { Dlss5: true, LoadFromDllMain: true, HookPointCapable: true, RenoDxDlss5: true },
+        "conditions：renodx-dlss5 主插件 RenoDxDlss5=true");
+
+    AddonConditionMatch oldReno = AddonConditions.MatchAddon("renodx-dlss");
+    Check(oldReno is { Dlss5: true, LoadFromDllMain: true, HookPointCapable: true, RenoDxDlss5: false },
+        "conditions：renodx-dlss 老版 DLSS 非主插件");
+
+    AddonConditionMatch dlss5Match = AddonConditions.MatchAddon("dlss5-bridge");
+    Check(dlss5Match is { Dlss5: true, LoadFromDllMain: true, HookPointCapable: false, RenoDxDlss5: false },
+        "conditions：dlss5 前缀 DllMain=true、HookPoint=false");
+
+    AddonConditionMatch feed = AddonConditions.MatchAddon("dlss5-feed");
+    Check(feed is { Dlss5: true, LoadFromDllMain: true, HookPointCapable: false, RenoDxDlss5: false, Feed: true },
+        "conditions：dlss5-feed Feed=true，且按旧 Contains 语义仍属 DLSS5 类（DllMain 加载）");
+
+    AddonConditionMatch none = AddonConditions.MatchAddon("some-other-addon");
+    Check(none is { Dlss5: false, LoadFromDllMain: false, HookPointCapable: false, RenoDxDlss5: false, Feed: false },
+        "conditions：未知 slug 全 false");
+
+    // --- dll 需求默认 ---
+    var (req5, rec5) = AddonConditions.DllRequirementsOf("dlss5");
+    Check(req5.Count == 2
+          && req5[0].Files.SequenceEqual(new[] { "nvngx_dlssnr.dll" })
+          && req5[1].Files.SequenceEqual(new[] { "sl.interposer.dll", "sl.dlss_nr.dll" })
+          && rec5.Count == 0,
+        "conditions：dlss5 默认必需 2 组（nr + interposer/dlss_nr）");
+    var (reqX, _) = AddonConditions.DllRequirementsOf("other");
+    Check(reqX.Count == 0, "conditions：非 dlss5 tag 默认无条件");
+
+    // --- DllComponentCatalog 默认 ---
+    Check(DllComponentCatalog.Families.Count == 5
+          && DllComponentCatalog.Families.Select(f => f.Id).SequenceEqual(new[] { "dlssnr", "streamline", "dlss", "dlssd", "dlssg" })
+          && DllComponentCatalog.Families[1].PreferredVersion == "2.14.0.0",
+        "conditions：dllFamilies 默认 5 族、streamline 首选 2.14.0.0");
+    Check(AddonConditions.Current is null, "conditions：无远端时 Current=null（全部内置默认）");
+
+    // --- OptiScaler / Upscaler 运行时默认 ---
+    Check(OptiScalerRuntime.StreamlineFileNames.Length == 7
+          && OptiScalerRuntime.StreamlineFileNames.Contains("sl.interposer.dll")
+          && OptiScalerRuntime.StreamlineFileNames.Contains("sl.pcl.dll"),
+        "conditions：streamlineFiles 默认 7 个且含 interposer/pcl");
+    Check(GamePluginService.UpscalerRuntimeDlls.SequenceEqual(new[] { "nvngx.dll", "libxess.dll" }),
+        "conditions：upscalerRuntimeDlls 默认 nvngx+libxess");
+
+    // --- 内部注册名默认 ---
+    Check(AddonNameResolver.GetKnownInternalName("renodx-dlss5-super-anus") == "RenoDX DLSS_A"
+          && AddonNameResolver.GetKnownInternalName("renodx-dlss") == "RenoDX DLSS"
+          && AddonNameResolver.GetKnownInternalName("dlss5-bridge") == "DLSS 5 Bridge"
+          && AddonNameResolver.GetKnownInternalName("nope") is null,
+        "conditions：internalNames 默认 3 条映射");
+
+    // --- Feed 预设默认 ---
+    Check(ReShadePresetEditor.FeedTechniques.Count == 2
+          && ReShadePresetEditor.FeedTechniques[0].StartsWith("Lumenite_Kernel@")
+          && ReShadePresetEditor.IsFeedAddon("dlss5-feed.addon64")
+          && !ReShadePresetEditor.IsFeedAddon("dlss5-bridge.addon64"),
+        "conditions：feedAddon 默认 technique 顺序 + slug 识别");
+    Check(ReShadePresetEditor.MotionVectorProviderName == "DLSS5_MV_PROVIDER"
+          && ReShadePresetEditor.MotionVectorProviderValue == "3",
+        "conditions：MV provider 默认 DLSS5_MV_PROVIDER=3");
+
+    // --- 远端文档：覆盖 + 兜底语义 ---
+    AddonConditions.LoadJson("""
+    {
+      "schema": 1,
+      "addonConditions": [
+        { "slugPrefix": "my-new-addon", "dlss5": true, "loadFromDllMain": true }
+      ],
+      "dllRequirements": [
+        { "tag": "dlss5", "required": [["nvngx_dlssnr.dll"], ["sl.interposer.dll", "sl.dlss_nr.dll", "sl.pcl.dll"]] }
+      ],
+      "optiscaler": { "streamlineFiles": ["a.dll", "b.dll"], "upscalerRuntimeDlls": ["x.dll"] },
+      "internalNames": { "my-new-addon": "My New Addon" },
+      "feedAddon": { "slugPrefix": "my-feed", "techniques": ["P@p.fx", "F@f.fx"], "motionVectorProviderName": "MV", "motionVectorProviderValue": "9" }
+    }
+    """);
+
+    Check(AddonConditions.MatchAddon("my-new-addon") is { Dlss5: true, LoadFromDllMain: true },
+        "conditions：远端表新增 slug 生效");
+    Check(AddonConditions.MatchAddon("dlss5-bridge") is { Dlss5: true, LoadFromDllMain: true },
+        "conditions：远端表没配全的 slug 回落默认表");
+    Check(AddonConditions.MatchAddon("renodx-dlss5") is { RenoDxDlss5: true },
+        "conditions：远端表没配 renodx 时默认表补 RenoDxDlss5");
+
+    var (req5r, _) = AddonConditions.DllRequirementsOf("dlss5");
+    Check(req5r.Count == 2 && req5r[1].Files.Length == 3 && req5r[1].Files.Contains("sl.pcl.dll"),
+        "conditions：远端 dllRequirements 整组替换");
+    Check(OptiScalerRuntime.StreamlineFileNames.SequenceEqual(new[] { "a.dll", "b.dll" }),
+        "conditions：远端 streamlineFiles 覆盖");
+    Check(GamePluginService.UpscalerRuntimeDlls.SequenceEqual(new[] { "x.dll" }),
+        "conditions：远端 upscalerRuntimeDlls 覆盖");
+    Check(AddonNameResolver.GetKnownInternalName("my-new-addon") == "My New Addon"
+          && AddonNameResolver.GetKnownInternalName("renodx-dlss") == "RenoDX DLSS",
+        "conditions：远端 internalNames 合并而不是替换");
+    Check(ReShadePresetEditor.IsFeedAddon("my-feed.addon64") && !ReShadePresetEditor.IsFeedAddon("dlss5-feed.addon64")
+          && ReShadePresetEditor.MotionVectorProviderName == "MV" && ReShadePresetEditor.MotionVectorProviderValue == "9"
+          && ReShadePresetEditor.FeedTechniques.SequenceEqual(new[] { "P@p.fx", "F@f.fx" }),
+        "conditions：远端 feedAddon 全字段覆盖");
+
+    // 坏 JSON / 清空 → 全部回落默认
+    AddonConditions.LoadJson("not json");
+    Check(AddonConditions.Current is null && AddonConditions.MatchAddon("dlss5-bridge").Dlss5,
+        "conditions：坏 JSON 当没有，回落默认");
+    AddonConditions.Load(null);
+
+    // DllComponentCatalog 远端族替换
+    AddonConditions.LoadJson("""{"dllFamilies":[{"id":"dlssnr","displayName":"NR","filePattern":"nvngx_dlssnr.dll","level":"required","note":"n"}]}""");
+    Check(DllComponentCatalog.Families.Count == 1 && DllComponentCatalog.Families[0].Level == DllRequirementLevel.Required,
+        "conditions：远端 dllFamilies 整表替换（含 level 映射）");
+    AddonConditions.Load(null);
+    Check(DllComponentCatalog.Families.Count == 5, "conditions：清掉远端后 Families 回落默认 5 族");
+
+    // --- 仓库里那份真实的 catalog/conditions.json：语法 + 关键语义 ---
+    string repoConditionsPath = Path.Combine(repoCatalogDir ?? "", "conditions.json");
+    if (File.Exists(repoConditionsPath))
+    {
+        AddonConditions.LoadJson(File.ReadAllText(repoConditionsPath));
+        Check(AddonConditions.Current is not null, "conditions：仓库 conditions.json 能被解析");
+        Check(AddonConditions.MatchAddon("renodx-dlss5-super-anus") is { RenoDxDlss5: false, Dlss5: true, HookPointCapable: true },
+            "conditions：仓库表 super-anus 明确不算主插件（前缀重叠顺序正确）");
+        Check(AddonConditions.MatchAddon("renodx-dlss5") is { RenoDxDlss5: true },
+            "conditions：仓库表 renodx-dlss5 主插件判定保留");
+        Check(AddonConditions.MatchAddon("dlss5-feed") is { Feed: true },
+            "conditions：仓库表 feed 判定保留");
+        var (reqR, _) = AddonConditions.DllRequirementsOf("dlss5");
+        Check(reqR.Count == 2 && reqR[1].Files.Contains("sl.interposer.dll"),
+            "conditions：仓库表 dlss5 必需组完整");
+        AddonConditions.Load(null);
+    }
+    else
+    {
+        Check(false, "conditions：仓库 catalog/conditions.json 存在");
+    }
+}
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }

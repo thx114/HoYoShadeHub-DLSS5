@@ -44,6 +44,10 @@ public sealed partial class MainWindow : WindowEx
     private ContentControl _nextPresenter = null!;
     private CompositionScopedBatch? _activeTransitionBatch;
 
+    /// <summary>窗口可调宽高的下限（逻辑像素），再小内容就挤没了</summary>
+    private const int MinWindowWidth = 960;
+    private const int MinWindowHeight = 540;
+
 
     public MainWindow()
     {
@@ -73,7 +77,10 @@ public sealed partial class MainWindow : WindowEx
         AppWindow.Closing += AppWindow_Closing;
         AppWindow.Changed += AppWindow_Changed;
         Content.KeyDown += Content_KeyDown;
-        CenterInScreen(1200, 676);
+        // 记住用户调过的窗口尺寸（逻辑像素）；没调过就用默认 1200×676
+        int initialWidth = AppConfig.MainWindowWidth > 0 ? AppConfig.MainWindowWidth : 1200;
+        int initialHeight = AppConfig.MainWindowHeight > 0 ? AppConfig.MainWindowHeight : 676;
+        CenterInScreen(initialWidth, initialHeight);
         AdaptTitleBarButtonColorToActuallTheme();
         UpdateDragRectangles();
         SetIcon();
@@ -81,8 +88,46 @@ public sealed partial class MainWindow : WindowEx
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.IsMaximizable = false;
-            presenter.IsResizable = false;
+            // 可调宽高（最小尺寸由 WM_GETMINMAXINFO 卡住，见 WindowSubclassProc）；
+            // 尺寸变化会存进 AppConfig.MainWindowWidth/Height，下次启动恢复
+            presenter.IsResizable = true;
         }
+    }
+
+
+    /// <summary>把当前窗口尺寸（逻辑像素）存进配置；只在还原态记，最大化/最小化不覆盖。</summary>
+    private void SaveWindowSize()
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Restored })
+        {
+            return;
+        }
+        double scale = UIScale;
+        int w = (int)Math.Round(AppWindow.Size.Width / scale);
+        int h = (int)Math.Round(AppWindow.Size.Height / scale);
+        if (w >= MinWindowWidth && h >= MinWindowHeight)
+        {
+            AppConfig.MainWindowWidth = w;
+            AppConfig.MainWindowHeight = h;
+        }
+    }
+
+
+
+    public override void Show()
+    {
+        // 不再强制弹回 1200×676：用户拖过的尺寸就是新的默认
+        base.Show();
+    }
+
+
+
+    public void ShowByGamepad()
+    {
+        // 只重新居中，不改尺寸（CenterInScreen 传 null = 保持当前大小）
+        CenterInScreen(null, null);
+        User32.SetCursorPos(AppWindow.Position.X + AppWindow.Size.Width / 2, AppWindow.Position.Y + AppWindow.Size.Height / 2);
+        base.Show();
     }
 
 
@@ -99,27 +144,6 @@ public sealed partial class MainWindow : WindowEx
         int x = display.WorkArea.X + (display.WorkArea.Width - w) / 2;
         int y = display.WorkArea.Y + (display.WorkArea.Height - h) / 2;
         AppWindow.MoveAndResize(new RectInt32(x, y, w, h));
-    }
-
-
-
-    public override void Show()
-    {
-        double uiScale = UIScale;
-        if (Math.Abs(AppWindow.Size.Width - 1200 * uiScale) > 10 || Math.Abs(AppWindow.Size.Height - 676 * uiScale) > 10)
-        {
-            CenterInScreen(1200, 676);
-        }
-        base.Show();
-    }
-
-
-
-    public void ShowByGamepad()
-    {
-        CenterInScreen(1200, 676);
-        User32.SetCursorPos(AppWindow.Position.X + AppWindow.Size.Width / 2, AppWindow.Position.Y + AppWindow.Size.Height / 2);
-        base.Show();
     }
 
 
@@ -579,6 +603,16 @@ public sealed partial class MainWindow : WindowEx
                 }
             }
         }
+        else if (uMsg == (uint)User32.WindowMessage.WM_GETMINMAXINFO)
+        {
+            // 可调宽高后的最小尺寸限制（按当前显示器缩放换算物理像素）
+            var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            double scale = UIScale;
+            mmi.ptMinTrackSize.x = (int)(MinWindowWidth * scale);
+            mmi.ptMinTrackSize.y = (int)(MinWindowHeight * scale);
+            Marshal.StructureToPtr(mmi, lParam, true);
+            return IntPtr.Zero;
+        }
         return base.WindowSubclassProc(hWnd, uMsg, wParam, lParam, uIdSubclass, dwRefData);
     }
 
@@ -587,6 +621,25 @@ public sealed partial class MainWindow : WindowEx
     [LibraryImport("wtsapi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool WTSRegisterSessionNotification(IntPtr hWnd, int dwFlags);
+
+    /// <summary>WM_GETMINMAXINFO 的布局（只用到 ptMinTrackSize，其余字段保持透传）</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public MMIN_POINT ptReserved;
+        public MMIN_POINT ptMaxSize;
+        public MMIN_POINT ptMaxPosition;
+        public MMIN_POINT ptMinTrackSize;
+        public MMIN_POINT ptMaxTrackSize;
+    }
+
+    /// <summary>MINMAXINFO 里的 POINT（改名避开 Vanara 的 POINT）</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MMIN_POINT
+    {
+        public int x;
+        public int y;
+    }
 
 
     private void UpdateDragRectangles()
@@ -618,6 +671,10 @@ public sealed partial class MainWindow : WindowEx
         if (args.DidSizeChange || args.DidPresenterChange)
         {
             UpdateDragRectangles();
+            if (args.DidSizeChange)
+            {
+                SaveWindowSize();
+            }
         }
     }
 }
