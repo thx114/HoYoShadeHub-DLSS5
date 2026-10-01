@@ -75,6 +75,8 @@ public static class GameLaunchPipeline
 
         var service = AppConfig.GetService<GameLauncherService>();
         Process? process;
+        // 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，第④步随 specs 一起由 Hub 自己的注入器注
+        string? shadeReShadeDll = null;
 
         if (useHoYoShade || useOpenHoYoShade)
         {
@@ -98,28 +100,74 @@ public static class GameLaunchPipeline
             }
 
             string gameExeName = await service.GetGameExeNameAsync(gameId);
-            report?.Invoke($"启动 {shadeName} 注入器（等就绪信号）…");
+            // 鸣潮：注册 exe 是启动器壳，真正要注的是它拉起的 Client-Win64-Shipping（inject.exe 黑名单进程）
+            gameExeName = ShadeBlacklistBypass.RemapInjectProcessName(entry, gameExeName);
+            // 黑名单进程不走 inject.exe（它硬编码拒注，退 1002）：游戏启动后由第④步 Hub 自己的
+            // DllInjector 注 ReShade64.dll（同 OptiScaler 那套外部注入，没有黑名单）。
+            bool shadeViaOwnInjector = ShadeBlacklistBypass.IsBlacklisted(gameExeName);
 
-            var (success, exitCode, injectorProcess) = await InjectorHelper.StartAndWaitForReadyAsync(
-                Path.Combine(shadePath, "inject.exe"), gameExeName, shadePath, _logger, shadeName);
-
-            if (!success)
+            if (shadeViaOwnInjector)
             {
-                report?.Invoke(InjectorErrorCodes.IsInjectorError(exitCode)
-                    ? $"✗ {InjectorHelper.GetErrorMessage(exitCode, shadeName)}"
-                    : $"✗ {shadeName} 注入器没就绪（exit {exitCode}）");
-                try { injectorProcess?.Kill(); }
-                catch { }
-                return null;
+                shadeReShadeDll = Path.Combine(shadePath, "ReShade64.dll");
+                if (!File.Exists(shadeReShadeDll))
+                {
+                    report?.Invoke($"✗ {shadeName} 里找不到 ReShade64.dll（黑名单绕行要靠它直接注入）");
+                    return null;
+                }
+
+                report?.Invoke($"{gameExeName} 在 {shadeName} 注入器黑名单里 —— 跳过 inject.exe，改由 Hub 注入 ReShade64.dll");
+
+                // ReShade64.dll 从真身进程 exe 目录找 ReShade.ini：真身目录缺 ini 时从宿主模板补一份
+                try
+                {
+                    if (ShadeBlacklistBypass.RealGameDirectory(entry) is { } realDir)
+                    {
+                        string realIni = Path.Combine(realDir, "ReShade.ini");
+                        string template = Path.Combine(shadePath, "ReShade.ini");
+                        if (!File.Exists(realIni) && File.Exists(template))
+                        {
+                            File.Copy(template, realIni);
+                            _logger.LogInformation("ReShade.ini bootstrapped to real game directory: {Path}", realIni);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Bootstrap ReShade.ini to real game directory");
+                }
+
+                process = await service.StartGameAsync(gameId, installPath);
+                if (process is null)
+                {
+                    report?.Invoke("✗ 游戏进程没起来（看日志）");
+                    return null;
+                }
             }
-
-            report?.Invoke("注入器就绪，启动游戏…");
-            process = await service.StartGameAsync(gameId, installPath);
-            if (process is null)
+            else
             {
-                try { injectorProcess?.Kill(); }
-                catch { }
-                return null;
+                report?.Invoke($"启动 {shadeName} 注入器（等就绪信号）…");
+
+                var (success, exitCode, injectorProcess) = await InjectorHelper.StartAndWaitForReadyAsync(
+                    Path.Combine(shadePath, "inject.exe"), gameExeName, shadePath, _logger, shadeName);
+
+                if (!success)
+                {
+                    report?.Invoke(InjectorErrorCodes.IsInjectorError(exitCode)
+                        ? $"✗ {InjectorHelper.GetErrorMessage(exitCode, shadeName)}"
+                        : $"✗ {shadeName} 注入器没就绪（exit {exitCode}）");
+                    try { injectorProcess?.Kill(); }
+                    catch { }
+                    return null;
+                }
+
+                report?.Invoke("注入器就绪，启动游戏…");
+                process = await service.StartGameAsync(gameId, installPath);
+                if (process is null)
+                {
+                    try { injectorProcess?.Kill(); }
+                    catch { }
+                    return null;
+                }
             }
         }
         else
@@ -136,6 +184,14 @@ public static class GameLaunchPipeline
 
         // ④ 模块 / OptiScaler 注入
         List<InjectSpec> specs = BuildSpecs(gameId, useOptiScaler);
+
+        // 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll 补进 specs 最前，随第④步一起注
+        if (shadeReShadeDll is not null
+            && specs.All(s => !string.Equals(s.Path, shadeReShadeDll, StringComparison.OrdinalIgnoreCase)))
+        {
+            specs.Insert(0, new InjectSpec(shadeReShadeDll, "ReShade64"));
+        }
+
         string processName = ResolveProcessName(service, gameId, entry);
 
         if (specs.Count > 0 && !string.IsNullOrWhiteSpace(processName))
@@ -757,13 +813,19 @@ public static class GameLaunchPipeline
     {
         try
         {
+            string? name;
             if (entry?.ExePath is { Length: > 0 } exe)
             {
-                return Path.GetFileNameWithoutExtension(exe);
+                name = Path.GetFileNameWithoutExtension(exe);
+            }
+            else
+            {
+                name = service.GetGameExeNameAsync(gameId).GetAwaiter().GetResult();
+                name = Path.GetFileNameWithoutExtension(name);
             }
 
-            string name = service.GetGameExeNameAsync(gameId).GetAwaiter().GetResult();
-            return Path.GetFileNameWithoutExtension(name);
+            // 鸣潮：注册 exe 是启动器壳，注入目标是它拉起的 Client-Win64-Shipping
+            return ShadeBlacklistBypass.RemapInjectProcessName(entry, name);
         }
         catch
         {

@@ -398,7 +398,9 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         processName ??= KnownProcessNames.ForBiz(CurrentGameId?.GameBiz ?? default);
-        return processName;
+
+        // 鸣潮：注册 exe 是启动器壳（Wuthering Waves.exe），要注/等的是它拉起的 Client-Win64-Shipping
+        return ShadeBlacklistBypass.RemapInjectProcessName(_currentGameEntry, processName);
     }
 
     /// <summary>
@@ -486,9 +488,19 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    private void StartExtraDllInjection(string processName)
+    /// <param name="shadeReShadeDll">
+    /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
+    /// null 表示走正常 inject.exe 路径，不由这里注 shade。
+    /// </param>
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null)
     {
         List<InjectDllSpec> specs = [];
+
+        // ⓪ 黑名单绕行（鸣潮）：shade 本体最先注，OptiScaler / 模块跟在后面
+        if (!string.IsNullOrWhiteSpace(shadeReShadeDll) && File.Exists(shadeReShadeDll))
+        {
+            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade"));
+        }
 
         // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
         if (UseModules && CurrentGameId is { } moduleGameId)
@@ -1934,6 +1946,55 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 _logger.LogWarning("Inject mode: unknown process name for {Game}", CurrentGameId?.GameBiz);
                 InAppToast.MainWindow?.Error("注入模式", "不知道这个游戏的进程名 —— 先到「插件」页用「指定主程序…」选一下游戏 exe。", 8000);
+                return;
+            }
+
+            // 2.4 鸣潮：注册 exe 是启动器壳，真正要注的是 Client-Win64-Shipping（inject.exe 黑名单进程，见 2.6）
+            processName = ShadeBlacklistBypass.RemapInjectProcessName(_currentGameEntry, processName);
+
+            // 2.6 inject.exe 硬编码黑名单进程（鸣潮 Client-Win64-Shipping）：inject.exe 一律拒注（退 1002），
+            //     改由 Hub 自己的 DllInjector 等进程注 ReShade64.dll —— 和 OptiScaler 同一套外部注入，没有黑名单。
+            //     ini 也不能只放注册 exe 旁边：ReShade64.dll 从真身进程 exe 目录找 ReShade.ini，要在真身目录补一份。
+            if (ShadeBlacklistBypass.IsBlacklisted(processName))
+            {
+                string shadeDll = Path.Combine(shadePath, "ReShade64.dll");
+                if (!File.Exists(shadeDll))
+                {
+                    _logger.LogWarning("ReShade64.dll not found in {ShadeName} at {Path}", shadeName, shadeDll);
+                    InAppToast.MainWindow?.Error(string.Format(Lang.GameLauncher_InjectExeNotFound, shadeName));
+                    return;
+                }
+
+                // 真身目录（鸣潮 = <安装>\Wuthering Waves Game\Binaries\Win64）缺 ReShade.ini 时从宿主模板补
+                if (host is not null && ShadeBlacklistBypass.RealGameDirectory(_currentGameEntry) is { } realDir)
+                {
+                    string realIni = Path.Combine(realDir, "ReShade.ini");
+                    if (!File.Exists(realIni) && File.Exists(host.ReShadeIniPath))
+                    {
+                        try
+                        {
+                            File.Copy(host.ReShadeIniPath, realIni);
+                            _logger.LogInformation("ReShade.ini bootstrapped to real game directory: {Path}", realIni);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Bootstrap ReShade.ini to real game directory");
+                        }
+                    }
+                }
+
+                StopInjector("要重新注入");
+                _logger.LogInformation(
+                    "Inject mode: {Process} is on inject.exe's hardcoded blacklist — Hub injects {ShadeName} ReShade64.dll itself",
+                    processName, shadeName);
+                StartExtraDllInjection(processName, shadeDll, shadeName);
+                ShowWaitProcessToast(processName);
+
+                if (UseFpsUnlock)
+                {
+                    _ = StartFpsUnlockAsync(TimeSpan.FromMinutes(20), TimeSpan.FromSeconds(60));
+                }
+
                 return;
             }
 
