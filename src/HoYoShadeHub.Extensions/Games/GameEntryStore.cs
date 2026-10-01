@@ -61,6 +61,10 @@ public sealed class GameEntryStore
     [JsonPropertyName("injectMode")]
     public Dictionary<string, bool> InjectMode { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>游戏 id → 跳过 HoYoShade inject.exe、改由 Hub 自己注 ReShade64.dll</summary>
+    [JsonPropertyName("skipShadeInjector")]
+    public Dictionary<string, bool> SkipShadeInjector { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>默认落盘位置</summary>
     public static string GetDefaultPath(string userDataFolder) =>
         Path.Combine(userDataFolder, ".hysx", "games.json");
@@ -147,6 +151,7 @@ public sealed class GameEntryStore
     public bool Remove(string id)
     {
         InjectMode.Remove(id);
+        SkipShadeInjector.Remove(id);
         return Games.RemoveAll(g => string.Equals(g.Id, id, StringComparison.OrdinalIgnoreCase)) > 0;
     }
 
@@ -161,6 +166,15 @@ public sealed class GameEntryStore
 
     #endregion
 
+    #region 跳过 HoYoShade 注入器
+
+    public bool GetSkipShadeInjector(string id) =>
+        SkipShadeInjector.TryGetValue(id, out bool value) && value;
+
+    public void SetSkipShadeInjector(string id, bool value) => SkipShadeInjector[id] = value;
+
+    #endregion
+
     #region 条目 ←→ 记录
 
     /// <summary>把存下来的状态套到一个（重新发现的）条目上：exe 覆盖 + 注入模式</summary>
@@ -172,6 +186,7 @@ public sealed class GameEntryStore
         }
 
         entry.UseInjectMode = GetUseInjectMode(entry.Id);
+        entry.SkipShadeInjector = GetSkipShadeInjector(entry.Id);
     }
 
     public GameEntryRecord CaptureFrom(GameEntry entry) => new()
@@ -188,6 +203,7 @@ public sealed class GameEntryStore
     {
         Upsert(CaptureFrom(entry));
         SetUseInjectMode(entry.Id, entry.UseInjectMode);
+        SetSkipShadeInjector(entry.Id, entry.SkipShadeInjector);
     }
 
     #endregion

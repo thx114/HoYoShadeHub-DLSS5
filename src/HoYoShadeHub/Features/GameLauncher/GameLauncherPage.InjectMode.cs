@@ -99,6 +99,40 @@ public sealed partial class GameLauncherPage : PageBase
 
     public bool CanUseInjectMode => _currentGameEntry is not null;
 
+    private bool _skipShadeInjector;
+
+    /// <summary>
+    /// 「跳过 HoYoShade 注入器」开关，按游戏存：勾上后启动时不走 inject.exe，
+    /// 改由 Hub 自己的 DllInjector 等游戏进程注 ReShade64.dll（和鸣潮黑名单绕行同一条路径）。
+    /// 用于实测/绕开 inject.exe 的行为差异。
+    /// </summary>
+    public bool SkipShadeInjector
+    {
+        get => _skipShadeInjector;
+        set
+        {
+            if (!SetProperty(ref _skipShadeInjector, value))
+            {
+                return;
+            }
+
+            if (_isApplyingSavedLaunchOptions || _gameDiscovery is null || _currentGameEntry is null)
+            {
+                return;
+            }
+
+            try
+            {
+                GameCatalog.SetSkipShadeInjector(_gameDiscovery, _currentGameEntry, value);
+                _logger.LogInformation("Skip HoYoShade injector for {Game}: {Value}", _currentGameEntry.DisplayName, value);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Save skip-shade-injector");
+            }
+        }
+    }
+
     /// <summary>读当前游戏的注入模式（跟着客户端切换走）</summary>
     private void LoadInjectModeForCurrentClient()
     {
@@ -115,6 +149,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         UseInjectMode = _currentGameEntry?.UseInjectMode ?? false;
+        SkipShadeInjector = _currentGameEntry?.SkipShadeInjector ?? false;
         OnPropertyChanged(nameof(CanUseInjectMode));
 
         // 老配置里注入模式和 XXMI 都开着：注入模式优先，把 XXMI 关掉

@@ -368,6 +368,14 @@ internal static class GameCatalog
         service.Store.Save(service.StorePath);
     }
 
+    /// <summary>写回「跳过 HoYoShade inject.exe、Hub 自己注 ReShade64.dll」（只影响这一个游戏）</summary>
+    public static void SetSkipShadeInjector(GameDiscoveryService service, GameEntry entry, bool value)
+    {
+        entry.SkipShadeInjector = value;
+        service.Store.SetSkipShadeInjector(entry.Id, value);
+        service.Store.Save(service.StorePath);
+    }
+
     /// <summary>
     /// 目录缓存里的插件清单（addon 文件名匹配用，同步读）。
     /// 没有内置表了之后，这里读的是远端目录的本地缓存（RemoteCatalogService 每天拉一次）；

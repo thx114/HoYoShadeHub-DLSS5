@@ -420,6 +420,7 @@ public sealed partial class GameLauncherPage : PageBase
                 }
 
                 NotifyLaunchModeChanged();
+                OnPropertyChanged(nameof(IsShadeLaunchSelected));
             }
         }
     }
@@ -440,9 +441,13 @@ public sealed partial class GameLauncherPage : PageBase
                 }
 
                 NotifyLaunchModeChanged();
+                OnPropertyChanged(nameof(IsShadeLaunchSelected));
             }
         }
     }
+
+    /// <summary>当前勾了任一 shade 运行时（HoYoShade / OpenHoYoShade）——「不用 HoYoShade 注入器」只在这时显示</summary>
+    public bool IsShadeLaunchSelected => UseHoYoShade || UseOpenHoYoShade;
 
     /// <summary>本地库里有没有装好的 OptiScaler 构建</summary>
     private static bool HasInstalledOptiScaler()

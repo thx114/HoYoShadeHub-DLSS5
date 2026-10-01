@@ -62,6 +62,12 @@ public sealed class GameEntry
     /// <summary>这个游戏走不走注入模式（全局开关说法见 docs/GAMES-AND-INJECT.md §5：只影响单个游戏）</summary>
     public bool UseInjectMode { get; set; }
 
+    /// <summary>
+    /// 这个游戏启动时**跳过 HoYoShade 的 inject.exe**，改由 Hub 自己的 DllInjector 注 ReShade64.dll
+    /// （和黑名单绕行同一条路径）。用于实测/绕开 inject.exe 的行为差异；只影响单个游戏。
+    /// </summary>
+    public bool SkipShadeInjector { get; set; }
+
     public string? GameDirectory
     {
         get

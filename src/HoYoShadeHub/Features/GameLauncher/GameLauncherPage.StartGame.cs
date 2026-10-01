@@ -1954,8 +1954,9 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 2.6 inject.exe 硬编码黑名单进程（鸣潮 Client-Win64-Shipping）：inject.exe 一律拒注（退 1002），
             //     改由 Hub 自己的 DllInjector 等进程注 ReShade64.dll —— 和 OptiScaler 同一套外部注入，没有黑名单。
+            //     用户在启动选项勾了「不用 HoYoShade 注入器」时也走这条（实测/绕开 inject.exe 行为差异）。
             //     ini 也不能只放注册 exe 旁边：ReShade64.dll 从真身进程 exe 目录找 ReShade.ini，要在真身目录补一份。
-            if (ShadeBlacklistBypass.IsBlacklisted(processName))
+            if (ShadeBlacklistBypass.IsBlacklisted(processName) || _currentGameEntry?.SkipShadeInjector == true)
             {
                 string shadeDll = Path.Combine(shadePath, "ReShade64.dll");
                 if (!File.Exists(shadeDll))
@@ -2329,6 +2330,51 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 _logger.LogWarning("Game exe not found: {Path}", gameExePath);
                 throw new FileNotFoundException("Game exe not found", gameExeName);
+            }
+
+            // 黑名单绕行（鸣潮）：inject.exe 拒注的进程改由 Hub 自己的 DllInjector 等进程注 ReShade64.dll
+            //（同 OptiScaler 那套外部注入）。用户在启动选项勾了「不用 HoYoShade 注入器」时也走这条。
+            gameExeName = ShadeBlacklistBypass.RemapInjectProcessName(_currentGameEntry, gameExeName);
+            if (ShadeBlacklistBypass.IsBlacklisted(gameExeName) || _currentGameEntry?.SkipShadeInjector == true)
+            {
+                string shadeDll = Path.Combine(shadePath, "ReShade64.dll");
+                if (!File.Exists(shadeDll))
+                {
+                    _logger.LogWarning("ReShade64.dll not found in {ShadeName} at {Path}", shadeName, shadeDll);
+                    InAppToast.MainWindow?.Error(string.Format(Lang.GameLauncher_InjectExeNotFound, shadeName));
+                    return null;
+                }
+
+                // 没人替我们拷 ini 了（这是 inject.exe 的活）：游戏目录缺 ReShade.ini 时从宿主模板补
+                if (_currentGameEntry?.ReShadeIniPath is { } gameIni && !File.Exists(gameIni))
+                {
+                    string template = Path.Combine(shadePath, "ReShade.ini");
+                    if (File.Exists(template))
+                    {
+                        try { File.Copy(template, gameIni); }
+                        catch (Exception copyEx) { _logger.LogWarning(copyEx, "Bootstrap ReShade.ini for blacklist bypass"); }
+                    }
+                }
+
+                _logger.LogInformation(
+                    "{GameExe} {Reason} —— 跳过 inject.exe，改由 Hub 注入 {ShadeName} ReShade64.dll",
+                    gameExeName,
+                    _currentGameEntry?.SkipShadeInjector == true && !ShadeBlacklistBypass.IsBlacklisted(gameExeName)
+                        ? "按启动选项不用 HoYoShade 注入器"
+                        : "在 HoYoShade 注入器黑名单里",
+                    shadeName);
+
+                var bypassProcess = await _gameLauncherService.StartGameAsync(CurrentGameId, gameInstallPath);
+                if (bypassProcess is null)
+                {
+                    InAppToast.MainWindow?.Error(Lang.GameLauncher_GameLaunchFailed);
+                    return null;
+                }
+
+                InAppToast.MainWindow?.Success(string.Format(Lang.GameLauncher_LaunchedWithShader, shadeName));
+                // 会取代启动流程前面已经 arm 的那次（无 shade spec），以这份带 ReShade64.dll 的为准
+                StartExtraDllInjection(Path.GetFileNameWithoutExtension(gameExeName), shadeDll, shadeName);
+                return bypassProcess;
             }
 
             // Start injector and wait for it to be ready

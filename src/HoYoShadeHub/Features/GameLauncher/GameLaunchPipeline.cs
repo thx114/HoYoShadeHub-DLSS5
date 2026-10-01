@@ -104,7 +104,8 @@ public static class GameLaunchPipeline
             gameExeName = ShadeBlacklistBypass.RemapInjectProcessName(entry, gameExeName);
             // 黑名单进程不走 inject.exe（它硬编码拒注，退 1002）：游戏启动后由第④步 Hub 自己的
             // DllInjector 注 ReShade64.dll（同 OptiScaler 那套外部注入，没有黑名单）。
-            bool shadeViaOwnInjector = ShadeBlacklistBypass.IsBlacklisted(gameExeName);
+            // 启动选项里勾了「不用 HoYoShade 注入器」也走这条。
+            bool shadeViaOwnInjector = ShadeBlacklistBypass.IsBlacklisted(gameExeName) || entry.SkipShadeInjector;
 
             if (shadeViaOwnInjector)
             {
@@ -115,7 +116,9 @@ public static class GameLaunchPipeline
                     return null;
                 }
 
-                report?.Invoke($"{gameExeName} 在 {shadeName} 注入器黑名单里 —— 跳过 inject.exe，改由 Hub 注入 ReShade64.dll");
+                report?.Invoke(entry.SkipShadeInjector && !ShadeBlacklistBypass.IsBlacklisted(gameExeName)
+                    ? $"按启动选项跳过 inject.exe —— 改由 Hub 注入 {shadeName} 的 ReShade64.dll"
+                    : $"{gameExeName} 在 {shadeName} 注入器黑名单里 —— 跳过 inject.exe，改由 Hub 注入 ReShade64.dll");
 
                 // ReShade64.dll 从真身进程 exe 目录找 ReShade.ini：真身目录缺 ini 时从宿主模板补一份
                 try
