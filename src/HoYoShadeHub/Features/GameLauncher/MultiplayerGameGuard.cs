@@ -34,7 +34,7 @@ internal static class MultiplayerGameGuard
         // 三角洲行动（腾讯 ACE）
         "DeltaForceClient-Win64-Shipping",
         // 拳头 / Vanguard
-        "VALORANT-Win64-Shipping", "vgtray",
+        "VALORANT-Win64-Shipping",
         // Valve / CS2
         "cs2",
         // 绝地求生
@@ -63,8 +63,8 @@ internal static class MultiplayerGameGuard
         "EscapeFromTarkov", "TarkovArena",
         // 命运 2（对注入极敏感）
         "destiny2",
-        // 第三方反作弊服务在跑也保守处理（不含 mhyprot —— 米哈游自己的游戏要正常工作）
-        "SGuardSvc64", "ACE-Tray", "BEService", "EasyAntiCheat", "zksvc", "AntiCheatExpert",
+        // 注意：只收攻击性多人游戏本体进程。反作弊服务名（SGuardSvc64 / BEService / EAC 等）
+        // 不收 —— 一些二游同样带 ACE 但扫描宽松，按服务名匹配会把它们误伤、把启动器自己退掉。
     };
 
     private static readonly SemaphoreSlim _startLock = new(1, 1);
