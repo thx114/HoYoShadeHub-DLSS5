@@ -1,59 +1,72 @@
 {
-    "schema":  3,
-    "presets":  [
-                    {
-                        "name":  "40-崩铁 x6",
-                        "file":  "ada-1f1f90fb.ini",
-                        "author":  "thx114",
-                        "gpu":  "ada",
-                        "sources":  [
-                                        "mfg-ada"
-                                    ],
-                        "games":  [
-                                      "hkrpg"
-                                  ],
-                        "description":  "40-崩铁 x6（RTX 40 系 / mfg-ada 分支）"
-                    },
-                    {
-                        "name":  "40-绝区零dx12 x6 带缓冲",
-                        "file":  "ada-9c420a38.ini",
-                        "author":  "thx114",
-                        "gpu":  "ada",
-                        "sources":  [
-                                        "mfg-ada"
-                                    ],
-                        "games":  [
-                                      "nap"
-                                  ],
-                        "api":  "dx12",
-                        "description":  "40-绝区零dx12 x6 带缓冲（RTX 40 系 / mfg-ada 分支）"
-                    },
-                    {
-                        "name":  "40-绝区零dx12 x6",
-                        "file":  "ada-dfd73e62.ini",
-                        "author":  "thx114",
-                        "gpu":  "ada",
-                        "sources":  [
-                                        "mfg-ada"
-                                    ],
-                        "games":  [
-                                      "nap"
-                                  ],
-                        "api":  "dx12",
-                        "description":  "40-绝区零dx12 x6（RTX 40 系 / mfg-ada 分支）"
-                    },
-                    {
-                        "name":  "50-崩铁 x6",
-                        "file":  "ada-eb524c09.ini",
-                        "author":  "thx114",
-                        "gpu":  "blackwell",
-                        "sources":  [
-                                        "mfg-ada"
-                                    ],
-                        "games":  [
-                                      "hkrpg"
-                                  ],
-                        "description":  "50-崩铁 x6（RTX 50 系 / mfg-ada 分支）"
-                    }
-                ]
+ "schema": 3,
+ "presets": [
+  {
+   "name": "40-崩铁 x6",
+   "file": "ada-1f1f90fb.ini",
+   "author": "thx114",
+   "gpu": "ada",
+   "sources": [
+    "mfg-ada"
+   ],
+   "games": [
+    "hkrpg"
+   ],
+   "description": "40-崩铁 x6（RTX 40 系 / mfg-ada 分支）"
+  },
+  {
+   "name": "40-绝区零dx12 x6 带缓冲",
+   "file": "ada-9c420a38.ini",
+   "author": "thx114",
+   "gpu": "ada",
+   "sources": [
+    "mfg-ada"
+   ],
+   "games": [
+    "nap"
+   ],
+   "api": "dx12",
+   "description": "40-绝区零dx12 x6 带缓冲（RTX 40 系 / mfg-ada 分支）"
+  },
+  {
+   "name": "40-绝区零dx12 x6",
+   "file": "ada-dfd73e62.ini",
+   "author": "thx114",
+   "gpu": "ada",
+   "sources": [
+    "mfg-ada"
+   ],
+   "games": [
+    "nap"
+   ],
+   "api": "dx12",
+   "description": "40-绝区零dx12 x6（RTX 40 系 / mfg-ada 分支）"
+  },
+  {
+   "name": "50-崩铁 x6",
+   "file": "ada-eb524c09.ini",
+   "author": "thx114",
+   "gpu": "blackwell",
+   "sources": [
+    "mfg-ada"
+   ],
+   "games": [
+    "hkrpg"
+   ],
+   "description": "50-崩铁 x6（RTX 50 系 / mfg-ada 分支）"
+  },
+  {
+   "name": "40-崩铁 x2",
+   "file": "ada-980ca97d.ini",
+   "author": "thx114",
+   "gpu": "ada",
+   "sources": [
+    "mfg-ada"
+   ],
+   "games": [
+    "hkrpg"
+   ],
+   "description": "40-崩铁 x2：RTX 40 系 / mfg-ada FG 2x 定版（解锁交 mfgunlock 插件；输入缺口硬化）"
+  }
+ ]
 }
