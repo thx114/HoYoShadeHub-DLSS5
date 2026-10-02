@@ -796,9 +796,9 @@
             <CheckBox x:Name="CheckBox_SkipShadeInjector"
                       Content="不用 HoYoShade 注入器"
                       IsChecked="{x:Bind SkipShadeInjector, Mode=TwoWay}"
-                      IsEnabled="{x:Bind CanUseInjectMode, Mode=OneWay}"
-                      Visibility="{x:Bind IsShadeLaunchSelected, Mode=OneWay}"
-                      Margin="12,1,0,1"
+                      IsEnabled="{x:Bind CanSkipShadeInjector, Mode=OneWay}"
+                      Visibility="{x:Bind IsCustomGameEntry, Mode=OneWay}"
+                      Margin="0,1"
                       ToolTipService.ToolTip="勾上后启动时不走 HoYoShade 的 inject.exe，改由 Hub 自己的注入器等游戏进程出现后直接注 ReShade64.dll（和 OptiScaler 同一套外部注入）。用于实测/绕开 inject.exe 的行为差异。只影响这一个游戏。" />
 
             <!--  使用 Starward 启动器：先藏起来（留着代码，以后要用再说）  -->

@@ -158,6 +158,15 @@ public static class GameIniBootstrap
             changed = true;
         }
 
+        // 第二 runtime（FG swapchain 那条链）不加载任何插件：AddonPath 恒为空。
+        // 不然 dlss5 这类 present 路径插件会挂到第二 runtime 上，把帧生成 swapchain
+        // 的 present 再处理一遍（NR 输出回流 = 反复 NR）。主 ini 的 AddonPath 只服务第一 runtime。
+        if (!string.IsNullOrEmpty(secondary.GetValue("ADDON", "AddonPath")))
+        {
+            secondary.SetValue("ADDON", "AddonPath", string.Empty);
+            changed = true;
+        }
+
         if (changed || !File.Exists(secondaryPath))
         {
             secondary.Save(secondaryPath);

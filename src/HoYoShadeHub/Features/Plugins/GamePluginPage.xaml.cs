@@ -1284,92 +1284,40 @@ public sealed partial class GamePluginPage : PageBase
     }
 
     /// <summary>
-    /// 覆盖包 auto.json 首次出现 / 内容变更后的同意弹窗：列出**全部**动作和步骤，
-    /// 高危动作（覆盖文件 / 注册表加游戏 / 清 ini / 删滤镜）标红并展开全部文件清单。
-    /// 逐项勾选、默认全装；「全部不要」= 同意但全禁（包内容再变之前不再弹）。
+    /// 覆盖包 auto.json 首次出现 / 内容变更后的同意弹窗（UI 在 <see cref="PackActionConsentDialog"/>）。
+    /// 兜底路径：导入时游戏还没装 / 当时点了「下次再说」的，进本页还会问一次；
+    /// 确认后立即执行（once 步骤记账，启动前的 runOnLaunch 再跑会自动跳过）。
     /// </summary>
     private async Task PromptPackActionConsentAsync(string gameBiz, string hash, string packRoot, List<PackAutoAction> actions)
     {
         try
         {
-            var panel = new StackPanel { Spacing = 10 };
-            panel.Children.Add(new TextBlock
-            {
-                Text = "这个覆盖包（auto.json）请求执行以下自定义动作。勾选要启用的（默认全部启用）：",
-                TextWrapping = TextWrapping.Wrap,
-            });
-
-            var boxes = new List<CheckBox>();
-            foreach (PackAutoAction action in actions)
-            {
-                var box = new CheckBox { IsChecked = true, Tag = action.Name };
-                var content = new StackPanel { Spacing = 2 };
-                content.Children.Add(new TextBlock
-                {
-                    Text = action.Name + (action.RunOnLaunch ? "　（启动前自动执行）" : string.Empty),
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    TextWrapping = TextWrapping.Wrap,
-                });
-
-                int index = 1;
-                foreach (PackActionStep step in action.Steps)
-                {
-                    bool highRisk = PackActionDescriber.IsHighRisk(step);
-                    var stepText = new TextBlock
-                    {
-                        Text = $"{index}. {(highRisk ? "⚠ " : string.Empty)}{PackActionDescriber.Describe(step, packRoot)}",
-                        TextWrapping = TextWrapping.Wrap,
-                    };
-                    if (highRisk)
-                    {
-                        stepText.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
-                    }
-
-                    content.Children.Add(stepText);
-
-                    foreach (string detail in PackActionDescriber.HighRiskDetails(step, packRoot))
-                    {
-                        content.Children.Add(new TextBlock
-                        {
-                            Text = "　　· " + detail,
-                            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCriticalBrush"],
-                            TextWrapping = TextWrapping.Wrap,
-                        });
-                    }
-
-                    index++;
-                }
-
-                box.Content = content;
-                boxes.Add(box);
-                panel.Children.Add(box);
-            }
-
-            var scroll = new ScrollViewer { Content = panel, MaxHeight = 420 };
-            var dialog = new ContentDialog
-            {
-                XamlRoot = XamlRoot,
-                Title = "覆盖包动作确认",
-                Content = scroll,
-                PrimaryButtonText = "启用勾选的",
-                SecondaryButtonText = "全部不要",
-                CloseButtonText = "下次再说",
-                DefaultButton = ContentDialogButton.Primary,
-                MaxWidth = 560,
-            };
-
-            ContentDialogResult result = await dialog.ShowAsync();
-            if (result == ContentDialogResult.None)
+            List<string>? disabled = await PackActionConsentDialog.ShowAsync(XamlRoot, packRoot, actions);
+            if (disabled is null)
             {
                 return;   // 下次再说：不上架自定义动作，下次进页还会问
             }
 
-            var disabled = result == ContentDialogResult.Secondary
-                ? actions.Select(a => a.Name).ToList()
-                : boxes.Where(b => b.IsChecked != true).Select(b => (string)b.Tag!).ToList();
-
             PackActionConsent.Save(gameBiz, hash, disabled);
             RefreshActions();
+
+            // 同意后立即执行勾选的动作 —— 确认即生效，不等首次启动
+            var disabledSet = new HashSet<string>(disabled, StringComparer.Ordinal);
+            TextBlock_Status.Text = "正在执行覆盖包动作…";
+            List<string> results = await PackActionExecutor.RunAsync(actions, disabledSet, BuildActionContext(interactive: true));
+            if (results.Count > 0)
+            {
+                TextBlock_Status.Text = results[0];
+                ShowInfo("覆盖包动作执行完成", string.Join("\n", results), InfoBarSeverity.Success);
+
+                // 插件开关 / 预设 / 启动选项会改盘上的 ini —— 卡片状态跟一遍
+                UpdateHookPointUi();
+                RefreshPresets();
+            }
+            else
+            {
+                TextBlock_Status.Text = "覆盖包动作已全部禁用。";
+            }
         }
         catch (Exception ex)
         {

@@ -1529,6 +1529,17 @@ public sealed partial class GameLauncherPage : PageBase
     {
         try
         {
+            // 多人/反作弊游戏在跑：注入链一律暂停，避免封号（关闭该游戏后自动恢复）
+            if (MultiplayerGameGuard.IsActive)
+            {
+                _logger.LogWarning("{Reason}", MultiplayerGameGuard.BlockReason());
+                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error(
+                    "已暂停启动",
+                    MultiplayerGameGuard.BlockReason(),
+                    12000));
+                return;
+            }
+
             // 启动器自身装在游戏目录里：反作弊会扫游戏盘，启动器这批 DLL 会被扫到 —— 直接拒绝启动
             if (LauncherInsideGameDirectory(GameInstallPath))
             {

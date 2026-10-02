@@ -41,6 +41,12 @@ internal static partial class DllInjector
     {
         error = string.Empty;
 
+        if (MultiplayerGameGuard.IsActive)
+        {
+            error = MultiplayerGameGuard.BlockReason();
+            return false;
+        }
+
         if (!File.Exists(dllPath))
         {
             error = "DLL 不存在：" + dllPath;

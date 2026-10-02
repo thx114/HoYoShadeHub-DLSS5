@@ -32,6 +32,9 @@ namespace HoYoShadeHub.Features.GameLauncher;
 /// </summary>
 public static class GameLaunchPipeline
 {
+    /// <summary>日志类别占位（静态类不能做泛型参数）</summary>
+    private sealed class PipelineLogToken { }
+
     private static readonly ILogger _logger = AppConfig.GetLogger<GameLauncherService>();
 
     private sealed record InjectSpec(
@@ -58,6 +61,12 @@ public static class GameLaunchPipeline
         Action<string>? report = null,
         CancellationToken ct = default)
     {
+        if (MultiplayerGameGuard.IsActive)
+        {
+            AppConfig.GetLogger<PipelineLogToken>().LogWarning("{Reason}", MultiplayerGameGuard.BlockReason());
+            return null;
+        }
+
         report?.Invoke("准备启动 " + gameId.GameBiz);
 
         ApplyForceHookOff(gameId, entry);

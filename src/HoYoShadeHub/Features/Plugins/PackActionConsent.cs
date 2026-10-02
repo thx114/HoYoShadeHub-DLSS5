@@ -134,6 +134,10 @@ public static class PackActionDescriber
             "switch_dll" => $"切换运行时 dll：{step.GetString("family")} {(step.GetString("version") ?? "推荐版")}",
             "set_inject_delay" => $"注入时机（{step.GetString("target")}）→ {(step.GetNumber("seconds") is { } s ? s + " 秒" : "跟随全局")}",
             "set_game_setting" => $"游戏设置 {step.GetString("key")}",
+            "set_opt_config" or "apply_opt_config" or "select_opt_config" => $"选择 OptiScaler 配置 {name}",
+            "set_window_mode" or "force_window_mode" => $"窗口模式 → {step.GetString("value")}{(step.GetString("only_if") is { } oi ? $"（仅当 {oi}）" : "")}",
+            "set_opt_build" or "set_optiscaler_build" or "select_opt_build" => $"为当前游戏选择 OptiScaler 构建 {step.GetString("build") ?? (step.GetString("source") + "/" + step.GetString("version"))}",
+            "set_ini_keys" or "set_ini" or "write_ini" => $"写入 ini 键（set {IniKeyCount(step)} 个）{(step.GetBool("once") == true ? "，仅一次" : "")}",
             "override_files" => target switch
             {
                 "launcher" => "覆盖启动器目录文件",
@@ -149,6 +153,20 @@ public static class PackActionDescriber
             "test_game" or "launch_wait_stop" or "self_test" => "启动、等待并结束游戏（自动测试）",
             _ => $"未知道具 {step.Action}",
         };
+    }
+
+    private static int IniKeyCount(PackActionStep step)
+    {
+        int count = 0;
+        if (step.Raw.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            step.Raw.TryGetProperty("set", out System.Text.Json.JsonElement set) &&
+            set.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            foreach (System.Text.Json.JsonProperty section in set.EnumerateObject())
+                if (section.Value.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    count += section.Value.EnumerateObject().Count();
+        }
+        return count;
     }
 
     /// <summary>高危动作的详细清单（覆盖文件时列全部文件）</summary>

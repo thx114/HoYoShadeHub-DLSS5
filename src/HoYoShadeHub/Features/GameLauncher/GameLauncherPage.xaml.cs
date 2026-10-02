@@ -421,6 +421,7 @@ public sealed partial class GameLauncherPage : PageBase
 
                 NotifyLaunchModeChanged();
                 OnPropertyChanged(nameof(IsShadeLaunchSelected));
+                OnPropertyChanged(nameof(CanSkipShadeInjector));
             }
         }
     }
@@ -442,12 +443,19 @@ public sealed partial class GameLauncherPage : PageBase
 
                 NotifyLaunchModeChanged();
                 OnPropertyChanged(nameof(IsShadeLaunchSelected));
+                OnPropertyChanged(nameof(CanSkipShadeInjector));
             }
         }
     }
 
     /// <summary>当前勾了任一 shade 运行时（HoYoShade / OpenHoYoShade）——「不用 HoYoShade 注入器」只在这时显示</summary>
     public bool IsShadeLaunchSelected => UseHoYoShade || UseOpenHoYoShade;
+
+    /// <summary>当前游戏是用户自定义添加的——「不用 HoYoShade 注入器」只对自定义游戏显示</summary>
+    public bool IsCustomGameEntry => _currentGameEntry?.IsCustom == true;
+
+    /// <summary>开了模块 / OptiScaler / 任一 shade 运行时（插件由它加载）时「不用注入器」可勾</summary>
+    public bool CanSkipShadeInjector => UseModules || UseOptiScaler || IsShadeLaunchSelected;
 
     /// <summary>本地库里有没有装好的 OptiScaler 构建</summary>
     private static bool HasInstalledOptiScaler()
@@ -478,6 +486,7 @@ public sealed partial class GameLauncherPage : PageBase
         {
             if (SetProperty(ref _useModules, value))
             {
+                OnPropertyChanged(nameof(CanSkipShadeInjector));
                 NotifyLaunchModeChanged();
             }
         }
@@ -492,6 +501,7 @@ public sealed partial class GameLauncherPage : PageBase
         {
             if (SetProperty(ref _useOptiScaler, value))
             {
+                OnPropertyChanged(nameof(CanSkipShadeInjector));
                 NotifyLaunchModeChanged();
             }
         }

@@ -3,6 +3,7 @@ using System.IO.Compression;
 using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Models;
+using HoYoShadeHub.Extensions.ReShade;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.Services;
@@ -665,6 +666,70 @@ public sealed class LocalPackageInstaller
                 details.Add("有文件被占用没换成（游戏或启动器正开着就会这样）：" + string.Join("、", stuck.Take(4)));
             }
 
+            // 覆盖包的 GamePack\（auto.json / ini_config / 预设 / README）随包分发：
+            // 落进每个匹配游戏的覆盖包目录。不做这步的话，新机器导入后动作文件根本不在
+            // 包目录里 —— 没有确认框、13 个 once 步骤永远不会执行（启动选项/预设绑定全丢）。
+            if (manifest is { Game: { Length: > 0 } gameHint } && _cacheRoot.Length > 0)
+            {
+                string gamePackSource = Path.Combine(root, "GamePack");
+                string gamesRoot = Path.Combine(_cacheRoot, "games");
+                bool placed = false;
+                if (Directory.Exists(gamePackSource) && Directory.Exists(gamesRoot))
+                {
+                    foreach (string dir in Directory.EnumerateDirectories(gamesRoot))
+                    {
+                        string gameKey = Path.GetFileName(dir);
+                        if (gameKey.StartsWith(".", StringComparison.Ordinal))
+                            continue;
+                        if (!gameKey.StartsWith(gameHint, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        string packDir = GameAddonPack.PackDirectory(_cacheRoot, gameKey);
+                        Directory.CreateDirectory(packDir);
+                        int copied = 0;
+                        foreach (string packFile in Directory.EnumerateFiles(gamePackSource))
+                        {
+                            try
+                            {
+                                File.Copy(packFile, Path.Combine(packDir, Path.GetFileName(file)), overwrite: true);
+                                copied++;
+                            }
+                            catch
+                            {
+                                // 单个文件占用不挡其它
+                            }
+                        }
+                        if (copied > 0)
+                        {
+                            placed = true;
+                            details.Add($"GamePack → {gameKey} 覆盖包目录：{copied} 个文件（打开该游戏插件页确认动作后即生效）");
+                        }
+                    }
+                }
+
+                // 游戏还没装/没扫到（games 下没有匹配目录）：暂存，游戏一出现就由
+
+                // GameAddonPackService.Sync 铺进它的包目录 —— 否则新机器导入即丢动作。
+
+                if (!placed && Directory.Exists(gamePackSource))
+
+                {
+
+                    string pending = Path.Combine(gamesRoot, ".pending-gamepacks", gameHint);
+
+                    if (Directory.Exists(pending))
+
+                        Directory.Delete(pending, recursive: true);
+
+                    Directory.CreateDirectory(pending);
+
+                    foreach (string packFile in Directory.EnumerateFiles(gamePackSource))
+
+                        File.Copy(packFile, Path.Combine(pending, Path.GetFileName(packFile)), overwrite: true);
+
+                    details.Add($"GamePack 已暂存（游戏 {gameHint}* 尚未注册）；游戏出现后会自动铺进其覆盖包目录");
+
+            }
+                }
             // 归档：让 DLL 页 / 插件页认下「盘上这份是哪个版本」
             var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             details.AddRange(ArchiveRuntimeDlls(handled));

@@ -509,7 +509,32 @@ internal partial class GameLauncherService
             }
 
             var host = PluginHostLocator.Resolve(out _);
+
+            // Sync before bootstrap so an existing per-game package is already
+            // recognizable when GameIniBootstrap inspects AddonPath.  Sync again
+            // afterwards for the first-launch case: bootstrap may have just
+            // created ReShade.ini from the host template, leaving no ini for the
+            // first sync to update.
+            try
+            {
+                GameAddonPackService.Sync(gameId, entry, host);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Sync game AddonPath package before bootstrap for {Game}", gameId);
+            }
+
             GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, host);
+
+            try
+            {
+                GameAddonPackService.Sync(gameId, entry, host);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Sync game AddonPath package after bootstrap for {Game}", gameId);
+            }
+
             if (result.Failed)
             {
                 _logger.LogWarning("Bootstrap game ReShade.ini failed for {Game}", gameId);

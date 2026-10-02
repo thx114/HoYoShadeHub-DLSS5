@@ -151,6 +151,7 @@ public sealed partial class GameLauncherPage : PageBase
         UseInjectMode = _currentGameEntry?.UseInjectMode ?? false;
         SkipShadeInjector = _currentGameEntry?.SkipShadeInjector ?? false;
         OnPropertyChanged(nameof(CanUseInjectMode));
+        OnPropertyChanged(nameof(IsCustomGameEntry));
 
         // 老配置里注入模式和 XXMI 都开着：注入模式优先，把 XXMI 关掉
         if (UseInjectMode && _useXxmiInject)

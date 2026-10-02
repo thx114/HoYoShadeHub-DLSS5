@@ -7,6 +7,7 @@ using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.GameLauncher;
+using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.GameSelector;
 using HoYoShadeHub.Features.OptiScaler;
 using HoYoShadeHub.Features.Xxmi;
@@ -21,6 +22,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace HoYoShadeHub.Features.Plugins;
@@ -85,6 +87,26 @@ public static class LauncherActionRunner
     }
 
     private static async Task<string> RunStepAsync(PackActionStep step, LauncherActionContext context)
+    {
+        // once=true：按动作名 + 步骤内容哈希在包根 .hysx_once.json 记账，只执行一次。
+        // 导入覆盖包"改一次就放手"的通用修饰符；改了步骤内容哈希变，会自动重新执行一次。
+        bool once = step.GetBool("once") == true;
+        if (once && !string.IsNullOrWhiteSpace(context.PackRoot) && OnceMarker.Has(context.PackRoot, step))
+        {
+            return $"{step.Action}（once）：已执行过，跳过";
+        }
+
+        string outcome = await DispatchStepAsync(step, context);
+
+        if (once && !string.IsNullOrWhiteSpace(context.PackRoot) && !outcome.StartsWith("✗", StringComparison.Ordinal))
+        {
+            OnceMarker.Mark(context.PackRoot, step);
+        }
+
+        return outcome;
+    }
+
+    private static async Task<string> DispatchStepAsync(PackActionStep step, LauncherActionContext context)
         => step.Action.Trim().ToLowerInvariant() switch
         {
             // ===== 插件 =====
@@ -96,6 +118,7 @@ public static class LauncherActionRunner
 
             // ===== ini =====
             "clear_game_ini" => ClearGameIni(context),
+            "set_ini_keys" or "set_ini" or "write_ini" => SetIniKeys(step, context),
 
             // ===== 启动选项 =====
             "set_dx12" => SetDx12(step, context),
@@ -107,9 +130,11 @@ public static class LauncherActionRunner
 
             // ===== OptiScaler / 模块 / XXMI =====
             "set_opt" or "set_optiscaler" => SetOptiScaler(step, context),
+            "set_opt_build" or "set_optiscaler_build" or "select_opt_build" => SetOptiScalerBuild(step, context),
             "set_module" => SetModule(step, context),
             "import_opt_config" => ImportOptConfig(step, context),
             "update_opt_config" => UpdateOptConfig(step, context),
+            "set_opt_config" or "apply_opt_config" or "select_opt_config" => SetOptConfig(step, context),
             "set_opt_dll" => SetOptDll(step, context),
             "import_xxmi" => ImportXxmi(step, context),
 
@@ -117,6 +142,7 @@ public static class LauncherActionRunner
             "switch_dll" => await SwitchDllAsync(step, context),
             "set_inject_delay" => SetInjectDelay(step, context),
             "set_game_setting" => SetGameSetting(step, context),
+            "set_window_mode" or "force_window_mode" => SetWindowMode(step, context),
             "override_files" => OverrideFiles(step, context),
             "import_shader" => ImportShader(step, context),
             "set_shader" => SetShader(step, context),
@@ -642,6 +668,165 @@ public static class LauncherActionRunner
         return deleted > 0 ? $"已删除 {deleted} 份游戏 ini" : "游戏 ini 本来就不在";
     }
 
+    /// <summary>
+    /// set_ini_keys：把任意节/键写进 ini（默认游戏 ReShade.ini；file= 可指游戏目录内的其它 ini，
+    /// 相对路径）。set = { "节": { "键": "值" } }，remove = { "节": ["键"] }。
+    /// once=true 时整个步骤只执行一次 —— 按步骤内容哈希在包根 .hysx_once.json 记账，
+    /// 改包里的步骤内容会自动重新执行。导入覆盖包后"改一次 ini 就放手"靠它。
+    /// </summary>
+    private static string SetIniKeys(PackActionStep step, LauncherActionContext context)
+    {
+        string? iniPath;
+        if (step.GetString("file") is { Length: > 0 } file)
+        {
+            string? gameDir = context.Entry?.GameDirectory;
+            if (string.IsNullOrWhiteSpace(gameDir))
+            {
+                return "✗ set_ini_keys：没有当前游戏目录";
+            }
+
+            iniPath = Path.GetFullPath(Path.Combine(gameDir, file));
+        }
+        else
+        {
+            iniPath = context.Entry?.ReShadeIniPath;
+        }
+
+        if (string.IsNullOrWhiteSpace(iniPath) || !File.Exists(iniPath))
+        {
+            return "✗ set_ini_keys：找不到目标 ini（游戏要先启动过一次生成 ReShade.ini）";
+        }
+
+        var config = new GamePackIniConfig();
+        int setCount = 0, removeCount = 0;
+
+        if (step.Raw.ValueKind == JsonValueKind.Object
+            && step.Raw.TryGetProperty("set", out JsonElement set) && set.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty section in set.EnumerateObject())
+            {
+                if (section.Value.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (!config.Set.TryGetValue(section.Name, out Dictionary<string, string>? pairs))
+                {
+                    pairs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                foreach (JsonProperty key in section.Value.EnumerateObject())
+                {
+                    pairs[key.Name] = key.Value.ValueKind == JsonValueKind.String
+                        ? key.Value.GetString() ?? string.Empty
+                        : key.Value.ToString();
+                    setCount++;
+                }
+
+                config.Set[section.Name] = pairs;
+            }
+        }
+
+        if (step.Raw.ValueKind == JsonValueKind.Object
+            && step.Raw.TryGetProperty("remove", out JsonElement remove) && remove.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty section in remove.EnumerateObject())
+            {
+                if (section.Value.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                if (!config.Remove.TryGetValue(section.Name, out List<string>? keys))
+                {
+                    keys = [];
+                }
+
+                foreach (JsonElement key in section.Value.EnumerateArray())
+                {
+                    if (key.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(key.GetString()))
+                    {
+                        keys.Add(key.GetString()!);
+                        removeCount++;
+                    }
+                }
+
+                config.Remove[section.Name] = keys;
+            }
+        }
+
+        if (config.IsEmpty)
+        {
+            return "✗ set_ini_keys：没有 set / remove 内容";
+        }
+
+        bool changed = config.Apply(iniPath);
+
+        return $"已写入 {Path.GetFileName(iniPath)}：set {setCount} 键 / remove {removeCount} 键"
+               + (changed ? string.Empty : "（值相同，无改动）");
+    }
+
+    /// <summary>once 步骤记账：包根 .hysx_once.json，键 = 动作名 + 步骤内容哈希。</summary>
+    private static class OnceMarker
+    {
+        private const string FileName = ".hysx_once.json";
+
+        private static string HashOf(PackActionStep step)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(step.Action.Trim().ToLowerInvariant() + (char)10 + step.Raw.GetRawText());
+            byte[] hash = System.Security.Cryptography.SHA256.HashData(bytes);
+            return Convert.ToHexString(hash).ToLowerInvariant()[..16];
+        }
+
+        public static bool Has(string packRoot, PackActionStep step)
+        {
+            try
+            {
+                string path = Path.Combine(packRoot, FileName);
+                if (!File.Exists(path))
+                {
+                    return false;
+                }
+
+                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+                return document.RootElement.ValueKind == JsonValueKind.Object
+                       && document.RootElement.TryGetProperty(HashOf(step), out JsonElement value)
+                       && value.ValueKind == JsonValueKind.True;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static void Mark(string packRoot, PackActionStep step)
+        {
+            try
+            {
+                string path = Path.Combine(packRoot, FileName);
+                Dictionary<string, bool> map = [];
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        map = JsonSerializer.Deserialize<Dictionary<string, bool>>(File.ReadAllText(path)) ?? [];
+                    }
+                    catch
+                    {
+                        map = [];
+                    }
+                }
+
+                map[HashOf(step)] = true;
+                File.WriteAllText(path, JsonSerializer.Serialize(map));
+            }
+            catch
+            {
+                // 记账失败不影响主流程（下次还会执行一次，幂等）
+            }
+        }
+    }
+
     // ==================== 启动选项 ====================
 
     private static string SetDx12(PackActionStep step, LauncherActionContext context)
@@ -804,6 +989,35 @@ public static class LauncherActionRunner
     }
 
     /// <summary>
+    /// set_opt_build：给当前游戏选择 OptiScaler 构建（build="source/版本"，或 source+version 分开给），
+    /// 顺便启用这个游戏的 OptiScaler 启动项。配合 once=true = 导入时选一次，之后用户在 OptiScaler 页可改。
+    /// </summary>
+    private static string SetOptiScalerBuild(PackActionStep step, LauncherActionContext context)
+    {
+        if (context.GameId is not { } gameId)
+        {
+            return "✗ set_opt_build：没有当前游戏";
+        }
+
+        string? id = step.GetString("build") ?? step.GetString("id");
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            string? source = step.GetString("source") ?? step.GetString("sourceId");
+            string? version = step.GetString("version");
+            if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(version))
+            {
+                return "✗ set_opt_build：需要 build=\"source/版本\" 或 source+version";
+            }
+
+            id = source.Trim().TrimEnd('/') + "/" + version.Trim();
+        }
+
+        AppConfig.SetSelectedOptiScalerId(gameId, id);
+        AppConfig.SetUseOptiScalerLaunchOption(gameId, true);
+        return $"已为当前游戏选择 OptiScaler 构建 {id}";
+    }
+
+    /// <summary>
     /// set_module：带 id = 开关那个模块（全局 + 挂到 / 摘出这个游戏的模块列表）；
     /// 不带 id = 开关这个游戏的「启用模块」总选项。
     /// </summary>
@@ -886,6 +1100,47 @@ public static class LauncherActionRunner
         return OptiScalerPresets.CaptureFromBuild(buildDir, name!)
             ? "已把当前配置回抓为：" + name
             : "✗ 回抓失败（构建目录读不了）";
+    }
+
+    /// <summary>
+    /// set_opt_config：把一份已导入的 OptiScaler 配置选成当前游戏生效的配置 ——
+    /// 等于 OptiScaler 页下拉里手动选它：记选择（opti_preset_&lt;游戏&gt;_&lt;构建&gt; + follow 键）、
+    /// 写 profiles\&lt;游戏&gt;.ini 并激活成主 ini。要在 set_opt_build 和 import_opt_config 之后跑。
+    /// </summary>
+    private static string SetOptConfig(PackActionStep step, LauncherActionContext context)
+    {
+        string? name = step.GetString("name") ?? step.GetString("preset");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "✗ set_opt_config 需要 name 参数";
+        }
+
+        if (context.GameId is not { } gameId)
+        {
+            return "✗ set_opt_config：没有当前游戏";
+        }
+
+        string? buildId = AppConfig.GetSelectedOptiScalerId(gameId);
+        if (string.IsNullOrWhiteSpace(buildId))
+        {
+            return "✗ 这个游戏还没选 OptiScaler 构建（先跑 set_opt_build）";
+        }
+
+        string? dll = AppConfig.GetSelectedOptiScalerDll(gameId);
+        string? buildDir = dll is null ? null : Path.GetDirectoryName(Path.GetFullPath(dll));
+        if (string.IsNullOrWhiteSpace(buildDir) || !Directory.Exists(buildDir))
+        {
+            return "✗ OptiScaler 构建目录不存在：" + buildId;
+        }
+
+        string gameKey = gameId.GameBiz.ToString();
+        // 与 OptiScalerPage.PresetKey 同规则：opti_preset_<游戏>_<构建id>
+        AppConfig.SetValue(name, $"opti_preset_{gameKey}_{buildId}");
+        AppConfig.SetValue(name, OptiScalerPresets.FollowKey(gameKey));
+
+        return OptiScalerPresets.Apply(buildDir, gameKey, name!)
+            ? $"OptiScaler 配置 → {name}（已写入 profiles 并激活）"
+            : $"✗ 套用配置失败（presets 目录里没有 {name}.ini？）";
     }
 
     /// <summary>set_opt_dll：改 OptiScaler 注入 dll 的名字（默认 OptiScaler.dll → 复制成 &lt;名字&gt;.dll 再注）</summary>
@@ -1088,6 +1343,69 @@ public static class LauncherActionRunner
             default:
                 return $"✗ 未知设置项：{key}（支持 fps_target / start_argument / use_popup_window）";
         }
+    }
+
+    /// <summary>
+    /// set_window_mode：设置游戏栏窗口模式。value = fullscreen / borderless / windowed；
+    /// borderless = 关全屏（Unity registry）+ 无边框启动参数，fullscreen / windowed 同理。
+    /// only_if = fullscreen|windowed|borderless 时仅当当前模式匹配才改 —— 配合**不带 once**
+    /// 每次启动执行，即为"禁止全屏：全屏才改无边框，其余不动"。
+    /// </summary>
+    private static string SetWindowMode(PackActionStep step, LauncherActionContext context)
+    {
+        if (context.GameBiz is not { } biz)
+        {
+            return "✗ set_window_mode：没有当前游戏";
+        }
+
+        string? value = step.GetString("value");
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "✗ set_window_mode：需要 value=fullscreen|borderless|windowed";
+        }
+
+        var current = GameSettingService.GetGameResolutionSetting(biz);
+        bool curFull = current?.IsFullScreen == true;
+        bool curPopup = AppConfig.GetUsePopupWindow(biz);
+
+        string? onlyIf = step.GetString("only_if");
+        if (!string.IsNullOrWhiteSpace(onlyIf))
+        {
+            bool matches = onlyIf.Trim().ToLowerInvariant() switch
+            {
+                "fullscreen" or "full" => curFull,
+                "windowed" or "window" => !curFull && !curPopup,
+                "borderless" => !curFull && curPopup,
+                _ => false,
+            };
+            if (!matches)
+            {
+                return $"set_window_mode：当前模式不满足 only_if={onlyIf}，跳过";
+            }
+        }
+
+        bool full; bool popup;
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "fullscreen": full = true; popup = false; break;
+            case "borderless": full = false; popup = true; break;
+            case "windowed": full = false; popup = false; break;
+            default: return $"✗ set_window_mode：不认识 value={value}";
+        }
+
+        if (full == curFull && popup == curPopup)
+        {
+            return "set_window_mode：已是目标模式，无改动";
+        }
+
+        if (current is not null)
+        {
+            current.IsFullScreen = full;
+            GameSettingService.SetGameResolutionSetting(biz, current);
+        }
+
+        AppConfig.SetUsePopupWindow(biz, popup);
+        return $"窗口模式 → {value.Trim().ToLowerInvariant()}（registry 全屏标志 + 无边框启动参数已更新）";
     }
 
     /// <summary>override_files：把包里的目录覆盖到目标。target = game（游戏目录）| launcher（启动器目录）。</summary>

@@ -11,7 +11,7 @@
              mc:Ignorable="d">
 
     <UserControl.Resources>
-        <!--  关闭游戏专用：红色实心常驻，悬停 / 按下只压暗，不跳回主题色  -->
+        <!--  关闭游戏专用：背景透明（只有方块带警示色），悬停 / 按下轻微压暗  -->
         <Style x:Key="CloseGameButtonStyle"
                BasedOn="{StaticResource DefaultButtonStyle}"
                TargetType="Button">
@@ -40,14 +40,14 @@
                                     <VisualState x:Name="PointerOver">
                                         <Storyboard>
                                             <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
-                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#D96B72" />
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#26FFFFFF" />
                                             </ObjectAnimationUsingKeyFrames>
                                         </Storyboard>
                                     </VisualState>
                                     <VisualState x:Name="Pressed">
                                         <Storyboard>
                                             <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Background">
-                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#B8545B" />
+                                                <DiscreteObjectKeyFrame KeyTime="0" Value="#40FFFFFF" />
                                             </ObjectAnimationUsingKeyFrames>
                                         </Storyboard>
                                     </VisualState>
@@ -193,7 +193,7 @@
                                   Visibility="{x:Bind IsGameActionCommandRunning}" />
                     <!--  按键文本： 开始游戏 / 游戏正在运行 / 安装游戏 / 更新游戏 / 更新插件 / 继续下载  -->
                     <TextBlock x:Name="TextBlock_StartGame"
-                               Margin="41,5,53,6"
+                               Margin="50,5,53,6"
                                HorizontalAlignment="Center"
                                VerticalAlignment="Center"
                                Text="{x:Bind StartGameButtonText}" />
@@ -300,7 +300,7 @@
                 Padding="12"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Stretch"
-                Background="{ThemeResource SystemFillColorCriticalBrush}"
+                Background="Transparent"
                 BorderThickness="0"
                 Command="{x:Bind CloseGameCommand}"
                 CornerRadius="22"
@@ -309,8 +309,12 @@
                 Style="{StaticResource CloseGameButtonStyle}"
                 ToolTipService.ToolTip="关闭正在运行的游戏"
                 Visibility="{x:Bind IsCloseGameVisible}">
-            <FontIcon FontSize="14"
-                      Glyph="&#xE71A;" />
+            <!--  实心红方块：固定 10px，比内容区小一圈居中，周围全透明  -->
+            <Rectangle Width="10"
+                      Height="10"
+                      Fill="{ThemeResource SystemFillColorCriticalBrush}"
+                      RadiusX="0"
+                      RadiusY="0" />
         </Button>
 
 

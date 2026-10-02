@@ -72,6 +72,12 @@ internal sealed class FpsUnlocker : IDisposable
     /// </summary>
     public async Task<bool> AttachAsync(Process game, int targetFps, TimeSpan timeout)
     {
+        if (MultiplayerGameGuard.IsActive)
+        {
+            LastError = MultiplayerGameGuard.BlockReason();
+            return false;
+        }
+
         SetTarget(targetFps);
 
         ModuleInfo module = await WaitForBaseModuleAsync(game, timeout, _cts.Token);

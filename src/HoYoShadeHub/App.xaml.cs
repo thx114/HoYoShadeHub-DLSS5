@@ -1,4 +1,5 @@
 using Microsoft.UI.Dispatching;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
 using HoYoShadeHub.Features.UrlProtocol;
@@ -7,6 +8,7 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Timers;
 
 
@@ -14,6 +16,10 @@ namespace HoYoShadeHub;
 
 public partial class App : Application
 {
+    private static readonly Microsoft.Extensions.Logging.ILogger _log =
+        AppConfig.GetLogger<AppLogToken>();
+    private sealed class AppLogToken { }
+
 
     private readonly DispatcherQueue _uiDispatcherQueue;
 
@@ -81,7 +87,21 @@ public partial class App : Application
         var main = AppInstance.FindOrRegisterForKey("main");
         if (!main.IsCurrent)
         {
-            await main.RedirectActivationToAsync(instance.GetActivatedEventArgs());
+            // 重定向到已运行实例；对方以更高权限运行时 Redirect 会挂起/拒绝 ——
+            // 加 3s 超时并吞异常直接退出，避免每次重开都留下一个吃内存的后台进程
+            try
+            {
+                Task redirect = main.RedirectActivationToAsync(instance.GetActivatedEventArgs()).AsTask();
+                if (await Task.WhenAny(redirect, Task.Delay(3000)) != redirect)
+                {
+                    _log.LogWarning("单实例重定向超时（已运行实例可能为管理员权限），本实例直接退出");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "单实例重定向失败，本实例直接退出");
+            }
+
             this.Exit();
             return;
         }

@@ -64,6 +64,46 @@ internal static class GameAddonPackService
 
         string packDirectory = GameAddonPack.PackDirectory(cacheRoot, gameKey);
         string addonsDirectory = GameAddonPack.AddonDirectory(cacheRoot, gameKey);
+
+        // 导入覆盖包时游戏可能还没注册：安装器把 GamePack 暂存在 .pending-gamepacks\<hint>。
+        // 游戏一出现（Sync 在启动/插件页时都会跑）就把它铺进包目录，随后的动作确认框才能弹出。
+        try
+        {
+            string pendingRoot = Path.Combine(cacheRoot, "games", ".pending-gamepacks");
+            if (Directory.Exists(pendingRoot))
+            {
+                foreach (string hintDir in Directory.EnumerateDirectories(pendingRoot))
+                {
+                    string hint = Path.GetFileName(hintDir);
+                    if (!gameKey.StartsWith(hint, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    Directory.CreateDirectory(packDirectory);
+                    foreach (string pendingFile in Directory.EnumerateFiles(hintDir))
+                    {
+                        string target = Path.Combine(packDirectory, Path.GetFileName(pendingFile));
+                        try
+                        {
+                            File.Copy(pendingFile, target, overwrite: true);
+                        }
+                        catch
+                        {
+                            // 占用中下轮再铺
+                        }
+                    }
+                    try
+                    {
+                        Directory.Delete(hintDir, recursive: true);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 暂存铺放只是增强，不挡同步
+        }
         string? iniPath = entry?.ReShadeIniPath is { } ini && File.Exists(ini) ? ini : null;
 
         // 覆盖包里有用户内容（ini_config.json / auto.json / presets\ / *_files\）时，

@@ -42,6 +42,9 @@ public static class Program
     {
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
+        // 多人/反作弊游戏后台守卫：只读轮询进程名，发现即暂停一切注入/解锁
+        Features.GameLauncher.MultiplayerGameGuard.EnsureStarted();
+
         // 提权副本：摘掉接力标记（原样留在 args 里会把 ConfigurationBuilder 搞糊涂）
         var argList = new List<string>(args);
         int flagIndex = argList.IndexOf(ElevatedChildFlag);

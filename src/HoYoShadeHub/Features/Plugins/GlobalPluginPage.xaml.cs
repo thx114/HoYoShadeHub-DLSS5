@@ -2907,6 +2907,18 @@ public sealed partial class GlobalPluginPage : PageBase
                 // 覆盖包把整棵 HoYoShade / OptiScaler 换掉了：插件卡、OptiScaler 构建、预设都要重读
                 await ReloadPluginDataAsync();
                 RefreshOptiScaler();
+
+                // 包里的 GamePack（auto.json）已铺进各游戏包目录：动作确认现在就办，
+                // 确认后立即执行（一次性；启动前的 runOnLaunch 靠 once 记账自动跳过）。
+                // 没有 auto.json 的旧包这里直接返回空串，行为不变。
+                string packSummary = await OverlayPackActionPrompter.PromptAndRunAsync(
+                    XamlRoot,
+                    _manager?.Host ?? PluginHostLocator.Resolve(out _),
+                    text => TextBlock_Status.Text = text);
+                if (packSummary.Length > 0)
+                {
+                    ShowInfo("覆盖包动作执行完成", packSummary, InfoBarSeverity.Success);
+                }
                 break;
         }
 
@@ -5021,7 +5033,7 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
     public string CatalogRepository
         => !string.IsNullOrWhiteSpace(CatalogSource?.Repository) ? CatalogSource!.Repository : Repository;
 
-    public string Title => $"{Build.Version}　·　{SourceName}";
+    public string Title => SourceName;
 
     /// <summary>来源带的标签（跟插件卡片的 tags 同一套）</summary>
     public IReadOnlyList<string> Tags => Source.Tags is { Length: > 0 } tags ? tags : Array.Empty<string>();
@@ -5040,9 +5052,9 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
         {
             var parts = new List<string>();
 
-            if (!string.IsNullOrWhiteSpace(Build.AssetName))
+            if (!string.IsNullOrWhiteSpace(EffectiveVersion))
             {
-                parts.Add(Build.AssetName!);
+                parts.Add(EffectiveVersion);
             }
 
             parts.Add($"{Build.SizeBytes / 1024d / 1024d:F1} MB");
@@ -5088,7 +5100,7 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
     {
         get
         {
-            string text = Build.AssetName ?? string.Empty;
+            string text = EffectiveVersion;
 
             if (InstalledVersionRows.Count == 0)
             {
@@ -5123,11 +5135,10 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject, IOp
 
     public string MenuVersionText => $"当前版本：{EffectiveVersion}";
 
-    /// <summary>版本徽章：直接显示在未展开卡片上。</summary>
+    /// <summary>版本徽章：已隐藏 —— 版本号显示在标题右侧摘要（原 zip 位置）。</summary>
     public string VersionBadgeText => EffectiveVersion;
 
-    public Visibility VersionBadgeVisibility =>
-        !string.IsNullOrWhiteSpace(EffectiveVersion) ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility VersionBadgeVisibility => Visibility.Collapsed;
 
     /// <summary>展开箭头：收起朝下，展开朝上</summary>
     public string ExpandGlyph => IsExpanded ? "\uE70E" : "\uE70D";
