@@ -85,7 +85,8 @@
         "fsr",
         "bridge",
         "frame-generation"
-      ]
+      ],
+      "bundled": true
     }
   ]
 }
