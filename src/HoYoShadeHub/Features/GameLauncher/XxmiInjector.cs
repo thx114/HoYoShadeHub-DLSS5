@@ -121,6 +121,102 @@ internal sealed class XxmiInjector
     /// 我们自己 Inject 进去它能加载但完全不初始化（连 d3d11_log.txt 都不写）；而 XXMI Launcher 有 CLI，
     /// 可以让它**在后台**把整条启动+注入流程跑完，我们不用碰它的 dll。
     /// </summary>
+    /// <summary>
+    /// 把 XXMI 里本游戏导入器的启动方式（process_start_method）写成 Manual（Native/Shell/Manual 三选一），
+    /// 并让 XXMI Launcher 处于运行状态。之后由 Hub 自己启动游戏 —— XXMI 在后台按手动模式接管
+    /// 模型替换（含 extra_libraries），与 Hub 注入链共存（已实机验证可共存的组合）。
+    /// </summary>
+    public static string PrepareManualMode(GameId gameId, string? gameName)
+    {
+        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);
+        if (instance is null || importer is null)
+        {
+            return "找不到 XXMI 实例（到「模型替换」页确认 MI 目录）";
+        }
+
+        string configPath = Path.GetFullPath(Path.Combine(instance, "..", "XXMI Launcher Config.json"));
+        if (!File.Exists(configPath))
+        {
+            return "找不到 XXMI Launcher Config.json：" + configPath;
+        }
+
+        try
+        {
+            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath))!;
+            var importerNode = root["Importers"]?[importer]?["Importer"];
+            if (importerNode is null)
+            {
+                return "XXMI 配置里没有导入器 " + importer;
+            }
+
+            string current = importerNode["process_start_method"]?.GetValue<string>() ?? string.Empty;
+            if (!string.Equals(current, "Manual", StringComparison.OrdinalIgnoreCase))
+            {
+                string backup = configPath + ".bak-before-manual-mode";
+                if (!File.Exists(backup))
+                {
+                    File.Copy(configPath, backup);
+                }
+
+                importerNode["process_start_method"] = "Manual";
+                File.WriteAllText(configPath, root.ToJsonString());
+                Logger.LogInformation("XXMI {Importer} 启动方式已写成 Manual（原值 {Old}，备份 {Backup})",
+                    importer, current, backup);
+            }
+
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "XXMI 写手动模式失败");
+            return "写 XXMI 手动模式失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>让 XXMI Launcher 处于运行状态（手动模式下由它接管模型替换）；已在跑就跳过</summary>
+    public static void StartLauncherIfNeeded(GameId gameId, string? gameName)
+    {
+        try
+        {
+            if (Process.GetProcessesByName("XXMI Launcher").Length > 0)
+            {
+                return;
+            }
+
+            string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out _);
+            if (instance is null)
+            {
+                return;
+            }
+
+            DirectoryInfo? dir = new(instance);
+            while (dir is not null)
+            {
+                string candidate = Path.Combine(dir.FullName, "Resources", "Bin", "XXMI Launcher.exe");
+                if (File.Exists(candidate))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = candidate,
+                        Arguments = "-n",
+                        WorkingDirectory = Path.GetDirectoryName(candidate),
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                    });
+                    Logger.LogInformation("XXMI Launcher 已调起（手动模式接管）：{Path}", candidate);
+                    return;
+                }
+
+                dir = dir.Parent;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "调起 XXMI Launcher 失败");
+        }
+    }
+
     public static XxmiLaunchResult LaunchViaXxmiCli(GameId gameId, string gameExePath, string? gameName)
     {
         string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);

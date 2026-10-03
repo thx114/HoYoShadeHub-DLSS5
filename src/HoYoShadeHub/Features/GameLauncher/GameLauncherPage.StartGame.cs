@@ -1747,26 +1747,26 @@ public sealed partial class GameLauncherPage : PageBase
             // 「启用 XXMI 注入」：**按 XXMI 的方式启动** —— 挂起起进程 → 往进程里 Inject 3DMigoto 的
             // d3d11.dll → 恢复线程（注入发生在 D3D 初始化前，且 DllMain 在游戏进程里跑，不会踩 1114）。
             // 这条会自己把游戏起起来（跟 XXMI Launcher 一样），所以后面的正常启动流程直接跳过。
-            // XXMI Launcher 已在运行（用户在它那边开了「手动」启动方式）：不再走挂起注入 CLI，
-            // 直接走下面的正常启动流程 —— Hub 起游戏 + shade/OptiScaler 注入，模型替换由 XXMI 自己接管。
-            // 这是已验证可共存的组合（挂起注入+注入式 ReShade 互斥的那套才崩）。
-            bool xxmiManualMode = false;
-            if (UseXxmiInject)
+            // 「启用 XXMI」新语义：不是让 XXMI 起游戏，而是 ——
+            // 1) 把 XXMI 里本游戏导入器的启动方式写成 Manual；2) 调起 XXMI Launcher 后台驻留；
+            // 3) Hub 走下面的正常启动流程（游戏 + shade/OptiScaler 注入），模型替换由 XXMI 接管。
+            // 这是实机验证可共存的组合（挂起注入 CLI 与注入式 ReShade 互斥的那套已废弃）。
+            if (UseXxmiInject && CurrentGameId is { } xxmiManualGameId)
             {
-                try
+                string? gameName = _currentGameEntry?.DisplayName;
+                string manualErr = XxmiInjector.PrepareManualMode(xxmiManualGameId, gameName);
+                if (!string.IsNullOrWhiteSpace(manualErr))
                 {
-                    xxmiManualMode = Process.GetProcessesByName("XXMI Launcher").Length > 0;
+                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
+                        "XXMI", manualErr, 10000));
                 }
-                catch { }
-                if (xxmiManualMode)
+                else
                 {
-                    _logger.LogInformation("XXMI Launcher 已在运行，按手动模式：Hub 启动游戏，注入照常挂上");
-                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success(
-                        "XXMI 手动模式", "检测到 XXMI Launcher 已运行：Hub 启动游戏并照常注入，模型替换由 XXMI 接管。", 8000));
+                    XxmiInjector.StartLauncherIfNeeded(xxmiManualGameId, gameName);
                 }
             }
 
-            if (UseXxmiInject && !xxmiManualMode && CurrentGameId is { } xxmiGameId
+            if (false && UseXxmiInject && CurrentGameId is { } xxmiGameId
                 && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
             {
                 string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);
