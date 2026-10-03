@@ -108,26 +108,74 @@ internal sealed class XxmiLocator
     {
         try
         {
-            foreach (string candidate in RootCandidates())
+            if (_cachedRoot is not null && IsXxmiRoot(_cachedRoot))
+            {
+                return _cachedRoot;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            // 便宜来源（手动配置 / AppData / 开始菜单 / 注册表）：立刻过完
+            foreach (string candidate in RootCandidatesFast())
             {
                 try
                 {
                     if (IsXxmiRoot(candidate))
                     {
-                        Logger.LogInformation("XXMI 根目录：{Root}", candidate);
-                        return candidate;
+                        return Remember(candidate);
                     }
                 }
                 catch (Exception ex)
                 {
-                    // 单个候选挂了（权限 / 坏路径）不拖垮整个查找
                     Logger.LogDebug(ex, "XXMI 根候选检查失败：{Dir}", candidate);
                 }
             }
+
+            // 全盘浅扫是慢路径（机械盘 3 层枚举可达 1-2 分钟）：加 8 秒时间盒，
+            // 找不到本次放弃（让用户到「模型替换」页手动指定），不再卡死启动流程
+            foreach (string candidate in DriveScanRoots())
+            {
+                if (sw.Elapsed.TotalSeconds > 8)
+                {
+                    Logger.LogWarning("XXMI 全盘搜索超过 8 秒未定位根目录，放弃本次（可在「模型替换」页手动指定）");
+                    return null;
+                }
+                try
+                {
+                    if (IsXxmiRoot(candidate))
+                    {
+                        return Remember(candidate);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug(ex, "XXMI 根候选检查失败：{Dir}", candidate);
+                }
+            }
+
+            return null;
         }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "XXMI 根目录查找失败");
+        }
+
+        static string Remember(string root)
+        {
+            Logger.LogInformation("XXMI 根目录：{Root}", root);
+            _cachedRoot = root;
+            if (string.IsNullOrWhiteSpace(AppConfig.XxmiRoot))
+            {
+                try
+                {
+                    AppConfig.XxmiRoot = root; // 持久化：以后零等待
+                }
+                catch
+                {
+                    // 持久化失败不碍事，进程内缓存还在
+                }
+            }
+            return root;
         }
 
         return null;
@@ -486,7 +534,10 @@ internal sealed class XxmiLocator
         return ListInstances(root).FirstOrDefault(d => IsInstanceForImporter(d, expectedImporter));
     }
 
-    private static IEnumerable<string> RootCandidates()
+    private static string? _cachedRoot;
+
+    /// <summary>便宜来源：手动配置 / AppData / 开始菜单 / 注册表（不含全盘扫描）</summary>
+    private static IEnumerable<string> RootCandidatesFast()
     {
         if (!string.IsNullOrWhiteSpace(AppConfig.XxmiRoot))
         {
@@ -505,8 +556,11 @@ internal sealed class XxmiLocator
         {
             yield return fromRegistry;
         }
+    }
 
-        foreach (DriveInfo drive in DriveInfo.GetDrives())
+    /// <summary>全盘浅扫（慢路径；FindRoot 已加时间盒）</summary>
+    private static IEnumerable<string> DriveScanRoots()
+    {        foreach (DriveInfo drive in DriveInfo.GetDrives())
         {
             if (drive.DriveType != DriveType.Fixed || !drive.IsReady)
             {
@@ -522,7 +576,6 @@ internal sealed class XxmiLocator
             }
         }
     }
-
     /// <summary>从开始菜单的 XXMI 快捷方式反推根目录</summary>
     private static List<string> FromStartMenu()
     {
