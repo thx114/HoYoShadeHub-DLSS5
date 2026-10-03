@@ -444,6 +444,17 @@ public static class GameLaunchPipeline
     private static List<InjectSpec> BuildSpecs(GameId gameId, bool useOptiScaler, string? waitForShadeModule = null)
     {
         var specs = new List<InjectSpec>();
+        bool isGenshin = ModuleRegistry.IsGenshin(gameId);
+        bool optiScalerWanted = useOptiScaler
+            && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(gameId));
+
+        // CLI / auto.json 没有 UI 弹窗，也必须和启动页走同一条安全链路：
+        // 原神 + OptiScaler 自动选中随包 Bridge，并打开模块启动选项。
+        if (isGenshin && optiScalerWanted
+            && !ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
+        {
+            _logger.LogError("无法准备原神 FSR Bridge；将拒绝 OptiScaler 外部注入");
+        }
 
         // ① 启动选项里勾的「启用模块」
         if (AppConfig.GetUseModulesLaunchOption(gameId))
@@ -455,7 +466,8 @@ public static class GameLaunchPipeline
                     bool waitReady = string.Equals(
                         Path.GetFileName(path),
                         OptiScalerRuntime.FsrBridgeDllName,
-                        StringComparison.OrdinalIgnoreCase);
+                        StringComparison.OrdinalIgnoreCase)
+                        && BridgeSupportsInProcessOpti(path);
                     int delay = AppConfig.GetModuleInjectDelayEffective(key, gameId.GameBiz);
                     specs.Add(new InjectSpec(path, name, WaitForReady: waitReady, DelaySeconds: delay));
                 }
@@ -465,8 +477,6 @@ public static class GameLaunchPipeline
         // ①' 桥在场但这次不用 OptiScaler：撤走 autoload 清单（否则桥会把 OptiScaler 又拉回去）
         InjectSpec? bridgeSpec = specs.FirstOrDefault(s =>
             string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
-        bool optiScalerWanted = useOptiScaler
-                                && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(gameId));
         if (bridgeSpec is not null
             && !optiScalerWanted
             && OptiScalerRuntime.RemoveFsrBridgeAutoload(Path.GetDirectoryName(bridgeSpec.Path), out _))
@@ -488,40 +498,87 @@ public static class GameLaunchPipeline
 
                 OptiScalerProfiles.Activate(buildDirectory, gameKey);
                 OptiScalerRuntime.EnsureConfigDllPath(buildDirectory);
-                string? dlssg = OptiScalerRuntime.EnsureDlssgForUnlock(buildDirectory,
-                [
-                    Path.Combine(buildDirectory, "OptiScaler", OptiScalerRuntime.StreamlineFolderName),
-                    buildDirectory,
-                    Path.Combine(buildDirectory, "OptiScaler"),
-                ]);
-                if (dlssg is not null)
+                if (!isGenshin)
                 {
-                    _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
+                    string? dlssg = OptiScalerRuntime.EnsureDlssgForUnlock(buildDirectory,
+                    [
+                        Path.Combine(buildDirectory, "OptiScaler", OptiScalerRuntime.StreamlineFolderName),
+                        buildDirectory,
+                        Path.Combine(buildDirectory, "OptiScaler"),
+                    ]);
+                    if (dlssg is not null)
+                    {
+                        _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("Genshin: preserve test layout; do not copy nvngx_dlssg.dll to OptiScaler component root");
                 }
 
                 // 原神 mhyprot 拒绝外部注入：有桥就让桥在进程内 LoadLibrary（写 sidecar 清单）
                 if (bridgeSpec is not null)
                 {
                     string? bridgeDirectory = Path.GetDirectoryName(bridgeSpec.Path);
-                    if (bridgeDirectory is not null
-                        && OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiScaler) is not null)
+                    if (isGenshin && bridgeDirectory is not null
+                        && OptiScalerRuntime.EnsureFsrBridgeOptiSidecar(bridgeDirectory, buildDirectory))
                     {
-                        _logger.LogInformation("OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot）：{Target}", optiScaler);
+                        _logger.LogInformation(
+                            "FSR Bridge OptiScaler sidecar synchronized: {Directory}",
+                            Path.Combine(Directory.GetParent(bridgeDirectory)?.FullName ?? bridgeDirectory, "OptiScaler"));
                     }
-                    else
+
+                    bool bridgeOwnsOpti = BridgeSupportsInProcessOpti(bridgeSpec.Path);
+                    string? autoloadTarget = bridgeDirectory is not null
+                        ? OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiScaler)
+                        : null;
+                    if (autoloadTarget is not null && bridgeOwnsOpti)
+                    {
+                        int bridgeIndex = specs.FindIndex(s =>
+                            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName,
+                                StringComparison.OrdinalIgnoreCase));
+                        if (bridgeIndex >= 0)
+                        {
+                            specs[bridgeIndex] = specs[bridgeIndex] with
+                            { BuildDirectory = buildDirectory, GameKey = gameKey };
+                        }
+
+                        _logger.LogInformation(
+                            "OptiScaler 将由 FSR Bridge 进程内加载：{Target}; profile={Game}",
+                            optiScaler, gameKey);
+                    }
+                    else if (isGenshin)
+                    {
+                        specs.Add(new InjectSpec(optiScaler, "OptiScaler",
+                            WaitForModule: null,
+                            BuildDirectory: buildDirectory, GameKey: gameKey,
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz)));
+                        _logger.LogInformation(
+                            "v2.3.1 Bridge 不支持 autoload，改为 Bridge 就绪后单独注入 OptiScaler：{Target}",
+                            optiScaler);
+                    }
+                    else if (!isGenshin)
                     {
                         specs.Add(new InjectSpec(optiScaler, "OptiScaler",
                             BuildDirectory: buildDirectory, GameKey: gameKey,
                             DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
                             WaitForModule: waitForShadeModule));
                     }
+                    else
+                    {
+                        _logger.LogError("FSR Bridge autoload 写入失败，已跳过原神 OptiScaler 外部注入：{Directory}", bridgeDirectory);
+                    }
                 }
-                else
+                else if (!isGenshin)
                 {
                     specs.Add(new InjectSpec(optiScaler, "OptiScaler",
                         BuildDirectory: buildDirectory, GameKey: gameKey,
                         DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
                         WaitForModule: waitForShadeModule));
+                }
+                else
+                {
+                    _logger.LogError("原神启用了 OptiScaler，但 FSR Bridge 不在注入列表中；已跳过 OptiScaler 注入");
                 }
             }
         }
@@ -536,6 +593,19 @@ public static class GameLaunchPipeline
         }
 
         return specs;
+    }
+
+    private static bool BridgeSupportsInProcessOpti(string bridgePath)
+    {
+        try
+        {
+            string? version = FileVersionInfo.GetVersionInfo(bridgePath).FileVersion;
+            return version?.StartsWith("2.2.", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string EnsureNamedOptiScalerDll(string? dllPath, string? dllName)

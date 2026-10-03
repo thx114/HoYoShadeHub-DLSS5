@@ -476,6 +476,10 @@ public sealed partial class OptiScalerPage : PageBase
 
         if (string.Equals(preset, OptiScalerPresets.CurrentLabel, StringComparison.Ordinal))
         {
+            // Returning to Current must detach any previously selected named preset.
+            // Otherwise exit-time sync keeps writing the live profile into a stale
+            // named config and makes the next Apply appear to revert.
+            AppConfig.SetValue(string.Empty, OptiScalerPresets.FollowKey(gameKey));
             TextBlock_Status.Text = $"{item.Title}：保持这个游戏自己的配置不动（{item.CurrentProfileText}）。";
             return;
         }

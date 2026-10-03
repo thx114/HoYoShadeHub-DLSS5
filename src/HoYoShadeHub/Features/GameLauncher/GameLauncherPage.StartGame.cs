@@ -558,6 +558,19 @@ public sealed partial class GameLauncherPage : PageBase
     /// 注入用的 DLL 名字可改（游戏会按名字认代理 dll）。名字与源文件不同就复制一份
     /// &lt;名字&gt;.dll 到同目录并注入它；名字相同 / 出错就原样返回。
     /// </summary>
+    private static bool BridgeSupportsInProcessOpti(string bridgePath)
+    {
+        try
+        {
+            string? version = FileVersionInfo.GetVersionInfo(bridgePath).FileVersion;
+            return version?.StartsWith("2.2.", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static string EnsureNamedOptiScalerDll(string? dllPath, string? dllName)
     {
         try
@@ -598,7 +611,7 @@ public sealed partial class GameLauncherPage : PageBase
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
     /// </param>
-    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0)
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0, bool includeGameExtras = true)
     {
         List<InjectDllSpec> specs = [];
 
@@ -613,7 +626,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
-        if (UseModules && CurrentGameId is { } moduleGameId)
+        if (includeGameExtras && UseModules && CurrentGameId is { } moduleGameId)
         {
             foreach ((string key, string name, string path) in Features.Modules.ModuleRegistry.ResolveInjectionDlls(moduleGameId))
             {
@@ -622,7 +635,8 @@ public sealed partial class GameLauncherPage : PageBase
                     bool waitReady = string.Equals(
                         Path.GetFileName(path),
                         OptiScalerRuntime.FsrBridgeDllName,
-                        StringComparison.OrdinalIgnoreCase);
+                        StringComparison.OrdinalIgnoreCase)
+                        && BridgeSupportsInProcessOpti(path);
 
                     // 每个模块自己的「注入时机」；没单独设就用全局预热默认
                     int delay = AppConfig.GetModuleInjectDelayEffective(key, moduleGameId.GameBiz);
@@ -636,7 +650,7 @@ public sealed partial class GameLauncherPage : PageBase
         //     撤走时先备份一份（只留第一份），重新勾上 opt 会在下面 ② 里写回去。
         InjectDllSpec? bridgeSpecForCleanup = specs.FirstOrDefault(s =>
             string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
-        bool optiScalerWanted = UseOptiScaler
+        bool optiScalerWanted = includeGameExtras && UseOptiScaler
                                 && CurrentGameId is { } wantedOptiGame
                                 && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(wantedOptiGame));
         if (bridgeSpecForCleanup is not null
@@ -662,6 +676,7 @@ public sealed partial class GameLauncherPage : PageBase
                 && specs.All(s => !string.Equals(s.Path, optiScaler, StringComparison.OrdinalIgnoreCase)))
             {
                 string gameKey = optiGameId.GameBiz.ToString();
+                bool isGenshin = ModuleRegistry.IsGenshin(optiGameId);
                 string? buildDirectory = Path.GetDirectoryName(optiScaler);
 
                 // ini 按游戏分离：注入前把这个游戏的那份激活为主 ini（首次从当前主 ini 继承）。
@@ -681,7 +696,7 @@ public sealed partial class GameLauncherPage : PageBase
 
                 // dlss-unlocked 的 MFG 解锁只认 310.9 签名：把候选里版本最高的 dlssg 钉到 OptiDllPath 根，
                 // 避免 BFS 命中游戏目录自带的 310.6.0（unlock unavailable for this runtime）
-                if (buildDirectory is not null)
+                if (buildDirectory is not null && !isGenshin)
                 {
                     string? dlssg = OptiScalerRuntime.EnsureDlssgForUnlock(buildDirectory,
                     [
@@ -693,7 +708,10 @@ public sealed partial class GameLauncherPage : PageBase
                     {
                         _logger.LogInformation("OptiScaler dlssg for MFG unlock: {Dlssg}", dlssg);
                     }
-
+                }
+                else if (isGenshin)
+                {
+                    _logger.LogInformation("Genshin: preserve test layout; do not copy nvngx_dlssg.dll to OptiScaler component root");
                 }
 
                 // 桥在 specs 里时，原神 mhyprot 会拒绝外部注入 OptiScaler（VirtualAllocEx 拒绝访问）。
@@ -702,7 +720,6 @@ public sealed partial class GameLauncherPage : PageBase
                 // 没桥的游戏（星铁/绝区零）仍走外部注入，行为不变。
                 InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s =>
                     string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
-                bool isGenshin = ModuleRegistry.IsGenshin(optiGameId);
                 // shade 走 inject.exe 时（正常启动路径），OptiScaler 必须排在 ReShade64 之后注：
                 // 两条路径各自抢跑，OptiScaler 先 hook 上 D3D11/DXGI 会让 NR 吃不到原生 DLSS 数据
                 // （崩铁卡旧帧案，时好时坏 = 竞态）。黑名单绕行时 shade 是本列表 spec[0] 顺序已保证，不用等。
@@ -713,11 +730,18 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     string? bridgeDirectory = Path.GetDirectoryName(bridgeSpec.Path);
                     string? autoloadTarget = OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiScaler);
-                    if (autoloadTarget is not null)
+                    if (isGenshin && bridgeDirectory is not null
+                        && OptiScalerRuntime.EnsureFsrBridgeOptiSidecar(bridgeDirectory, buildDirectory))
                     {
-                        // OptiScaler is loaded by the Bridge, not as a separate InjectDllSpec.
-                        // Carry the profile identity on the Bridge spec so its exit hook stores
-                        // the actual in-game Save Settings back to this game's profile.
+                        _logger.LogInformation(
+                            "FSR Bridge OptiScaler sidecar synchronized: {Directory}",
+                            Path.Combine(Directory.GetParent(bridgeDirectory)?.FullName ?? bridgeDirectory, "OptiScaler"));
+                    }
+
+                    bool bridgeOwnsOpti = BridgeSupportsInProcessOpti(bridgeSpec.Path);
+                    if (autoloadTarget is not null && bridgeOwnsOpti)
+                    {
+                        // v2.2 Bridge consumes autoload.txt.
                         int bridgeIndex = specs.FindIndex(s =>
                             string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName,
                                 StringComparison.OrdinalIgnoreCase));
@@ -728,8 +752,19 @@ public sealed partial class GameLauncherPage : PageBase
                         }
 
                         _logger.LogInformation(
-                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：{File} => {Target}; profile={Game}",
+                            "OptiScaler 将由 FSR Bridge 进程内加载：{File} => {Target}; profile={Game}",
                             OptiScalerRuntime.FsrBridgeAutoloadName, autoloadTarget, gameKey);
+                    }
+                    else if (isGenshin)
+                    {
+                        // The tested v2.3.1 Bridge does not read autoload.txt.
+                        // Its reference fps_config.json injects Bridge first and
+                        // OptiScaler second, so reproduce that order here.
+                        specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz)));
+                        _logger.LogInformation(
+                            "v2.3.1 Bridge 不支持 autoload，改为 Bridge 就绪后单独注入 OptiScaler：{Target}",
+                            optiScaler);
                     }
                     else if (!isGenshin)
                     {
@@ -1091,11 +1126,9 @@ public sealed partial class GameLauncherPage : PageBase
                     "{Label} target-exited-retry: {Process} (pid {Pid}) 在注入后 {Seconds}s 内退出，换一个新进程重试（{Attempt}/{Max}）",
                     firstLabel, processName, pid, (int)survivalCheck.TotalSeconds, attempt, maxAttempts);
 
+                // 重试只在日志里记，不弹通知（用户反馈这条提示很吵）
                 if (attempt < maxAttempts)
                 {
-                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Information(firstLabel,
-                        $"{processName}（pid {pid}）注入后立刻退出 —— 像是壳进程 / 更新重启，正在等新进程重试（{attempt + 1}/{maxAttempts}）。",
-                        8000));
                     continue;
                 }
 
@@ -1819,6 +1852,83 @@ public sealed partial class GameLauncherPage : PageBase
                 }
             }
 
+            // v2.3.1 test package starts Genshin directly, injects Bridge + OptiScaler
+            // while the process is suspended, then resumes it. The ordinary HoYoPlay
+            // path injects after process discovery and produced transparent Dx11wDx12
+            // shared handles even though both DLLs reported injection success.
+            if (!UseInjectMode && !UseStarwardLauncher
+                && CurrentGameId is { } earlyGenshin
+                && ModuleRegistry.IsGenshin(earlyGenshin)
+                && UseOptiScaler
+                && !string.IsNullOrWhiteSpace(GameInstallPath))
+            {
+                string? earlyProcessName = await _gameLauncherService.GetGameExeNameAsync(earlyGenshin);
+                string earlyExe = Path.Combine(GameInstallPath!, earlyProcessName);
+                string? bridgePath = ModuleRegistry.ResolveInjectionDlls(earlyGenshin)
+                    .FirstOrDefault(x => string.Equals(Path.GetFileName(x.DllPath),
+                        OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase)).DllPath;
+                string? optiPath = EnsureNamedOptiScalerDll(
+                    AppConfig.GetSelectedOptiScalerDll(earlyGenshin),
+                    AppConfig.GetOptiScalerDllName(earlyGenshin));
+
+                if (bridgePath is not null && File.Exists(bridgePath)
+                    && !string.IsNullOrWhiteSpace(optiPath) && File.Exists(optiPath))
+                {
+                    _logger.LogInformation(
+                        "原神 v2.3.1：改用 unlockfps_nc 同等的挂起启动 + Bridge/OptiScaler 早期注入");
+                    InAppToast.MainWindow?.Warning(
+                        "原神早期注入模式",
+                        "本次按 test 包顺序挂起启动并注入 Bridge + OptiScaler；ReShade 请在稳定进入后用注入模式加载。",
+                        8000);
+
+                    string? ffx12Path = Path.GetFullPath(Path.Combine(
+                        Path.GetDirectoryName(bridgePath) ?? string.Empty, "..", "AMD",
+                        "amd_fidelityfx_upscaler_dx12.dll"));
+                    if (!File.Exists(ffx12Path))
+                    {
+                        ffx12Path = null;
+                    }
+
+                    GenshinEarlyLaunch.Result early = await GenshinEarlyLaunch.StartAsync(
+                        earlyExe, "-popupwindow", GameInstallPath!, bridgePath, ffx12Path, optiPath,
+                        text => _logger.LogInformation("{Text}", text));
+                    if (early.Process is null)
+                    {
+                        _logger.LogError("原神早期启动失败：{Error}", early.Error);
+                        InAppToast.MainWindow?.Error("原神早期启动失败", early.Error ?? "未知错误", 12000);
+                        return;
+                    }
+
+                    GameState = GameState.GameIsRunning;
+                    GameProcess = early.Process;
+                    WeakReferenceMessenger.Default.Send(new GameStartedMessage());
+                    if (UseFpsUnlock)
+                    {
+                        _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                    }
+
+                    // OptiScaler/Bridge are already in the process. Load ReShade
+                    // afterwards in the same normal launch, matching the user's
+                    // previously working injection-mode test without re-injecting
+                    // Bridge or OptiScaler.
+                    if (UseHoYoShade || UseOpenHoYoShade)
+                    {
+                        string shadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
+                        string shadeDll = Path.Combine(AppConfig.UserDataFolder, shadeName, "ReShade64.dll");
+                        if (File.Exists(shadeDll))
+                        {
+                            int shadeDelay = 0;
+                            _logger.LogInformation(
+                                "原神早期 Bridge/OptiScaler 已稳定，安排正常流程后置注入 {ShadeName}（delay={Delay}s）",
+                                shadeName, shadeDelay);
+                            StartExtraDllInjection(earlyProcessName, shadeDll, shadeName,
+                                shadeDelaySeconds: shadeDelay, includeGameExtras: false);
+                        }
+                    }
+                    return;
+                }
+            }
+
             // 「额外注入 DLL」不依赖注入模式：普通模式下 Hub 自己起游戏，进程一出现就注（用户要求）
             if (!UseInjectMode)
             {
@@ -1832,6 +1942,24 @@ public sealed partial class GameLauncherPage : PageBase
             bool launchingBlenderPlugin = LaunchGenshinBlenderPlugin || LaunchZZZBlenderPlugin;
             bool useShader = UseHoYoShade || UseOpenHoYoShade;
             bool useStarward = UseStarwardLauncher;
+
+            // The tested v2.3.1 package injects Bridge + OptiScaler before the
+            // rendering stack. Injecting ReShade in the same normal launch creates
+            // the transparent-window path (OptiScaler Dx11wDx12 shared handles fail).
+            // Keep ReShade available through the separate injection-mode flow, which
+            // is how the stable test was performed.
+            if (useShader && !UseInjectMode && UseOptiScaler
+                && CurrentGameId is { } genshinOptiGame
+                && ModuleRegistry.IsGenshin(genshinOptiGame))
+            {
+                useShader = false;
+                _logger.LogWarning(
+                    "原神 + v2.3.1 Bridge + OptiScaler：普通启动跳过 HoYoShade，避免透明窗口；需要 ReShade 请在游戏稳定后使用注入模式");
+                InAppToast.MainWindow?.Warning(
+                    "原神 OptiScaler 启动隔离",
+                    "本次普通启动暂不加载 HoYoShade/ReShade，避免与 v2.3.1 Bridge + OptiScaler 产生透明窗口。游戏稳定后请用注入模式加载 ReShade。",
+                    10000);
+            }
 
             // Check if Blender plugin injection process is already running
             string? runningInjectionProcess = CheckBlenderPluginInjectionProcessRunning();
@@ -2808,3 +2936,4 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
 }
+

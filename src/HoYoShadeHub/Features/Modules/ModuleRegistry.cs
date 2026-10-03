@@ -6,6 +6,7 @@ using HoYoShadeHub.Extensions.Networking;
 using HoYoShadeHub.Extensions.Services;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -33,7 +34,8 @@ public sealed record ModuleDefinition(
     string DllHint,
     string[]? Tags = null,
     string[]? DirectFiles = null,
-    string Branch = "main")
+    string Branch = "main",
+    bool Bundled = false)
 {
     /// <summary>
     /// 有些模块压根不发 Release 资产，文件直接躺在仓库树里（比如 dlssg_for_sm86 的
@@ -41,6 +43,8 @@ public sealed record ModuleDefinition(
     /// 从 <c>raw.githubusercontent.com/&lt;repository&gt;/&lt;branch&gt;/&lt;file&gt;</c> 下到模块目录。
     /// </summary>
     public bool IsDirect => DirectFiles is { Length: > 0 };
+
+    public bool IsBundled => Bundled;
 
     /// <summary>模块目录：&lt;用户数据目录&gt;\Modules\&lt;id&gt;\</summary>
     public string Directory => AppConfig.ModuleDirectory(Id);
@@ -81,15 +85,25 @@ public sealed class ModuleEntry
 /// <summary>远端目录驱动的模块表 + 每个游戏用哪些模块 + 下载部署</summary>
 public static class ModuleRegistry
 {
-    // 2026-09-30 起没有内置模块表了：条目全部来自远端目录 catalog/modules.json
-    //（RemoteCatalogService 每天最多拉一次，缓存在 <用户数据目录>\.hysx\catalog\），
-    // 加新模块 / 改介绍只改仓库里的 json，不重新发版。首跑离线时启动器随包的
-    // catalog 副本做种子（RemoteCatalogService.SeedFromBundle）。
-    //
-    // 已随内置表一起移出的条目：
-    // · genshin-fsr-bridge（原神 DX11 FSR2 桥）——按用户要求从启动器移出；
-    //   注入链路（检测到 Dx11FsrBridge.dll 就 autoload + 等 ready）保留，
-    //   自己往模块目录放桥 DLL 仍会被接管。
+    private const string GenshinFsrBridgeId = "genshin-fsr-bridge";
+
+    // Metadata fallback only: the DLL is never shipped inside HoYoShadeHub.
+    // The actual module is downloaded from our GitHub release catalog.
+    private static readonly ModuleDefinition GenshinFsrBridge = new(
+        GenshinFsrBridgeId,
+        "Genshin FSR Bridge",
+        "原神 DX11 FSR2 → OptiScaler Bridge。模块从我们的 GitHub release 下载；单独启用不会加载 OptiScaler，启用 OptiScaler 时由 Bridge 进程内加载当前选择的构建。",
+        "thx114/genshin_fsr_brigde",
+        "^v2\\.3\\.1-fg-\\d+$",
+        "https://github.com/thx114/genshin_fsr_brigde/releases",
+        "Dx11FsrBridge.dll",
+        ["genshin", "fsr", "bridge", "frame-generation"],
+        null,
+        "main",
+        false);
+
+    // The remote catalog may replace this metadata. It must not replace the
+    // downloaded module with an app-bundled DLL.
 
     /// <summary>远端目录（catalog/modules.json）里读到的模块；同 id 覆盖</summary>
     public static IReadOnlyList<ModuleDefinition> RemoteOverlay { get; private set; } = [];
@@ -106,7 +120,7 @@ public static class ModuleRegistry
     /// <summary>远端目录（去墓碑、按 id 去重）</summary>
     public static List<ModuleDefinition> All()
     {
-        var result = new List<ModuleDefinition>();
+        var result = new List<ModuleDefinition> { GenshinFsrBridge };
 
         foreach (ModuleDefinition module in RemoteOverlay)
         {
@@ -132,6 +146,54 @@ public static class ModuleRegistry
 
     public static ModuleDefinition? Find(string id)
         => All().FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    public static bool IsGenshin(GameId gameId)
+        => gameId.GameBiz.ToString().StartsWith("hk4e_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Ensures the bundled Genshin FSR Bridge is ready and selected for this game.
+    /// The Bridge is injected as a module; OptiScaler is loaded by the Bridge from
+    /// the launch-time autoload file, so this method never enables OptiScaler itself.
+    /// </summary>
+    public static bool EnsureGenshinFsrBridgeForLaunch(GameId gameId)
+    {
+        if (!IsGenshin(gameId))
+        {
+            return false;
+        }
+
+        ModuleDefinition? bridge = Find(GenshinFsrBridgeId);
+        if (bridge is null || EnsureBundledGenshinFsrBridge() is null)
+        {
+            return false;
+        }
+
+        AppConfig.SetBundledModuleRemoved(bridge.Id, false);
+        bridge.Enabled = true;
+        RemoveManualGenshinFsrBridgeSelections(gameId);
+        SetUsed(gameId, bridge.Id, true);
+        // OptiScaler depends on the Bridge, so make the module launch option explicit.
+        AppConfig.SetUseModulesLaunchOption(gameId, true);
+        return true;
+    }
+
+    private static void RemoveManualGenshinFsrBridgeSelections(GameId gameId)
+    {
+        IReadOnlyList<string>? raw = AppConfig.GetUsedModuleKeysOrNull(gameId);
+        if (raw is null)
+        {
+            return;
+        }
+
+        List<string> keys = [.. raw];
+        int removed = keys.RemoveAll(key =>
+            !string.Equals(key, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(Path.GetFileName(key), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+        {
+            AppConfig.SetUsedModuleKeys(gameId, keys);
+        }
+    }
 
     /// <summary>模块 + 手动加的 DLL，统一成列表（「全局插件 → 模块」的上下两截都用它）</summary>
     public static List<ModuleEntry> List()
@@ -235,6 +297,15 @@ public static class ModuleRegistry
                 continue;
             }
 
+            // 原神的 Bridge 是启动器随包的唯一实例。旧配置里可能还留着手动
+            // 添加的 Dx11FsrBridge.dll；不能把两个同名 Bridge 同时注入目标进程。
+            if (IsGenshin(gameId)
+                && !entry.IsBuiltin
+                && string.Equals(Path.GetFileName(entry.DllPath), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             // 这个游戏给这个模块选了版本 → 注入那一份（没选就注入默认/最新装的那份）
             string dllPath = entry.DllPath;
             if (entry.Definition is { } definition
@@ -325,6 +396,7 @@ public static class ModuleRegistry
         }
 
         string directory = AppConfig.ModuleDirectory(id);
+        bool isBundled = Find(id)?.IsBundled == true;
         try
         {
             if (Directory.Exists(directory))
@@ -339,6 +411,7 @@ public static class ModuleRegistry
 
         AppConfig.SetModuleEnabled(id, false);
         AppConfig.SetModuleDllPath(id, null);
+        AppConfig.SetBundledModuleRemoved(id, isBundled);
 
         foreach (GameBiz biz in GameBiz.AllGameBizs)
         {
@@ -352,6 +425,52 @@ public static class ModuleRegistry
     }
 
     /// <summary>
+    private static string? EnsureBundledModuleInstalled(ModuleDefinition module)
+    {
+        if (!module.IsBundled || AppConfig.GetBundledModuleRemoved(module.Id))
+            return null;
+
+        string sourceDir = Path.Combine(AppContext.BaseDirectory, "Assets", "Modules", module.Id);
+        string sourceDll = Path.Combine(sourceDir, module.DllHint);
+        if (!File.Exists(sourceDll))
+            return null;
+
+        string targetDir = AppConfig.ModuleDirectory(module.Id);
+        Directory.CreateDirectory(targetDir);
+        foreach (string source in Directory.EnumerateFiles(sourceDir, "*", SearchOption.TopDirectoryOnly))
+        {
+            string target = Path.Combine(targetDir, Path.GetFileName(source));
+            try
+            {
+                bool needsCopy = !File.Exists(target) || !BundledFilesEqual(source, target);
+                if (needsCopy)
+                    File.Copy(source, target, overwrite: true);
+            }
+            catch (IOException)
+            {
+                // Running game may lock the DLL; replace it on next launcher start.
+            }
+        }
+
+        string targetDll = Path.Combine(targetDir, module.DllHint);
+        return File.Exists(targetDll) ? targetDll : null;
+    }
+
+    private static bool BundledFilesEqual(string source, string target)
+    {
+        try
+        {
+            return File.ReadAllBytes(source).AsSpan().SequenceEqual(File.ReadAllBytes(target));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static string? EnsureBundledGenshinFsrBridge()
+        => ResolveDllPath(Find(GenshinFsrBridgeId) ?? GenshinFsrBridge);
+
     /// 模块要注入的 DLL：用户手动指定的 &gt; 模块目录里找（先按提示名，再按代理 dll 名）
     /// &gt; 以前从「OptiScaler 可下载」装的那份（更新后自动接上，不用重装）。
     /// </summary>
@@ -364,9 +483,12 @@ public static class ModuleRegistry
     /// </summary>
     public static string? ResolveDllPath(ModuleDefinition module, string? versionTag)
     {
+        if (module.IsBundled)
+            return EnsureBundledModuleInstalled(module);
         // 用户手动指定的 dll 永远优先
         string? chosen = AppConfig.GetModuleDllPath(module.Id);
-        if (!string.IsNullOrWhiteSpace(chosen) && File.Exists(chosen))
+        if (!string.IsNullOrWhiteSpace(chosen) && File.Exists(chosen)
+            && IsAcceptedModuleDll(module, chosen))
         {
             return chosen;
         }
@@ -376,7 +498,7 @@ public static class ModuleRegistry
             && VersionDirectory(module, versionTag!) is { } picked
             && FindInjectDll(picked, module.DllHint) is { } pickedDll)
         {
-            return pickedDll;
+            return IsAcceptedModuleDll(module, pickedDll) ? pickedDll : null;
         }
 
         // 2) 多版本共存：List() 按安装时间倒序 → 取最新装的那份
@@ -385,7 +507,7 @@ public static class ModuleRegistry
             foreach (OptiScalerBuild build in new OptiScalerLibrary(module.Directory).List())
             {
                 string? dll = FindInjectDll(build.Directory, module.DllHint);
-                if (dll is not null)
+                if (dll is not null && IsAcceptedModuleDll(module, dll))
                 {
                     return dll;
                 }
@@ -394,7 +516,7 @@ public static class ModuleRegistry
 
         // 3) 兜底：整个模块目录递归找（安装程序型模块的文件直接铺在根目录里）
         string? inModuleDir = FindInjectDll(module.Directory, module.DllHint);
-        if (inModuleDir is not null)
+        if (inModuleDir is not null && IsAcceptedModuleDll(module, inModuleDir))
         {
             return inModuleDir;
         }
@@ -409,7 +531,7 @@ public static class ModuleRegistry
                              .Where(b => string.Equals(b.SourceId, module.Id, StringComparison.OrdinalIgnoreCase)))
                 {
                     string? dll = FindInjectDll(build.Directory, module.DllHint);
-                    if (dll is not null)
+                    if (dll is not null && IsAcceptedModuleDll(module, dll))
                     {
                         return dll;
                     }
@@ -422,6 +544,25 @@ public static class ModuleRegistry
         }
 
         return null;
+    }
+
+    private static bool IsAcceptedModuleDll(ModuleDefinition module, string path)
+    {
+        if (!string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // The currently published GitHub archives were accidentally built with the
+        // old 2.2.0 bridge. Never let a re-download silently replace the tested
+        // v2.3.1 module. The correct release asset must report 2.3.1.0.
+        try
+        {
+            string? version = FileVersionInfo.GetVersionInfo(path).FileVersion;
+            return string.Equals(version, "2.3.1.0", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -498,6 +639,8 @@ public static class ModuleRegistry
     /// </summary>
     public static string? InstalledTag(ModuleDefinition module)
     {
+        if (module.IsBundled)
+            return EnsureBundledModuleInstalled(module) is not null ? "bundled" : null;
         try
         {
             return module.IsDirect
@@ -513,6 +656,8 @@ public static class ModuleRegistry
     /// <summary>这个模块装着的所有版本 tag（新 → 旧）。不是 Release 型模块 / 没装返回空表。</summary>
     public static List<string> InstalledTags(ModuleDefinition module)
     {
+        if (module.IsBundled)
+            return EnsureBundledModuleInstalled(module) is not null ? ["bundled"] : [];
         try
         {
             return module.IsDirect
@@ -601,6 +746,14 @@ public static class ModuleRegistry
         CancellationToken cancellationToken = default,
         string? tag = null)
     {
+        if (module.IsBundled)
+        {
+            AppConfig.SetBundledModuleRemoved(module.Id, false);
+            if (EnsureBundledModuleInstalled(module) is null)
+                throw new InvalidOperationException("随包 FSR Bridge 资源缺失。");
+            return "bundled";
+        }
+
         // 仓库树直链型模块（没有 Release 资产的那种，比如 dlssg_for_sm86）
         if (module.IsDirect)
         {

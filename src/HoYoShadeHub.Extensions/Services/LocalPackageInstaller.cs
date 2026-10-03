@@ -690,7 +690,7 @@ public sealed class LocalPackageInstaller
                         {
                             try
                             {
-                                File.Copy(packFile, Path.Combine(packDir, Path.GetFileName(file)), overwrite: true);
+                                File.Copy(packFile, Path.Combine(packDir, Path.GetFileName(packFile)), overwrite: true);
                                 copied++;
                             }
                             catch

@@ -1477,6 +1477,13 @@ public static class AppConfig
         SetValue(value, $"module_enabled_{moduleId}");
     }
 
+    /// <summary>用户删除过的随包模块：删除后不在刷新模块页时自动复活，重新安装时清除。</summary>
+    public static bool GetBundledModuleRemoved(string moduleId)
+        => GetValue(false, $"bundled_module_removed_{moduleId}");
+
+    public static void SetBundledModuleRemoved(string moduleId, bool value)
+        => SetValue(value, $"bundled_module_removed_{moduleId}");
+
     /// <summary>模块要注入的那个 DLL（用户手动指定的；空 = 在模块目录 / 旧的 OptiScaler 库里自动找）</summary>
     public static string? GetModuleDllPath(string moduleId)
     {

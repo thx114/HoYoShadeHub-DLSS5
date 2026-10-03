@@ -719,6 +719,48 @@ Fsr2TranslationMode=2
     /// </summary>
     public const string FsrBridgeAutoloadName = "Dx11FsrBridge.autoload.txt";
 
+    /// <summary>
+    /// v2.3.1 Bridge 的包布局把 OptiScaler.ini 放在 Bridge 的父目录下的
+    /// <c>OptiScaler\</c> 旁边，而不是和 Bridge DLL 放在同一目录。
+    /// 启动器的模块目录是扁平的，因此每次准备 Genshin + OptiScaler 启动时
+    /// 从当前构建的主 ini 生成这个 sidecar；DLL 仍然只从 OptiScaler 构建目录加载。
+    /// </summary>
+    public static bool EnsureFsrBridgeOptiSidecar(string bridgeDirectory, string buildDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(bridgeDirectory)
+            || string.IsNullOrWhiteSpace(buildDirectory)
+            || !Directory.Exists(bridgeDirectory)
+            || !Directory.Exists(buildDirectory))
+        {
+            return false;
+        }
+
+        string source = Path.Combine(buildDirectory, ConfigFileName);
+        if (!File.Exists(source))
+        {
+            return false;
+        }
+
+        DirectoryInfo? modulesDirectory = Directory.GetParent(bridgeDirectory);
+        if (modulesDirectory is null)
+        {
+            return false;
+        }
+
+        string sidecarDirectory = Path.Combine(modulesDirectory.FullName, "OptiScaler");
+        string sidecar = Path.Combine(sidecarDirectory, ConfigFileName);
+        try
+        {
+            Directory.CreateDirectory(sidecarDirectory);
+            File.Copy(source, sidecar, overwrite: true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>撤走 autoload 清单时留的备份后缀（只留第一份，避免盖掉用户自己放的东西）</summary>
     public const string FsrBridgeAutoloadBackupSuffix = ".hysx-backup";
 

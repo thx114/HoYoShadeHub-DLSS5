@@ -59,6 +59,10 @@ internal static partial class DllInjector
 
         try
         {
+            // unlockfps_nc enables SeDebugPrivilege before VirtualAllocEx/
+            // CreateRemoteThread. Genshin's anti-cheat otherwise rejects the
+            // second DLL even though the Bridge itself was injected successfully.
+            _ = RtlAdjustPrivilege(20, true, false, out _);
             process = OpenProcess(
                 ProcessCreateThread | ProcessQueryInformation | ProcessVmOperation | ProcessVmWrite | ProcessVmRead,
                 false,
@@ -141,6 +145,84 @@ internal static partial class DllInjector
             {
                 CloseHandle(process);
             }
+        }
+    }
+
+    /// <summary>
+    /// unlockfps_nc-compatible batch injection: reuse the CreateProcess handle and
+    /// one remote buffer for the ordered DLL list. This matters for Genshin because
+    /// Bridge's worker must observe OptiScaler already loaded during its first IAT scan.
+    /// </summary>
+    public static bool InjectIntoHandle(IntPtr process, IReadOnlyList<string> dllPaths, out string error)
+    {
+        error = string.Empty;
+        if (process == IntPtr.Zero || dllPaths.Count == 0)
+            return dllPaths.Count == 0;
+
+        _ = RtlAdjustPrivilege(20, true, false, out _);
+        IntPtr remote = IntPtr.Zero;
+        IntPtr kernel32 = GetModuleHandle("kernel32.dll");
+        IntPtr loadLibrary = GetProcAddress(kernel32, "LoadLibraryW");
+        if (loadLibrary == IntPtr.Zero)
+        {
+            error = "找不到 LoadLibraryW。";
+            return false;
+        }
+
+        try
+        {
+            remote = VirtualAllocEx(process, IntPtr.Zero, 0x1000, MemCommit | MemReserve, PageReadWrite);
+            if (remote == IntPtr.Zero)
+            {
+                error = "在目标进程里申请内存失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                return false;
+            }
+
+            foreach (string dllPath in dllPaths)
+            {
+                if (!File.Exists(dllPath))
+                {
+                    error = "DLL 不存在：" + dllPath;
+                    return false;
+                }
+
+                byte[] pathBytes = Encoding.Unicode.GetBytes(dllPath + "\0");
+                if (!WriteProcessMemory(process, remote, pathBytes, (nuint)pathBytes.Length, out _))
+                {
+                    error = "写入目标进程失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                    return false;
+                }
+
+                IntPtr thread = CreateRemoteThread(process, IntPtr.Zero, 0, loadLibrary, remote, 0, out _);
+                if (thread == IntPtr.Zero)
+                {
+                    error = "创建远端线程失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                    return false;
+                }
+
+                try
+                {
+                    if (WaitForSingleObject(thread, 30_000) != 0
+                        || !GetExitCodeThread(thread, out uint exitCode)
+                        || exitCode == 0)
+                    {
+                        error = "远端 LoadLibraryW 失败或超时。";
+                        return false;
+                    }
+                }
+                finally
+                {
+                    CloseHandle(thread);
+                    WriteProcessMemory(process, remote, new byte[pathBytes.Length], (nuint)pathBytes.Length, out _);
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            if (remote != IntPtr.Zero)
+                VirtualFreeEx(process, remote, 0, MemRelease);
         }
     }
 
@@ -275,6 +357,12 @@ internal static partial class DllInjector
         return false;
     }
 
+    [LibraryImport("ntdll.dll")]
+    private static partial int RtlAdjustPrivilege(uint privilege,
+        [MarshalAs(UnmanagedType.Bool)] bool enable,
+        [MarshalAs(UnmanagedType.Bool)] bool currentThread,
+        [MarshalAs(UnmanagedType.Bool)] out bool enabled);
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);
 
@@ -309,3 +397,4 @@ internal static partial class DllInjector
     [LibraryImport("kernel32.dll", EntryPoint = "GetProcAddress", SetLastError = true)]
     private static partial IntPtr GetProcAddress(IntPtr module, [MarshalAs(UnmanagedType.LPStr)] string procName);
 }
+

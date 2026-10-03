@@ -98,7 +98,8 @@ public static class LauncherActionRunner
 
         string outcome = await DispatchStepAsync(step, context);
 
-        if (once && !string.IsNullOrWhiteSpace(context.PackRoot) && !outcome.StartsWith("✗", StringComparison.Ordinal))
+        // 成功失败都记账：失败多半是包里缺文件这类持久状态，不该每启动重复报错刷屏
+        if (once && !string.IsNullOrWhiteSpace(context.PackRoot))
         {
             OnceMarker.Mark(context.PackRoot, step);
         }
