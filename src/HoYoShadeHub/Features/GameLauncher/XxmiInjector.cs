@@ -183,6 +183,11 @@ internal sealed class XxmiInjector
                 return;
             }
 
+            string? importer = Xxmi.XxmiLocator.ImporterForGame(gameId.GameBiz, gameName);
+            if (string.IsNullOrWhiteSpace(importer))
+            {
+                return;
+            }
             string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out _);
             if (instance is null)
             {
@@ -198,7 +203,9 @@ internal sealed class XxmiInjector
                     Process.Start(new ProcessStartInfo
                     {
                         FileName = candidate,
-                        Arguments = "-n",
+                        // 必须带 -x <导入器>：裸起会让 Launcher 处理它当前激活的导入器
+                        // （上次用过的 SRMI），原神启动后会去找崩铁报「没有找到崩铁」
+                        Arguments = $"-x {importer} -n",
                         WorkingDirectory = Path.GetDirectoryName(candidate),
                         UseShellExecute = false,
                         CreateNoWindow = true,
