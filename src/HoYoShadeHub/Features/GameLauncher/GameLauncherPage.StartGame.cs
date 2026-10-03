@@ -22,6 +22,7 @@ using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Features.Overlay;
 using HoYoShadeHub.Features.OptiScaler;
 using HoYoShadeHub.Features.Plugins;
+using HoYoShadeHub.Features.Modules;
 using HoYoShadeHub.Features.Setting;
 using HoYoShadeHub.Features.ViewHost;
 using HoYoShadeHub.Frameworks;
@@ -157,6 +158,71 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>
+    /// 原神启用 OptiScaler 时，确保 FSR Bridge 作为前置模块存在且已加入本游戏。
+    /// 单独启用 Bridge 不会写 OptiScaler autoload；是否加载 Opti 仍由启动页开关决定。
+    /// </summary>
+    private async Task<bool> ConfirmGenshinFsrBridgeForOptiAsync()
+    {
+        try
+        {
+            if (!UseOptiScaler || CurrentGameId is not { } gameId || !ModuleRegistry.IsGenshin(gameId))
+            {
+                return true;
+            }
+
+            ModuleDefinition? bridge = ModuleRegistry.Find("genshin-fsr-bridge");
+            string? bridgeDll = ModuleRegistry.EnsureBundledGenshinFsrBridge();
+            bool ready = bridge is not null
+                && bridge.Enabled
+                && bridgeDll is not null
+                && ModuleRegistry.IsUsed(gameId, bridge.Id);
+            if (ready)
+            {
+                // 以前只勾了模块页、但关了启动页「启用模块」时，不能让 OptiScaler
+                // 走回原神的外部注入路径；Opti 开启时把它联动打开。
+                UseModules = true;
+                return true;
+            }
+
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "OptiScaler 需要 Genshin FSR Bridge",
+                Content = "原神启用了 OptiScaler，但 FSR Bridge 模块没有启用到本游戏。FSR Bridge 必须先于 OptiScaler 加载，是否现在安装并启用？",
+                PrimaryButtonText = "安装并启用",
+                CloseButtonText = "取消启动",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return false;
+            }
+
+            if (!ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
+            {
+                await new ContentDialog
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "FSR Bridge 缺失",
+                    Content = "启动器随包的 Dx11FsrBridge.dll 不存在，无法启用原神 FSR Bridge。",
+                    CloseButtonText = "确定",
+                }.ShowAsync();
+                return false;
+            }
+
+            UseModules = true;
+            _logger.LogInformation("Genshin FSR Bridge enabled for {Game} before OptiScaler", gameId.GameBiz);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Check Genshin FSR Bridge before OptiScaler launch; refusing unsafe external OptiScaler injection");
+            return false;
+        }
+    }
+
+
+    /// <summary>
     /// 启用 OptiScaler 时启动前查「NVIDIA 驱动里的 DLSS-FG 多帧生成数量」（设置 ID 0x104D6667）。
     /// 被驱动钉住数量时 MFG 解锁会看不出效果，问一下要不要顺手改成 N/A（写 0 = 不覆盖）。
     /// 读不到 / 没覆盖 / 已经是 N/A / 写失败  一律放行，不拦着人玩游戏。
@@ -241,6 +307,41 @@ public sealed partial class GameLauncherPage : PageBase
 
 
 
+    /// <summary>
+    /// 兜底保存 OptiScaler 的游戏 profile。
+    ///
+    /// <para>
+    /// 正常注入路径会在稳定进程上挂 Exited 事件，但原神可能由提权进程、
+    /// 反作弊或启动器重启路径结束；这时 Exited 事件不一定能回到页面对象。
+    /// 如果只依赖 HookInjectedTarget，游戏内 Save 的 FGInput/FGOutput 会在下次
+    /// Activate 时被旧 profile 覆盖。轮询发现进程退出时再保存一次，覆盖这些路径。
+    /// </para>
+    /// </summary>
+    private void StoreCurrentOptiScalerProfileOnExit(string reason)
+    {
+        try
+        {
+            if (CurrentGameId is not { } gameId
+                || AppConfig.GetSelectedOptiScalerDll(gameId) is not { Length: > 0 } optiDll
+                || Path.GetDirectoryName(optiDll) is not { Length: > 0 } buildDirectory)
+            {
+                return;
+            }
+
+            string gameKey = gameId.GameBiz.ToString();
+            if (OptiScalerProfiles.Store(buildDirectory, gameKey))
+            {
+                _logger.LogInformation(
+                    "OptiScaler ini profile stored on game-exit fallback: {Game} ({Build}, reason={Reason})",
+                    gameKey, buildDirectory, reason);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Store OptiScaler profile on game exit fallback");
+        }
+    }
+
     private void CheckGameExited()
     {
         try
@@ -249,6 +350,7 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 if (GameProcess.HasExited)
                 {
+                    StoreCurrentOptiScalerProfileOnExit("process-poll");
                     DispatcherQueue.TryEnqueue(CheckGameVersion);
                     GameProcess = null;
                     StopFpsUnlocker();
@@ -495,14 +597,16 @@ public sealed partial class GameLauncherPage : PageBase
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
     /// </param>
-    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null)
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null)
     {
         List<InjectDllSpec> specs = [];
 
         // ⓪ 黑名单绕行（鸣潮）：shade 本体最先注，OptiScaler / 模块跟在后面
         if (!string.IsNullOrWhiteSpace(shadeReShadeDll) && File.Exists(shadeReShadeDll))
         {
-            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade"));
+            // XXMI 场景：等 3DMigoto 的 d3d11 落模块表再注（3DMigoto 先、ReShade 后定序）；
+            // 鸣潮绕行等其它调用方不传，保持立刻注
+            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade", WaitForModule: shadeWaitForModule));
         }
 
         // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
@@ -595,6 +699,7 @@ public sealed partial class GameLauncherPage : PageBase
                 // 没桥的游戏（星铁/绝区零）仍走外部注入，行为不变。
                 InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s =>
                     string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+                bool isGenshin = ModuleRegistry.IsGenshin(optiGameId);
                 // shade 走 inject.exe 时（正常启动路径），OptiScaler 必须排在 ReShade64 之后注：
                 // 两条路径各自抢跑，OptiScaler 先 hook 上 D3D11/DXGI 会让 NR 吃不到原生 DLSS 数据
                 // （崩铁卡旧帧案，时好时坏 = 竞态）。黑名单绕行时 shade 是本列表 spec[0] 顺序已保证，不用等。
@@ -611,7 +716,7 @@ public sealed partial class GameLauncherPage : PageBase
                             "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：{File} => {Target}",
                             OptiScalerRuntime.FsrBridgeAutoloadName, autoloadTarget);
                     }
-                    else
+                    else if (!isGenshin)
                     {
                         _logger.LogWarning(
                             "写 FSR Bridge autoload 清单失败，回退外部注入：{Directory}", bridgeDirectory);
@@ -619,13 +724,25 @@ public sealed partial class GameLauncherPage : PageBase
                             DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
                             WaitForModule: waitForShadeModule));
                     }
+                    else
+                    {
+                        // 原神不能在 Bridge 失败时偷偷退回外部注入：mhyprot 会拒绝，
+                        // 更糟时会把游戏打崩。宁可不注 Opti，也不走不安全路径。
+                        _logger.LogError(
+                            "FSR Bridge autoload 写入失败，已跳过原神 OptiScaler 外部注入：{Directory}", bridgeDirectory);
+                    }
                 }
-                else
+                else if (!isGenshin)
                 {
-                    // 没桥：照旧外部注入
+                    // 没桥的其他游戏：照旧外部注入。
                     specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
                         DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
                         WaitForModule: waitForShadeModule));
+                }
+                else
+                {
+                    // 原神 + OptiScaler 必须由 Bridge 进程内加载，不能退回外部注入。
+                    _logger.LogError("原神启用了 OptiScaler，但 FSR Bridge 不在注入列表中；已跳过 OptiScaler 注入");
                 }
             }
         }
@@ -1568,6 +1685,12 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
+            // OptiScaler + 原神：先确保 FSR Bridge 模块存在并加入本游戏，Bridge 会再按当前 Opti 构建写 autoload。
+            if (!await ConfirmGenshinFsrBridgeForOptiAsync())
+            {
+                return;
+            }
+
             // 启用 OptiScaler：驱动里把 MFG 数量钉死了会盖住 MFG 解锁，先问一下要不要改成 N/A
             if (!await ConfirmNvMfgCountAsync())
             {
@@ -1601,15 +1724,26 @@ public sealed partial class GameLauncherPage : PageBase
                 else
                 {
                     // XXMI 有命令行：[XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n]（-n = 不开界面）。
-                    // 注入全交给它（ZZMI 那份 d3d11.dll 是受控版，只有它能驱动），我们只负责 ReShade 这头：
-                    // 先按用户勾的 HoYoShade 挂上它的注入器，再由 XXMI 在后台把游戏起起来并注入模型替换。
-                    if (UseHoYoShade)
+                    // 注入全交给它（ZZMI 那份 d3d11.dll 是受控版，只有它能驱动）。
+                    // ReShade 这头**不再预起 inject.exe**：它盯着进程创建，会在 XXMI 的挂起注入阶段
+                    // 就抢注 ReShade64，与 3DMigoto 的 d3d11 代理初始化竞态（崩铁 XXMI+HoYoShade 同开崩溃案）。
+                    // 改为走我们自己的注入管线：等 3DMigoto 的 d3d11 落进模块表（= XXMI 注入已完成、
+                    // 其 DllMain 已跑过）再注 ReShade64 —— 3DMigoto 先、ReShade 后的顺序被定死。
+                    string? xxmiShadeReShadeDll = null;
+                    string? xxmiShadeName = null;
+                    if (UseHoYoShade || UseOpenHoYoShade)
                     {
-                        await LaunchShaderInjectorOnlyAsync(Path.Combine(AppConfig.UserDataFolder, "HoYoShade"), "HoYoShade");
-                    }
-                    else if (UseOpenHoYoShade)
-                    {
-                        await LaunchShaderInjectorOnlyAsync(Path.Combine(AppConfig.UserDataFolder, "OpenHoYoShade"), "OpenHoYoShade");
+                        xxmiShadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
+                        string candidate = Path.Combine(AppConfig.UserDataFolder, xxmiShadeName, "ReShade64.dll");
+                        if (File.Exists(candidate))
+                        {
+                            xxmiShadeReShadeDll = candidate;
+                        }
+                        else
+                        {
+                            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(xxmiShadeName,
+                                $"{xxmiShadeName} 目录里找不到 ReShade64.dll，本次只注 XXMI", 10000));
+                        }
                     }
 
                     XxmiInjector.XxmiLaunchResult xxmi = XxmiInjector.LaunchViaXxmiCli(xxmiGameId, xxmiExe, _currentGameEntry?.DisplayName);
@@ -1626,12 +1760,14 @@ public sealed partial class GameLauncherPage : PageBase
                         DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI", xxmi.Message, 12000));
                     }
 
-                    // 我们自己的其它注入（OptiScaler / 额外注入 DLL）照旧挂上
+                    // 我们自己的其它注入（shade ReShade64 / OptiScaler / 额外注入 DLL）照旧挂上；
+                    // shade 排在 specs 最前，且等 3DMigoto d3d11 落模块表后才注
                     string? xxmiProcess = await ResolveTargetProcessNameAsync();
 
                     if (!string.IsNullOrWhiteSpace(xxmiProcess))
                     {
-                        StartExtraDllInjection(xxmiProcess);
+                        StartExtraDllInjection(xxmiProcess, xxmiShadeReShadeDll, xxmiShadeName,
+                            shadeWaitForModule: "d3d11.dll");
                     }
 
                     return;
