@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-09-30T00:00:00Z",
+  "updatedAt": "2026-10-03T00:00:00Z",
   "_readme": [
     "远端模块目录：模块 = 启动游戏时要注入进程的独立 DLL（DLSS-NR on AMD 这类），不是 ReShade 插件、也不是 OptiScaler。",
     "不重新发版也能加/改模块：按 id 覆盖内置的同 id 模块，新 id 直接追加；{ \"id\": \"...\", \"removed\": true } 表示删掉（墓碑）。",
@@ -70,6 +70,21 @@
         "damage-stat",
         "act",
         "overlay"
+      ]
+    },
+    {
+      "id": "genshin-fsr-bridge",
+      "name": "Genshin FSR Bridge（HoYoShadeHub FG）",
+      "description": "HoYoShadeHub 维护的原神 DX11 FSR2 → OptiScaler Bridge。仅用于原神；FSR Bridge 单独启用不会加载 OptiScaler，启用 OptiScaler 时由 Bridge 在进程内加载启动器当前选择的构建。",
+      "repository": "thx114/genshin_fsr_brigde",
+      "tagPattern": "^v2\\.3\\.1-fg-\\d+$",
+      "homepage": "https://github.com/thx114/genshin_fsr_brigde/releases",
+      "dllHint": "Dx11FsrBridge.dll",
+      "tags": [
+        "genshin",
+        "fsr",
+        "bridge",
+        "frame-generation"
       ]
     }
   ]
