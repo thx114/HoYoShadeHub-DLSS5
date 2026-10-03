@@ -127,6 +127,10 @@ internal sealed class XxmiInjector
     /// 模型替换（含 extra_libraries），与 Hub 注入链共存（已实机验证可共存的组合）。
     /// </summary>
     public static string PrepareManualMode(GameId gameId, string? gameName)
+        => SetStartMethod(gameId, gameName, "Manual");
+
+    /// <summary>写 XXMI 导入器的启动方式（Native / Shell / Manual）。空串=成功。</summary>
+    public static string SetStartMethod(GameId gameId, string? gameName, string method)
     {
         string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);
         if (instance is null || importer is null)
@@ -150,7 +154,7 @@ internal sealed class XxmiInjector
             }
 
             string current = importerNode["process_start_method"]?.GetValue<string>() ?? string.Empty;
-            if (!string.Equals(current, "Manual", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(current, method, StringComparison.OrdinalIgnoreCase))
             {
                 string backup = configPath + ".bak-before-manual-mode";
                 if (!File.Exists(backup))
@@ -158,10 +162,10 @@ internal sealed class XxmiInjector
                     File.Copy(configPath, backup);
                 }
 
-                importerNode["process_start_method"] = "Manual";
+                importerNode["process_start_method"] = method;
                 File.WriteAllText(configPath, root.ToJsonString());
-                Logger.LogInformation("XXMI {Importer} 启动方式已写成 Manual（原值 {Old}，备份 {Backup})",
-                    importer, current, backup);
+                Logger.LogInformation("XXMI {Importer} 启动方式已写成 {Method}（原值 {Old}，备份 {Backup})",
+                    importer, method, current, backup);
             }
 
             return string.Empty;
@@ -205,13 +209,10 @@ internal sealed class XxmiInjector
                         FileName = candidate,
                         // 必须带 -x <导入器>：裸起会让 Launcher 处理它当前激活的导入器
                         // （上次用过的 SRMI），原神启动后会去找崩铁报「没有找到崩铁」
-                        // 手动模式也带游戏 exe 路径：-x 只指定导入器时 Launcher 行为不确定，
-                        // 带上 exe 后由 Manual 启动方式决定「只附加不拉起」
-                        Arguments = string.IsNullOrWhiteSpace(gameExePath)
-                            ? $"-x {importer} -n"
-                            : $"\"{gameExePath}\" -x {importer} -n",
-                        WorkingDirectory = Path.GetDirectoryName(candidate),
-                        UseShellExecute = false,
+                        // 与用户手动双击完全一致：GUI 模式、不带任何参数
+                        // （-n / -x / exe 参数的语义我们未确认，裸起曾导致 Launcher 去找崩铁）
+                        Arguments = "",
+UseShellExecute = false,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden,
                     });
