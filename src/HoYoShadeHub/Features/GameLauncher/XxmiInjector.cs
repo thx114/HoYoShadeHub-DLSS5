@@ -174,7 +174,7 @@ internal sealed class XxmiInjector
     }
 
     /// <summary>让 XXMI Launcher 处于运行状态（手动模式下由它接管模型替换）；已在跑就跳过</summary>
-    public static void StartLauncherIfNeeded(GameId gameId, string? gameName)
+    public static void StartLauncherIfNeeded(GameId gameId, string? gameName, string? gameExePath)
     {
         try
         {
@@ -205,7 +205,11 @@ internal sealed class XxmiInjector
                         FileName = candidate,
                         // 必须带 -x <导入器>：裸起会让 Launcher 处理它当前激活的导入器
                         // （上次用过的 SRMI），原神启动后会去找崩铁报「没有找到崩铁」
-                        Arguments = $"-x {importer} -n",
+                        // 手动模式也带游戏 exe 路径：-x 只指定导入器时 Launcher 行为不确定，
+                        // 带上 exe 后由 Manual 启动方式决定「只附加不拉起」
+                        Arguments = string.IsNullOrWhiteSpace(gameExePath)
+                            ? $"-x {importer} -n"
+                            : $"\"{gameExePath}\" -x {importer} -n",
                         WorkingDirectory = Path.GetDirectoryName(candidate),
                         UseShellExecute = false,
                         CreateNoWindow = true,

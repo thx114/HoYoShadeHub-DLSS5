@@ -1795,7 +1795,13 @@ public sealed partial class GameLauncherPage : PageBase
                 }
                 else
                 {
-                    XxmiInjector.StartLauncherIfNeeded(xxmiManualGameId, gameName);
+                    string? xxmiManualExe = null;
+                    try
+                    {
+                        xxmiManualExe = Path.Combine(GameInstallPath, await _gameLauncherService.GetGameExeNameAsync(xxmiManualGameId));
+                    }
+                    catch { }
+                    XxmiInjector.StartLauncherIfNeeded(xxmiManualGameId, gameName, xxmiManualExe);
                 }
             }
 
