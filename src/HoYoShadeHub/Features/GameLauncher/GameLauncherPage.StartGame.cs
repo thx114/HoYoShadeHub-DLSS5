@@ -546,7 +546,8 @@ public sealed partial class GameLauncherPage : PageBase
         int DelaySeconds = 0,
         // 注入前等目标进程加载某个模块（如 ReShade64.dll）：把 shade 先注 / OptiScaler 后注定死成
         // 确定顺序，治两条注入路径抢跑导致的 NR 吃不到原生 DLSS 数据（崩铁卡旧帧案）
-        string? WaitForModule = null);
+        string? WaitForModule = null,
+        bool WaitForWindow = false);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
@@ -606,7 +607,9 @@ public sealed partial class GameLauncherPage : PageBase
         {
             // XXMI 场景：等 3DMigoto 的 d3d11 落模块表再注（3DMigoto 先、ReShade 后定序）；
             // 鸣潮绕行等其它调用方不传，保持立刻注
-            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade", WaitForModule: shadeWaitForModule));
+            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade",
+                WaitForModule: shadeWaitForModule,
+                WaitForWindow: string.Equals(shadeWaitForModule, "WINDOW", StringComparison.OrdinalIgnoreCase)));
         }
 
         // ① 启动选项里勾的「启用模块」：左侧「模块」页里**这个游戏勾上的**那些（DLSS-NR on AMD 之类）
@@ -946,6 +949,25 @@ public sealed partial class GameLauncherPage : PageBase
                     // 等 ReShade64.dll 真正落进进程模块表。两条注入路径并行抢跑会让
                     // hook 顺序随机（OptiScaler 先 hook 上 → NR 吃不到原生 DLSS 数据，
                     // 崩铁卡旧帧案）。超时 / 进程没了记警告照样注，退化为旧行为。
+                    // XXMI 场景：等游戏主窗口出现（= 设备创建已跑完、3DMigoto 建链完成）再注 ReShade，
+                    // 避开 3DMigoto 设备创建路径与 ReShade 钩子同场的固定偏移崩溃
+                    if (spec.WaitForWindow)
+                    {
+                        var windowDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(120);
+                        while (DateTime.UtcNow < windowDeadline
+                               && !cancellationToken.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                if (target.HasExited) { warmupLost = true; break; }
+                                if (target.MainWindowHandle != 0) break;
+                            }
+                            catch { break; }
+                            await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
+                        }
+                        _logger.LogInformation("{Label} injection: game window up (pid {Pid}), injecting", label, pid);
+                    }
+
                     if (!string.IsNullOrWhiteSpace(spec.WaitForModule))
                     {
                         bool moduleSeen = await DllInjector.WaitForModuleAsync(
@@ -1713,6 +1735,19 @@ public sealed partial class GameLauncherPage : PageBase
             if (UseXxmiInject && CurrentGameId is { } xxmiGameId
                 && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
             {
+                // 硬互斥：SRMI 受控 d3d11 与 ReShade 钩子在虚表层结构性冲突（任何注入时机都验证过：
+                // 先注/后注/关 dlss5 插件/关重定向/官方原版构建 → 全部同偏移崩溃；延迟到窗口出现则不崩
+                // 但 ReShade 错过 swapchain 创建 = 加载了也不工作）。同开必崩且无意义，直接拦下让用户二选一。
+                if (UseHoYoShade || UseOpenHoYoShade)
+                {
+                    _logger.LogWarning("XXMI 与 HoYoShade/OpenHoYoShade 同开已阻止（SRMI d3d11 与 ReShade 钩子互斥，游戏必崩）");
+                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error(
+                        "XXMI 与 HoYoShade 不能同开",
+                        "SRMI 的 d3d11 与 ReShade 钩子冲突，同开游戏必崩。请取消其中一个开关再启动：" + (char)10 + "· 要模型替换：关掉 HoYoShade" + (char)10 + "· 要滤镜/NR：关掉 XXMI 注入",
+                        15000));
+                    return;
+                }
+
                 string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);
                 string xxmiExe = Path.Combine(GameInstallPath, xxmiExeName);
 
@@ -1731,8 +1766,17 @@ public sealed partial class GameLauncherPage : PageBase
                     // 其 DllMain 已跑过）再注 ReShade64 —— 3DMigoto 先、ReShade 后的顺序被定死。
                     string? xxmiShadeReShadeDll = null;
                     string? xxmiShadeName = null;
+                    // 用户已在游戏目录放了 dxgi.dll（ReShade 代理链模式，治 SRMI d3d11 与
+                    // 注入式 ReShade 的硬冲突）：尊重之，hub 不再注入 ReShade64
+                    string userDxgiProxy = Path.Combine(GameInstallPath, "dxgi.dll");
                     if (UseHoYoShade || UseOpenHoYoShade)
                     {
+                        if (File.Exists(userDxgiProxy))
+                        {
+                            _logger.LogInformation("XXMI 模式：游戏目录已存在 dxgi.dll（{Proxy}），走代理链模式，hub 不注入 ReShade64", userDxgiProxy);
+                        }
+                        else
+                        {
                         xxmiShadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
                         string candidate = Path.Combine(AppConfig.UserDataFolder, xxmiShadeName, "ReShade64.dll");
                         if (File.Exists(candidate))
@@ -1743,6 +1787,7 @@ public sealed partial class GameLauncherPage : PageBase
                         {
                             DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(xxmiShadeName,
                                 $"{xxmiShadeName} 目录里找不到 ReShade64.dll，本次只注 XXMI", 10000));
+                            }
                         }
                     }
 
@@ -1767,7 +1812,7 @@ public sealed partial class GameLauncherPage : PageBase
                     if (!string.IsNullOrWhiteSpace(xxmiProcess))
                     {
                         StartExtraDllInjection(xxmiProcess, xxmiShadeReShadeDll, xxmiShadeName,
-                            shadeWaitForModule: "d3d11.dll");
+                            shadeWaitForModule: "WINDOW");
                     }
 
                     return;
