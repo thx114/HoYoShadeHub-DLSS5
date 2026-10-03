@@ -1801,11 +1801,11 @@ public sealed partial class GameLauncherPage : PageBase
                         xxmiManualExe = Path.Combine(GameInstallPath, await _gameLauncherService.GetGameExeNameAsync(xxmiManualGameId));
                     }
                     catch { }
-                    _logger.LogInformation("XXMI 手动模式：Hub 启动游戏，不再自动调起 Launcher");
+                    XxmiInjector.StartLauncherIfNeeded(xxmiManualGameId, gameName, null); // 步骤2：无 GUI 调起 XXMI（-x 导入器 -n）
                 }
             }
 
-            if (UseXxmiInject && CurrentGameId is { } xxmiGameId
+            if (false && UseXxmiInject && CurrentGameId is { } xxmiGameId
                 && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
             {
                 string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);

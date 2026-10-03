@@ -211,7 +211,9 @@ internal sealed class XxmiInjector
                         // （上次用过的 SRMI），原神启动后会去找崩铁报「没有找到崩铁」
                         // 与用户手动双击完全一致：GUI 模式、不带任何参数
                         // （-n / -x / exe 参数的语义我们未确认，裸起曾导致 Launcher 去找崩铁）
-                        Arguments = "",
+                        // 无 GUI 后台附加模式：-x 指定本游戏的导入器，不带 exe（不带参数会让
+                        // Launcher 处理它上次激活的导入器 → 原神启动去等崩铁）
+                        Arguments = $"-x {importer} -n",
 UseShellExecute = false,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden,
