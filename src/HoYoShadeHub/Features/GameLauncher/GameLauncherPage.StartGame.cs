@@ -598,7 +598,7 @@ public sealed partial class GameLauncherPage : PageBase
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
     /// </param>
-    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null)
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0)
     {
         List<InjectDllSpec> specs = [];
 
@@ -607,7 +607,7 @@ public sealed partial class GameLauncherPage : PageBase
         {
             // XXMI 场景：等 3DMigoto 的 d3d11 落模块表再注（3DMigoto 先、ReShade 后定序）；
             // 鸣潮绕行等其它调用方不传，保持立刻注
-            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade",
+            specs.Add(new InjectDllSpec(shadeReShadeDll, shadeName ?? "HoYoShade", DelaySeconds: shadeDelaySeconds,
                 WaitForModule: shadeWaitForModule,
                 WaitForWindow: string.Equals(shadeWaitForModule, "WINDOW", StringComparison.OrdinalIgnoreCase)));
         }
@@ -715,9 +715,21 @@ public sealed partial class GameLauncherPage : PageBase
                     string? autoloadTarget = OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiScaler);
                     if (autoloadTarget is not null)
                     {
+                        // OptiScaler is loaded by the Bridge, not as a separate InjectDllSpec.
+                        // Carry the profile identity on the Bridge spec so its exit hook stores
+                        // the actual in-game Save Settings back to this game's profile.
+                        int bridgeIndex = specs.FindIndex(s =>
+                            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName,
+                                StringComparison.OrdinalIgnoreCase));
+                        if (bridgeIndex >= 0)
+                        {
+                            specs[bridgeIndex] = specs[bridgeIndex] with
+                            { BuildDirectory = buildDirectory, GameKey = gameKey };
+                        }
+
                         _logger.LogInformation(
-                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：{File} => {Target}",
-                            OptiScalerRuntime.FsrBridgeAutoloadName, autoloadTarget);
+                            "OptiScaler 将由 FSR Bridge 进程内加载（绕过 mhyprot 拒绝访问）：{File} => {Target}; profile={Game}",
+                            OptiScalerRuntime.FsrBridgeAutoloadName, autoloadTarget, gameKey);
                     }
                     else if (!isGenshin)
                     {
@@ -773,12 +785,15 @@ public sealed partial class GameLauncherPage : PageBase
             }
         }
 
+        // 无条件先停掉上一次武装的注入任务：开关全关的启动（空 specs）也必须清掉残留，
+        // 否则上一个带 shade 的任务会继续跨启动注入（20 分钟预算 + 3 次重试）
+        _extraInjectCts?.Cancel();
+
         if (specs.Count == 0)
         {
             return;
         }
 
-        _extraInjectCts?.Cancel();
         _extraInjectCts = new System.Threading.CancellationTokenSource();
         System.Threading.CancellationToken token = _extraInjectCts.Token;
 
@@ -1732,22 +1747,28 @@ public sealed partial class GameLauncherPage : PageBase
             // 「启用 XXMI 注入」：**按 XXMI 的方式启动** —— 挂起起进程 → 往进程里 Inject 3DMigoto 的
             // d3d11.dll → 恢复线程（注入发生在 D3D 初始化前，且 DllMain 在游戏进程里跑，不会踩 1114）。
             // 这条会自己把游戏起起来（跟 XXMI Launcher 一样），所以后面的正常启动流程直接跳过。
-            if (UseXxmiInject && CurrentGameId is { } xxmiGameId
+            // XXMI Launcher 已在运行（用户在它那边开了「手动」启动方式）：不再走挂起注入 CLI，
+            // 直接走下面的正常启动流程 —— Hub 起游戏 + shade/OptiScaler 注入，模型替换由 XXMI 自己接管。
+            // 这是已验证可共存的组合（挂起注入+注入式 ReShade 互斥的那套才崩）。
+            bool xxmiManualMode = false;
+            if (UseXxmiInject)
+            {
+                try
+                {
+                    xxmiManualMode = Process.GetProcessesByName("XXMI Launcher").Length > 0;
+                }
+                catch { }
+                if (xxmiManualMode)
+                {
+                    _logger.LogInformation("XXMI Launcher 已在运行，按手动模式：Hub 启动游戏，注入照常挂上");
+                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success(
+                        "XXMI 手动模式", "检测到 XXMI Launcher 已运行：Hub 启动游戏并照常注入，模型替换由 XXMI 接管。", 8000));
+                }
+            }
+
+            if (UseXxmiInject && !xxmiManualMode && CurrentGameId is { } xxmiGameId
                 && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
             {
-                // 硬互斥：SRMI 受控 d3d11 与 ReShade 钩子在虚表层结构性冲突（任何注入时机都验证过：
-                // 先注/后注/关 dlss5 插件/关重定向/官方原版构建 → 全部同偏移崩溃；延迟到窗口出现则不崩
-                // 但 ReShade 错过 swapchain 创建 = 加载了也不工作）。同开必崩且无意义，直接拦下让用户二选一。
-                if (UseHoYoShade || UseOpenHoYoShade)
-                {
-                    _logger.LogWarning("XXMI 与 HoYoShade/OpenHoYoShade 同开已阻止（SRMI d3d11 与 ReShade 钩子互斥，游戏必崩）");
-                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Error(
-                        "XXMI 与 HoYoShade 不能同开",
-                        "SRMI 的 d3d11 与 ReShade 钩子冲突，同开游戏必崩。请取消其中一个开关再启动：" + (char)10 + "· 要模型替换：关掉 HoYoShade" + (char)10 + "· 要滤镜/NR：关掉 XXMI 注入",
-                        15000));
-                    return;
-                }
-
                 string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);
                 string xxmiExe = Path.Combine(GameInstallPath, xxmiExeName);
 
@@ -1758,36 +1779,17 @@ public sealed partial class GameLauncherPage : PageBase
                 }
                 else
                 {
-                    // XXMI 有命令行：[XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n]（-n = 不开界面）。
-                    // 注入全交给它（ZZMI 那份 d3d11.dll 是受控版，只有它能驱动）。
-                    // ReShade 这头**不再预起 inject.exe**：它盯着进程创建，会在 XXMI 的挂起注入阶段
-                    // 就抢注 ReShade64，与 3DMigoto 的 d3d11 代理初始化竞态（崩铁 XXMI+HoYoShade 同开崩溃案）。
-                    // 改为走我们自己的注入管线：等 3DMigoto 的 d3d11 落进模块表（= XXMI 注入已完成、
-                    // 其 DllMain 已跑过）再注 ReShade64 —— 3DMigoto 先、ReShade 后的顺序被定死。
+                // 甜点时机实验：挂起期注=崩，等窗口注=ReShade 不工作；改 hub 直注 + 延迟 3 秒
+                    // （进程恢复后、设备创建前），对应以前 inject.exe 抢跑偶然命中的共存窗口
                     string? xxmiShadeReShadeDll = null;
                     string? xxmiShadeName = null;
-                    // 用户已在游戏目录放了 dxgi.dll（ReShade 代理链模式，治 SRMI d3d11 与
-                    // 注入式 ReShade 的硬冲突）：尊重之，hub 不再注入 ReShade64
-                    string userDxgiProxy = Path.Combine(GameInstallPath, "dxgi.dll");
                     if (UseHoYoShade || UseOpenHoYoShade)
                     {
-                        if (File.Exists(userDxgiProxy))
-                        {
-                            _logger.LogInformation("XXMI 模式：游戏目录已存在 dxgi.dll（{Proxy}），走代理链模式，hub 不注入 ReShade64", userDxgiProxy);
-                        }
-                        else
-                        {
                         xxmiShadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
                         string candidate = Path.Combine(AppConfig.UserDataFolder, xxmiShadeName, "ReShade64.dll");
                         if (File.Exists(candidate))
                         {
                             xxmiShadeReShadeDll = candidate;
-                        }
-                        else
-                        {
-                            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(xxmiShadeName,
-                                $"{xxmiShadeName} 目录里找不到 ReShade64.dll，本次只注 XXMI", 10000));
-                            }
                         }
                     }
 
@@ -1805,14 +1807,12 @@ public sealed partial class GameLauncherPage : PageBase
                         DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI", xxmi.Message, 12000));
                     }
 
-                    // 我们自己的其它注入（shade ReShade64 / OptiScaler / 额外注入 DLL）照旧挂上；
-                    // shade 排在 specs 最前，且等 3DMigoto d3d11 落模块表后才注
+                    // 我们自己的其它注入（OptiScaler / 额外注入 DLL）照旧挂上
                     string? xxmiProcess = await ResolveTargetProcessNameAsync();
 
                     if (!string.IsNullOrWhiteSpace(xxmiProcess))
                     {
-                        StartExtraDllInjection(xxmiProcess, xxmiShadeReShadeDll, xxmiShadeName,
-                            shadeWaitForModule: "WINDOW");
+                        StartExtraDllInjection(xxmiProcess, xxmiShadeReShadeDll, xxmiShadeName, shadeDelaySeconds: 0);
                     }
 
                     return;
