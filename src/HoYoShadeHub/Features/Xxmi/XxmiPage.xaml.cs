@@ -397,11 +397,11 @@ public sealed partial class XxmiPage : PageBase
         }
     }
 
-    private void LoadInstance()
+    private async void LoadInstance()
     {
         try
         {
-            LoadInstanceCore();
+            await LoadInstanceCore();
         }
         catch (Exception ex)
         {
@@ -418,38 +418,35 @@ public sealed partial class XxmiPage : PageBase
         }
     }
 
-    private void LoadInstanceCore()
+    private async Task LoadInstanceCore()
     {
         string? expected = XxmiLocator.ImporterForGame(_gameId?.GameBiz, _gameName);
-        string? instance = XxmiLocator.FindInstance(_gameId?.GameBiz, _gameName, out string? importer);
+        // 磁盘枚举（实例探测 / 根查找 / 实例列表）放后台线程，避免进页面卡死 UI
+        (string? instance, string? importer, List<XxmiInstanceItem> items) = await Task.Run(() =>
+        {
+            string? inst = XxmiLocator.FindInstance(_gameId?.GameBiz, _gameName, out string? imp);
+            List<XxmiInstanceItem> list = [];
+            string? root = XxmiLocator.FindRoot();
+            if (root is not null && expected is not null)
+            {
+                foreach (string dir in XxmiLocator.ListInstances(root))
+                {
+                    if (XxmiLocator.IsInstanceForImporter(dir, expected))
+                    {
+                        list.Add(new XxmiInstanceItem(Path.GetFileName(dir), dir));
+                    }
+                }
+            }
+            if (inst is not null && list.All(x => !string.Equals(x.Path, inst, StringComparison.OrdinalIgnoreCase)))
+            {
+                list.Insert(0, new XxmiInstanceItem(Path.GetFileName(inst), inst));
+            }
+            return (inst, imp, list);
+        });
 
         _instance = instance;
         TextBox_Instance.Text = instance ?? string.Empty;
-
-        // 顶栏不再放大标题了，但「这个实例属于哪个游戏」有用，并到底部状态里
         _importerName = importer ?? expected ?? string.Empty;
-
-        List<XxmiInstanceItem> items = [];
-        string? root = XxmiLocator.FindRoot();
-
-        // 实例和游戏一对一：下拉里只放这个游戏自己的 MI（绝区零只能选 ZZMI），
-        // 别的实例不往里塞（FindInstance 那边同样会拒掉不匹配的目录）
-        if (root is not null && expected is not null)
-        {
-            foreach (string dir in XxmiLocator.ListInstances(root))
-            {
-                if (XxmiLocator.IsInstanceForImporter(dir, expected))
-                {
-                    items.Add(new XxmiInstanceItem(Path.GetFileName(dir), dir));
-                }
-            }
-        }
-
-        if (instance is not null && items.All(i => !string.Equals(i.Path, instance, StringComparison.OrdinalIgnoreCase)))
-        {
-            items.Insert(0, new XxmiInstanceItem(Path.GetFileName(instance), instance));
-        }
-
         ComboBox_Importer.ItemsSource = items;
         ComboBox_Importer.SelectedItem = items.FirstOrDefault(i => string.Equals(i.Path, instance, StringComparison.OrdinalIgnoreCase));
 
@@ -489,7 +486,7 @@ public sealed partial class XxmiPage : PageBase
 
         // 先清计数，免得切实例时残留上一份的数字
         _modsCountText = string.Empty;
-        LoadMods();
+        await LoadMods();
         UpdateStatusBar();
 
         MaybePromptKrqlvHd(importer);
@@ -577,7 +574,7 @@ public sealed partial class XxmiPage : PageBase
         TextBlock_Status.Text = string.Join("　｜　", parts);
     }
 
-    private void LoadMods()
+    private async Task LoadMods()
     {
         _loadingMods = true;
 
@@ -599,7 +596,7 @@ public sealed partial class XxmiPage : PageBase
             return;
         }
 
-        List<XxmiModEntry> entries = XxmiModManager.List(modsDirectory);
+        List<XxmiModEntry> entries = await Task.Run(() => XxmiModManager.List(modsDirectory));
 
         // 尽量**就地更新**而不是清空重建：
         // 卡片带预览图，重建会让已经贴上的图全丢、画面闪一下。
@@ -740,7 +737,7 @@ public sealed partial class XxmiPage : PageBase
             AppConfig.SetXxmiInstance(_gameId.GameBiz, item.Path);
         }
 
-        LoadMods();
+        _ = LoadMods();
     }
 
     private void Button_AutoFind_Click(object sender, RoutedEventArgs e)
@@ -877,7 +874,7 @@ public sealed partial class XxmiPage : PageBase
             string mods = XxmiLocator.ModsDirectory(_instance);
             Directory.CreateDirectory(mods);
             string imported = XxmiModManager.ImportFolder(mods, folder);
-            LoadMods();
+            await LoadMods();
             TextBlock_Status.Text = $"已导入：{Path.GetFileName(imported)}";
         }
         catch (Exception ex)
@@ -906,7 +903,7 @@ public sealed partial class XxmiPage : PageBase
             string mods = XxmiLocator.ModsDirectory(_instance);
             Directory.CreateDirectory(mods);
             string imported = XxmiModManager.ImportZip(mods, zip);
-            LoadMods();
+            await LoadMods();
             TextBlock_Status.Text = $"已导入并解压：{Path.GetFileName(imported)}";
         }
         catch (Exception ex)
@@ -935,13 +932,13 @@ public sealed partial class XxmiPage : PageBase
         try
         {
             item.Path = XxmiModManager.SetEnabled(item.Path, wanted);
-            LoadMods();
+            _ = LoadMods();
             TextBlock_Status.Text = $"{item.Name} → {(wanted ? "已启用" : "已禁用")}";
         }
         catch (Exception ex)
         {
             TextBlock_Status.Text = "切换失败：" + ex.Message;
-            LoadMods();
+            _ = LoadMods();
         }
     }
 
@@ -1478,7 +1475,7 @@ public sealed partial class XxmiPage : PageBase
         try
         {
             XxmiModManager.Delete(item.Path);
-            LoadMods();
+            await LoadMods();
             TextBlock_Status.Text = $"已删除：{item.Name}";
         }
         catch (Exception ex)
