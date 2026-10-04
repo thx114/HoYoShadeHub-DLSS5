@@ -340,7 +340,8 @@ internal static partial class DllInjector
                 // x64 对 x64，Process.Modules 直接能用；权限和注入同级（都过了 OpenProcess）
                 foreach (ProcessModule module in process.Modules)
                 {
-                    if (string.Equals(module.ModuleName, name, StringComparison.OrdinalIgnoreCase))
+                    if (HoYoShadeHub.Extensions.Games.GraphicsModulePrerequisite.Matches(
+                        moduleName, module.ModuleName, module.FileName))
                     {
                         return true;
                     }

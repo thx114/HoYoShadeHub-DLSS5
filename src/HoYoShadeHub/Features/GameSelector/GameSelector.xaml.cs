@@ -641,6 +641,38 @@ public sealed partial class GameSelector : UserControl
             _logger.LogInformation("Add custom game: picked {Exe}", exe);
 
             GameDiscoveryService service = GameCatalog.CreateService();
+            if (KnownGameSelection.Resolve(exe, GameCatalog.KnownCandidates()) is { } knownBiz
+                && GameId.FromGameBiz(knownBiz) is { } knownId)
+            {
+                string directory = Path.GetDirectoryName(Path.GetFullPath(exe))!;
+                GameLauncherService.AddGameInstallPath(knownBiz, directory);
+                var paths = GameLauncherService.GetAllGameInstallPaths(knownBiz);
+                int selected = paths.FindIndex(path => string.Equals(
+                    Path.GetFullPath(GameLauncherService.GetFullPathIfRelativePath(path)), directory,
+                    StringComparison.OrdinalIgnoreCase));
+                if (selected >= 0) GameLauncherService.SetSelectedGameInstallPathIndex(knownBiz, selected);
+                // Migrate an old custom duplicate for this exact exe into the native scheme.
+                string customId = GameEntry.MakeExeId(Path.GetFullPath(exe));
+                if (service.Store.Find(customId) is { IsCustom: true })
+                {
+                    service.Store.Remove(customId);
+                    service.Store.Save(service.StorePath);
+                    foreach (var duplicate in GameBizIcons.Where(x => x.CustomEntry?.Id == customId).ToList())
+                        GameBizIcons.Remove(duplicate);
+                }
+                RefreshCustomGameDisplays();
+                PinGameBiz(knownBiz);
+                if (GameBizIcons.FirstOrDefault(x => x.GameBiz == knownBiz) is { } nativeIcon)
+                {
+                    if (CurrentGameBizIcon is not null) CurrentGameBizIcon.IsSelected = false;
+                    CurrentGameBizIcon = nativeIcon; nativeIcon.IsSelected = true;
+                    CurrentGameBiz = knownBiz; CurrentGameId = knownId; AppConfig.CurrentGameBiz = knownBiz;
+                    CurrentGameChanged?.Invoke(this, (knownId, false));
+                }
+                HideFullBackground(); UpdateDragRectangles();
+                InAppToast.MainWindow?.Information("添加游戏", "已识别为列表内游戏，使用原有启动与注入方案。", 6000);
+                return;
+            }
             AddCustomResult result = service.AddCustom(exe);
 
             _logger.LogInformation("Add custom game: added={Added}, biz={Biz}, error={Error}",

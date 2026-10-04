@@ -756,13 +756,18 @@
                   （XXMI Launcher.exe "<游戏 exe>" -x ZZMI -n），注入由它完成
                   （它那份 d3d11.dll 是受控版，只有它能驱动）；我们只管 ReShade 那一头。
                   XXMI 不支持的游戏不显示这条。  -->
-            <CheckBox x:Name="CheckBox_UseXxmiInject"
-                      Content="启用XXMI"
-                      IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
-                      IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
-                      Margin="0,1"
-                      Visibility="{x:Bind XxmiInjectVisibility, Mode=OneWay}"
-                      ToolTipService.ToolTip="启动游戏时后台调用 XXMI Launcher（XXMI Launcher.exe &lt;游戏 exe&gt; -x ZZMI -n）来注入模型替换，不弹它的界面。MI 实例/Mods 在左侧「模型替换」页管理。只影响这一个游戏。" />
+            <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind XxmiInjectVisibility, Mode=OneWay}">
+                <CheckBox x:Name="CheckBox_UseXxmiInject"
+                          Content="启用XXMI"
+                          IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
+                          IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
+                          Margin="0,1"
+                          ToolTipService.ToolTip="按右侧设置选择 XXMI 启动模式及启动器位置。" />
+                <Button Click="Button_XxmiLaunchSettings_Click" Padding="8,4" VerticalAlignment="Center"
+                        ToolTipService.ToolTip="XXMI 启动设置">
+                    <FontIcon Glyph="&#xE713;" FontSize="14" />
+                </Button>
+            </StackPanel>
 
             <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
             <CheckBox x:Name="CheckBox_UseModules"

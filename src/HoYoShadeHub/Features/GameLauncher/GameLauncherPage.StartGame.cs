@@ -176,6 +176,13 @@ public sealed partial class GameLauncherPage : PageBase
                 && bridge.Enabled
                 && bridgeDll is not null
                 && ModuleRegistry.IsUsed(gameId, bridge.Id);
+            if (!ready && bridgeDll is not null && ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
+            {
+                UseModules = true;
+                _logger.LogInformation("Installed Genshin FSR Bridge associated with {Game} before OptiScaler", gameId.GameBiz);
+                return true;
+            }
+
             if (ready)
             {
                 // 以前只勾了模块页、但关了启动页「启用模块」时，不能让 OptiScaler
@@ -204,7 +211,7 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     XamlRoot = XamlRoot,
                     Title = "FSR Bridge 缺失",
-                    Content = "启动器随包的 Dx11FsrBridge.dll 不存在，无法启用原神 FSR Bridge。",
+                    Content = "已安装模块或覆盖包中没有受支持的 Dx11FsrBridge.dll，请重新导入原神覆盖包或下载 FSR Bridge。",
                     CloseButtonText = "确定",
                 }.ShowAsync();
                 return false;
@@ -562,8 +569,9 @@ public sealed partial class GameLauncherPage : PageBase
     {
         try
         {
-            string? version = FileVersionInfo.GetVersionInfo(bridgePath).FileVersion;
-            return version?.StartsWith("2.2.", StringComparison.OrdinalIgnoreCase) == true;
+            var version = FileVersionInfo.GetVersionInfo(bridgePath);
+            return BridgeCompatibility.IsSupported(new Version(version.FileMajorPart, version.FileMinorPart,
+                version.FileBuildPart, version.FilePrivatePart));
         }
         catch
         {
@@ -611,7 +619,7 @@ public sealed partial class GameLauncherPage : PageBase
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
     /// </param>
-    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0, bool includeGameExtras = true)
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0, bool includeGameExtras = true, int? targetProcessId = null)
     {
         List<InjectDllSpec> specs = [];
 
@@ -665,7 +673,7 @@ public sealed partial class GameLauncherPage : PageBase
 
         // ② OptiScaler：启动选项勾了「启用OptiScaler」+「全局插件 → OptiScaler」的总开关开着
         //    + 这个游戏在「OptiScaler」页选过构建，三者都满足才注入
-        if (UseOptiScaler && CurrentGameId is { } optiGameId)
+        if (includeGameExtras && UseOptiScaler && CurrentGameId is { } optiGameId)
         {
             string? optiScaler = AppConfig.GetSelectedOptiScalerDll(optiGameId);
 
@@ -803,12 +811,10 @@ public sealed partial class GameLauncherPage : PageBase
             }
         }
 
-        // ③ XXMI：3dmigoto 的钩子**由 XXMI Launcher 自己挂**（启动前就已经挂好、正等游戏进程），
-        //     我们这边只负责把 shade / OptiScaler / 模块注进去，所以这里只需要记一笔，
-        //     真正要定序的是「等 3DMigoto 的 d3d11 落模块表再注 ReShade」（见上面的 shadeWaitForModule）。
+        // Local last-injection trial: XXMI is appended after ordinary graphics injection operations.
         if (UseXxmiInject && CurrentGameId is { } xxmiGameId)
         {
-            _logger.LogInformation("XXMI 注入已勾选（{Game}）：3dmigoto 钩子由 XXMI Launcher 挂，这里只注额外模块 / shade",
+            _logger.LogInformation("XXMI 已启用（{Game}）：模型注入由手动启动的 XXMI 负责，Hub 负责正常图形注入和游戏启动",
                 xxmiGameId.GameBiz);
         }
 
@@ -844,7 +850,7 @@ public sealed partial class GameLauncherPage : PageBase
         {
             try
             {
-                await InjectExtraDllsAsync(processName, specs, token);
+                await InjectExtraDllsAsync(processName, specs, token, targetProcessId);
             }
             catch (Exception ex)
             {
@@ -942,9 +948,13 @@ public sealed partial class GameLauncherPage : PageBase
     /// 最多 3 次，共用 20 分钟预算。已经注过的 pid 不会再注第二次。
     /// </para>
     /// </summary>
-    private async Task InjectExtraDllsAsync(string processName, IReadOnlyList<InjectDllSpec> specs, System.Threading.CancellationToken cancellationToken)
+    private async Task InjectExtraDllsAsync(string processName, IReadOnlyList<InjectDllSpec> specs,
+        System.Threading.CancellationToken cancellationToken, int? targetProcessId = null)
     {
-        const int maxAttempts = 3;
+        // A process created by Hub's direct early launch cannot be mistaken for
+        // a launcher shell that will restart itself. Don't arm another 20-minute
+        // wait when that exact game process dies during startup.
+        int maxAttempts = targetProcessId.HasValue ? 1 : 3;
         TimeSpan budget = TimeSpan.FromMinutes(20);
         TimeSpan survivalCheck = TimeSpan.FromSeconds(8);
         DateTime deadline = DateTime.UtcNow + budget;
@@ -966,7 +976,24 @@ public sealed partial class GameLauncherPage : PageBase
                 }
 
                 // ① 等一个还没注过的同名进程
-                Process? target = await DllInjector.WaitForProcessAsync(processName, remaining, cancellationToken, injectedPids);
+                Process? target = null;
+                if (targetProcessId is { } exactPid)
+                {
+                    try
+                    {
+                        target = Process.GetProcessById(exactPid);
+                        if (target.HasExited) target = null;
+                    }
+                    catch (ArgumentException) { }
+                    if (target is null)
+                    {
+                        NotifyInjectionFailed(firstLabel, failureNotes,
+                            $"启动器创建的游戏进程（pid {exactPid}）已经退出；已停止本次注入，不再等待新进程。");
+                        return;
+                    }
+                }
+                else
+                    target = await DllInjector.WaitForProcessAsync(processName, remaining, cancellationToken, injectedPids);
                 if (target is null)
                 {
                     _logger.LogWarning("{Label} injection failed: no {Process} process within budget (attempt {Attempt})",
@@ -988,7 +1015,6 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     string name = Path.GetFileName(spec.Path);
                     string label = spec.Label;
-
                     // 「注入时机」：这一项单独设过就用自己的秒数，没设过用全局预热默认。
                     // 进程在等待期间退了 → 跳出，外层换新 pid 重试（新进程也要重新等）。
                     if (!await WaitForInjectionSteadyAsync(target, pid, processName, label, spec.DelaySeconds, cancellationToken))
@@ -1103,7 +1129,10 @@ public sealed partial class GameLauncherPage : PageBase
                 }
 
                 // ④ 目标存活确认：壳进程 / 更新重启会让 pid 在几秒内消失
-                await Task.Delay(survivalCheck, cancellationToken);
+                if (targetProcessId.HasValue)
+                    await Task.WhenAny(target.WaitForExitAsync(cancellationToken), Task.Delay(survivalCheck, cancellationToken));
+                else
+                    await Task.Delay(survivalCheck, cancellationToken);
 
                 if (DllInjector.IsProcessAlive(pid))
                 {
@@ -1120,6 +1149,16 @@ public sealed partial class GameLauncherPage : PageBase
                             $"注入失败：目标进程还在（pid {pid}），但 DLL 没注进去 —— 多半是权限（游戏提权 / 反作弊）或 LoadLibraryW 返回 0。");
                     }
 
+                    return;
+                }
+
+                if (targetProcessId.HasValue)
+                {
+                    int? exitCode = null;
+                    try { if (target.HasExited) exitCode = target.ExitCode; } catch { }
+                    _logger.LogWarning("Early game exited during startup: pid {Pid}, exit code {ExitCode}; no process-name retry", pid, exitCode);
+                    NotifyInjectionFailed(firstLabel, failureNotes,
+                        $"游戏进程（pid {pid}）在启动阶段退出（退出码 {exitCode?.ToString() ?? "未知"}）；已停止注入等待。这不是 XXMI 等待用户启动。");
                     return;
                 }
 
@@ -1714,6 +1753,34 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
+    /// <summary>Observe optional model injection without holding up the graphics launch pipeline.</summary>
+    private async Task ObserveXxmiInjectionAsync(int pid, GameId gameId, string? displayName)
+    {
+        try
+        {
+            string? graphicsDll = XxmiInjector.FindLoader(gameId, displayName);
+            if (string.IsNullOrWhiteSpace(graphicsDll))
+            {
+                _logger.LogWarning("XXMI 模型代理路径缺失；游戏图形组件已按正常流程处理");
+                return;
+            }
+            bool loaded = await DllInjector.WaitForModuleAsync(pid, graphicsDll,
+                TimeSpan.FromSeconds(15), System.Threading.CancellationToken.None);
+            if (loaded)
+                _logger.LogInformation("XXMI 模型代理加载观察成功：pid {Pid}, path {Dll}；不等于模型效果已验证", pid, graphicsDll);
+            else if (DllInjector.IsProcessAlive(pid))
+            {
+                _logger.LogWarning("XXMI 模型代理未确认：pid {Pid}；未取消其他图形组件加载", pid);
+                DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI 模型注入未确认",
+                    "游戏已启动，但未检测到 GIMI 模型代理。请检查 XXMI 日志；OptiScaler/ReShade 的加载未因此取消。", 10000));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Observe optional XXMI injection; normal graphics pipeline unaffected");
+        }
+    }
+
     private async Task StartGameAsync()
     {
         try
@@ -1757,6 +1824,9 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
+            // Apply imported module/build selections before checking dependencies.
+            await RunPackAutoActionsOnLaunchAsync();
+
             // OptiScaler + 原神：先确保 FSR Bridge 模块存在并加入本游戏，Bridge 会再按当前 Opti 构建写 autoload。
             if (!await ConfirmGenshinFsrBridgeForOptiAsync())
             {
@@ -1772,125 +1842,99 @@ public sealed partial class GameLauncherPage : PageBase
             // 「启动游戏时强制 off」：启动/注入之前把 hook 点写 0（按游戏开关）
             ApplyForceHookOffOnLaunch();
 
-            // 覆盖包 auto.json 里标了 runOnLaunch 的自定义动作：启动 / 注入前自动执行（不弹窗）
-            await RunPackAutoActionsOnLaunchAsync();
 
             // 游戏目录自带的 nvngx_dlssg.dll 换成 310.9（MFG 解锁只认它）。
             // **放统一入口**：以前挂在注入流程里，走别的启动路径的游戏（绝区零）就漏了。
             EnsureGameDlssgForMfg();
 
-            // 「启用 XXMI」= **手动模式共存四步**（XXMI 的注入器负责模型替换，Hub 负责启动游戏 + shade/OptiScaler）：
-            //   1) 点「启动游戏」；
-            //   2) 把 XXMI 里本游戏导入器的启动方式写成 Manual（XXMI 不再自己拉起游戏）；
-            //   3) 唤起 XXMI 走它自己的「启动游戏」流程并**等它把注入器挂好**（手动模式下它只挂钩子等游戏进程）；
-            //   4) 下面照常注我们自己的东西（shade / OptiScaler / 模块）；
-            //   5) 由 Hub 启动游戏。
-            // 步骤 3 的等待不能省：XXMI 启动流程的**第一件事**是 _ensure_game_close()「确保游戏已关闭」，
-            // 它会按进程名把已经在跑的游戏结束掉 —— 抢在它前面起游戏就会被它杀掉，表现就是「启用XXMI 时
-            // 游戏起不来」（2026-10-04 00:30 实机日志：Hub 起 XXMI 后 0.25 秒起游戏 → 0.6 秒后被 XXMI 杀掉）。
-            // 这是实机验证可共存的组合（挂起注入 CLI 与注入式 ReShade 互斥的那套已废弃）。
-            if (UseXxmiInject && CurrentGameId is { } xxmiManualGameId)
+            // Local recovery baseline: official XXMI owns game startup, as in
+            // the coexistence run identified by the user. Hub arms its injectors first.
+            if (UseXxmiInject && !UseInjectMode && CurrentGameId is { } officialGame)
             {
-                string? gameName = _currentGameEntry?.DisplayName;
-                string? xxmiManualExeName = null;
-
-                try
+                string? closeError = await XxmiInjector.CloseExistingLaunchersAsync(System.Threading.CancellationToken.None);
+                if (closeError is not null)
                 {
-                    xxmiManualExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiManualGameId);
-                }
-                catch { }
-
-                // 步骤 2：把 XXMI 本游戏的导入器改成手动模式 —— XXMI 不再自己拉游戏，只挂注入器；
-                // 顺带把真实进程名钉进配置（手动模式下 XXMI 只能靠这个认游戏，详见 PrepareManualMode）
-                string manualErr = XxmiInjector.PrepareManualMode(xxmiManualGameId, gameName, xxmiManualExeName);
-
-                if (!string.IsNullOrWhiteSpace(manualErr))
-                {
-                    _logger.LogWarning("XXMI 手动模式没设上：{Error}", manualErr);
-                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
-                        "XXMI", manualErr, 10000));
-                }
-                else
-                {
-                    string? xxmiManualExe = string.IsNullOrWhiteSpace(xxmiManualExeName)
-                        ? null
-                        : Path.Combine(GameInstallPath, xxmiManualExeName);
-
-                    // 步骤 3：唤起 XXMI 走它自己的「启动游戏」流程，并**等它把注入器挂好**再往下走。
-                    // 它启动的第一件事是「确保游戏已关闭」（按进程名杀游戏），抢在它前面起游戏会被它杀掉 ——
-                    // 这正是「启用XXMI 时游戏起不来」的原因（详见 XxmiInjector.ArmForManualLaunchAsync）
-                    XxmiInjector.XxmiArmResult xxmiArm = await XxmiInjector.ArmForManualLaunchAsync(
-                        xxmiManualGameId, gameName, xxmiManualExe, System.Threading.CancellationToken.None);
-
-                    AppConfig.XxmiLastLaunch = xxmiArm.Message;
-
-                    if (!xxmiArm.Armed)
-                    {
-                        // 没就绪只是这次没有模型替换：游戏照常启动，别拦着（步骤 4 / 5 照走）
-                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
-                            "XXMI", xxmiArm.Message, 12000));
-                    }
-                }
-            }
-
-            if (false && UseXxmiInject && CurrentGameId is { } xxmiGameId
-                && !string.IsNullOrWhiteSpace(GameInstallPath) && Directory.Exists(GameInstallPath))
-            {
-                string xxmiExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiGameId);
-                string xxmiExe = Path.Combine(GameInstallPath, xxmiExeName);
-
-                if (!File.Exists(xxmiExe))
-                {
-                    DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI",
-                        $"游戏目录里找不到 {xxmiExeName}", 10000));
-                }
-                else
-                {
-                // 甜点时机实验：挂起期注=崩，等窗口注=ReShade 不工作；改 hub 直注 + 延迟 3 秒
-                    // （进程恢复后、设备创建前），对应以前 inject.exe 抢跑偶然命中的共存窗口
-                    string? xxmiShadeReShadeDll = null;
-                    string? xxmiShadeName = null;
-                    if (UseHoYoShade || UseOpenHoYoShade)
-                    {
-                        xxmiShadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
-                        string candidate = Path.Combine(AppConfig.UserDataFolder, xxmiShadeName, "ReShade64.dll");
-                        if (File.Exists(candidate))
-                        {
-                            xxmiShadeReShadeDll = candidate;
-                        }
-                    }
-
-                    XxmiInjector.XxmiLaunchResult xxmi = XxmiInjector.LaunchViaXxmiCli(xxmiGameId, xxmiExe, _currentGameEntry?.DisplayName);
-
-                    AppConfig.XxmiLastLaunch = xxmi.Message;
-                    _logger.LogInformation("XXMI launch: {Message}", xxmi.Message);
-
-                    if (xxmi.Injected)
-                    {
-                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Success("XXMI", xxmi.Message, 8000));
-                    }
-                    else
-                    {
-                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("XXMI", xxmi.Message, 12000));
-                    }
-
-                    // 我们自己的其它注入（OptiScaler / 额外注入 DLL）照旧挂上
-                    string? xxmiProcess = await ResolveTargetProcessNameAsync();
-
-                    if (!string.IsNullOrWhiteSpace(xxmiProcess))
-                    {
-                        StartExtraDllInjection(xxmiProcess, xxmiShadeReShadeDll, xxmiShadeName, shadeDelaySeconds: 0);
-                    }
-
+                    _logger.LogWarning("XXMI 旧实例未退出；不写新配置或启动另一实例：{Error}", closeError);
+                    InAppToast.MainWindow?.Error("XXMI 旧实例关闭失败", closeError, 10000);
                     return;
                 }
+                string exeName = await _gameLauncherService.GetGameExeNameAsync(officialGame);
+                string exe = Path.Combine(GameInstallPath, exeName);
+                if (!File.Exists(exe)) throw new FileNotFoundException("游戏主程序不存在", exe);
+                string configError = XxmiInjector.PrepareManualMode(officialGame, _currentGameEntry?.DisplayName, exeName, manual: AppConfig.GetXxmiLaunchMode(officialGame) == XxmiLaunchMode.Manual);
+                if (!string.IsNullOrWhiteSpace(configError))
+                {
+                    InAppToast.MainWindow?.Error("XXMI 配置失败", configError, 10000);
+                    return;
+                }
+                bool manualXxmi = AppConfig.GetXxmiLaunchMode(officialGame) == XxmiLaunchMode.Manual;
+                if (manualXxmi)
+                {
+                    var armed = await XxmiInjector.ArmForManualLaunchAsync(officialGame,
+                        _currentGameEntry?.DisplayName, exe, System.Threading.CancellationToken.None);
+                    AppConfig.XxmiLastLaunch = armed.Message;
+                    if (!armed.Armed)
+                    {
+                        InAppToast.MainWindow?.Error("XXMI 手动启动失败", armed.Message, 10000);
+                        return;
+                    }
+                }
+                string? processName = await ResolveTargetProcessNameAsync();
+                if (string.IsNullOrWhiteSpace(processName)) throw new InvalidOperationException("未确定游戏进程名");
+                if (UseHoYoShade || UseOpenHoYoShade)
+                {
+                    string shadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
+                    string shadePath = Path.Combine(AppConfig.UserDataFolder, shadeName);
+                    var ready = await InjectorHelper.StartAndWaitForReadyAsync(
+                        Path.Combine(shadePath, "inject.exe"), exeName, shadePath, _logger, shadeName);
+                    if (!ready.success)
+                    {
+                        InAppToast.MainWindow?.Error("HoYoShade 注入器准备失败", $"退出码 {ready.exitCode}", 10000);
+                        return;
+                    }
+                }
+                // This prepares profiles, runtime paths and Bridge autoload before
+                // the official launcher starts its game, never a second Hub process.
+                StartExtraDllInjection(processName);
+                Process? target;
+                if (manualXxmi)
+                {
+                    _logger.LogInformation("XXMI 模式=手动：一秒交接与 Hub 注入器准备完成，游戏由 Hub 创建");
+                    target = await _gameLauncherService.StartGameAsync(officialGame, GameInstallPath);
+                }
+                else
+                {
+                    var launch = XxmiInjector.LaunchOfficialBaseline(officialGame, _currentGameEntry?.DisplayName, exe);
+                    AppConfig.XxmiLastLaunch = launch.Message;
+                    if (!launch.Started)
+                    {
+                        _extraInjectCts?.Cancel();
+                        InAppToast.MainWindow?.Error("XXMI 官方启动", launch.Message, 10000);
+                        return;
+                    }
+                    _logger.LogInformation("XXMI 模式=官方：Hub 图形注入器已准备，游戏只由 XXMI 创建");
+                    target = await DllInjector.WaitForProcessAsync(processName, TimeSpan.FromSeconds(15),
+                        System.Threading.CancellationToken.None);
+                }
+                if (target is not null)
+                {
+                    GameProcess = target; GameState = GameState.GameIsRunning;
+                    WeakReferenceMessenger.Default.Send(new GameStartedMessage());
+                    _logger.LogInformation("XXMI 官方启动检测到游戏：pid {Pid}；模型和 FG 状态仍待日志确认", target.Id);
+                    if (UseFpsUnlock) _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                }
+                else
+                {
+                    _extraInjectCts?.Cancel();
+                    InAppToast.MainWindow?.Warning("XXMI 启动未检测到游戏", "15秒内没有检测到原神进程；已停止本次 Hub 额外注入。请检查 XXMI 日志。", 10000);
+                }
+                return;
             }
 
-            // v2.3.1 test package starts Genshin directly, injects Bridge + OptiScaler
-            // while the process is suspended, then resumes it. The ordinary HoYoPlay
-            // path injects after process discovery and produced transparent Dx11wDx12
-            // shared handles even though both DLLs reported injection success.
-            if (!UseInjectMode && !UseStarwardLauncher
+            // Keep early graphics loading for Genshin without XXMI. Manual XXMI
+            // shares the ordinary injector-ready -> game-start path; don't race
+            // its GIMI hook with a separate immediate batch LoadLibrary branch.
+            if (GenshinLaunchRouting.UseEarlyGraphicsLaunch(UseInjectMode, UseStarwardLauncher, UseXxmiInject)
                 && CurrentGameId is { } earlyGenshin
                 && ModuleRegistry.IsGenshin(earlyGenshin)
                 && UseOptiScaler
@@ -1908,12 +1952,20 @@ public sealed partial class GameLauncherPage : PageBase
                 if (bridgePath is not null && File.Exists(bridgePath)
                     && !string.IsNullOrWhiteSpace(optiPath) && File.Exists(optiPath))
                 {
-                    _logger.LogInformation(
-                        "原神 v2.3.1：改用 unlockfps_nc 同等的挂起启动 + Bridge/OptiScaler 早期注入");
-                    InAppToast.MainWindow?.Warning(
-                        "原神早期注入模式",
-                        "本次按 test 包顺序挂起启动并注入 Bridge + OptiScaler；ReShade 请在稳定进入后用注入模式加载。",
-                        8000);
+                    string? buildDirectory = Path.GetDirectoryName(optiPath);
+                    if (buildDirectory is null || !OptiScalerRuntime.PrepareGenshinEarlyConfiguration(
+                            buildDirectory, earlyGenshin.GameBiz.Value))
+                    {
+                        _logger.LogError("原神早期启动配置准备失败；尚未创建游戏进程 ({Build})", buildDirectory);
+                        InAppToast.MainWindow?.Error("原神启动配置", "无法准备 OptiScaler 游戏配置，请检查包内配置和目录权限。", 10000);
+                        return;
+                    }
+                    string bridgeDirectory = Path.GetDirectoryName(bridgePath)!;
+                    OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
+                    OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiPath);
+                    _logger.LogInformation("原神早期配置已准备：profile={Game}，OptiDllPath={Runtime}；随后才创建进程并注入",
+                        earlyGenshin.GameBiz.Value, Path.Combine(buildDirectory, "OptiScaler"));
+                    _logger.LogInformation("原神：Bridge/OptiScaler 早期加载，ReShade 后置注入");
 
                     string? ffx12Path = Path.GetFullPath(Path.Combine(
                         Path.GetDirectoryName(bridgePath) ?? string.Empty, "..", "AMD",
@@ -1923,8 +1975,14 @@ public sealed partial class GameLauncherPage : PageBase
                         ffx12Path = null;
                     }
 
+                    string earlyArguments = AppConfig.GetStartArgument(earlyGenshin.GameBiz)?.Trim() ?? string.Empty;
+                    if (AppConfig.GetUsePopupWindow(earlyGenshin.GameBiz))
+                        earlyArguments += " -popupwindow";
+                    if (AppConfig.GetEnableDX12(earlyGenshin.GameBiz))
+                        earlyArguments += " -use-d3d12";
+                    _logger.LogInformation("原神早期启动使用用户参数：{Arguments}", earlyArguments.Trim());
                     GenshinEarlyLaunch.Result early = await GenshinEarlyLaunch.StartAsync(
-                        earlyExe, "-popupwindow", GameInstallPath!, bridgePath, ffx12Path, optiPath,
+                        earlyExe, earlyArguments.Trim(), GameInstallPath!, bridgePath, ffx12Path, optiPath,
                         text => _logger.LogInformation("{Text}", text));
                     if (early.Process is null)
                     {
@@ -1956,12 +2014,20 @@ public sealed partial class GameLauncherPage : PageBase
                                 "原神早期 Bridge/OptiScaler 已稳定，安排正常流程后置注入 {ShadeName}（delay={Delay}s）",
                                 shadeName, shadeDelay);
                             StartExtraDllInjection(earlyProcessName, shadeDll, shadeName,
-                                shadeDelaySeconds: shadeDelay, includeGameExtras: false);
+                                shadeDelaySeconds: shadeDelay, includeGameExtras: false, targetProcessId: early.Process.Id);
                         }
+                    }
+                    if (UseXxmiInject)
+                    {
+                        _logger.LogInformation("XXMI 为可选模型注入；其状态不阻止 Bridge/OptiScaler/ReShade 正常加载");
+                        _ = ObserveXxmiInjectionAsync(early.Process.Id, earlyGenshin, _currentGameEntry?.DisplayName);
                     }
                     return;
                 }
             }
+
+            if (UseXxmiInject)
+                _logger.LogInformation("XXMI 手动交接完成：使用正常 Hub 注入器准备及游戏启动路径；跳过原神立即批量图形加载分支");
 
             // 「额外注入 DLL」不依赖注入模式：普通模式下 Hub 自己起游戏，进程一出现就注（用户要求）
             if (!UseInjectMode)

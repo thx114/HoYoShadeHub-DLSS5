@@ -86,6 +86,48 @@ public static class GameLaunchPipeline
         }
 
         var service = AppConfig.GetService<GameLauncherService>();
+        bool useXxmi = AppConfig.GetUseXxmiInjectLaunchOption(gameId);
+        bool manualXxmi = AppConfig.GetXxmiLaunchMode(gameId) == XxmiLaunchMode.Manual;
+        string? xxmiTarget = null;
+        // CLI/pack launch honors the same saved mode as the page.
+        if (useXxmi)
+        {
+            string? closeError = await XxmiInjector.CloseExistingLaunchersAsync(ct);
+            if (closeError is not null)
+            {
+                report?.Invoke("XXMI 旧实例关闭失败，停止本次启动：" + closeError);
+                return null;
+            }
+            string? exe = entry?.ExePath;
+            if (string.IsNullOrEmpty(exe))
+            {
+                string? install = GameLauncherService.GetGameInstallPath(gameId);
+                string name = await service.GetGameExeNameAsync(gameId);
+                if (!string.IsNullOrEmpty(install)) exe = Path.Combine(install, name);
+            }
+            xxmiTarget = exe;
+            string error = XxmiInjector.PrepareManualMode(gameId, entry?.DisplayName, Path.GetFileName(exe), manual: manualXxmi);
+            if (!string.IsNullOrEmpty(error)) { report?.Invoke("XXMI: " + error); return null; }
+            if (manualXxmi)
+            {
+                var xxmi = await XxmiInjector.ArmForManualLaunchAsync(gameId, entry?.DisplayName, exe, ct);
+                report?.Invoke(xxmi.Message);
+                if (!xxmi.Armed) return null;
+            }
+        }
+        async Task<Process?> StartSelectedGameAsync(string? installPath = null)
+        {
+            if (!useXxmi || manualXxmi) return await service.StartGameAsync(gameId, installPath);
+            if (string.IsNullOrWhiteSpace(xxmiTarget) || !File.Exists(xxmiTarget))
+            { report?.Invoke("XXMI 官方模式：找不到游戏主程序"); return null; }
+            // Prepare selected Opt runtime paths/autoload before official game creation.
+            _ = BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
+            var launch = XxmiInjector.LaunchOfficialBaseline(gameId, entry?.DisplayName, xxmiTarget);
+            report?.Invoke(launch.Message);
+            if (!launch.Started) return null;
+            return await DllInjector.WaitForProcessAsync(Path.GetFileNameWithoutExtension(xxmiTarget),
+                TimeSpan.FromSeconds(15), ct);
+        }
         Process? process;
         // 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，第④步随 specs 一起由 Hub 自己的注入器注
         string? shadeReShadeDll = null;
@@ -151,7 +193,7 @@ public static class GameLaunchPipeline
                     _logger.LogWarning(ex, "Bootstrap ReShade.ini to real game directory");
                 }
 
-                process = await service.StartGameAsync(gameId, installPath);
+                process = await StartSelectedGameAsync(installPath);
                 if (process is null)
                 {
                     report?.Invoke("✗ 游戏进程没起来（看日志）");
@@ -176,7 +218,7 @@ public static class GameLaunchPipeline
                 }
 
                 report?.Invoke("注入器就绪，启动游戏…");
-                process = await service.StartGameAsync(gameId, installPath);
+                process = await StartSelectedGameAsync(installPath);
                 if (process is null)
                 {
                     try { injectorProcess?.Kill(); }
@@ -187,7 +229,7 @@ public static class GameLaunchPipeline
         }
         else
         {
-            process = await service.StartGameAsync(gameId);
+            process = await StartSelectedGameAsync();
             if (process is null)
             {
                 report?.Invoke("✗ 游戏进程没起来（看日志）");

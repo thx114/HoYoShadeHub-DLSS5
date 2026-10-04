@@ -108,6 +108,8 @@ internal sealed class XxmiLocator
     {
         try
         {
+            if (!string.IsNullOrWhiteSpace(AppConfig.XxmiRoot) && IsXxmiRoot(AppConfig.XxmiRoot))
+                return AppConfig.XxmiRoot;
             if (_cachedRoot is not null && IsXxmiRoot(_cachedRoot))
             {
                 return _cachedRoot;

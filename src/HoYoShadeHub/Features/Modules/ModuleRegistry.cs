@@ -521,6 +521,21 @@ public static class ModuleRegistry
             return inModuleDir;
         }
 
+        // Portable overlays may be installed to the pre-migration Modules folder
+        // while the active registry uses Cache/modules. Resolve either installed
+        // location before claiming the dependency is missing; never manufacture DLLs.
+        if (string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
+        {
+            string legacy = Path.Combine(AppConfig.UserDataFolder, "Modules", module.Id);
+            string cached = Path.Combine(AppConfig.ModulesCachePath, module.Id);
+            foreach (string installed in new[] { legacy, cached })
+            {
+                string? dll = FindInjectDll(installed, module.DllHint);
+                if (dll is not null && IsAcceptedModuleDll(module, dll)) return dll;
+            }
+        }
+
         try
         {
             string root = AppConfig.OptiScalerRootPath;
@@ -551,13 +566,13 @@ public static class ModuleRegistry
         if (!string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // The currently published GitHub archives were accidentally built with the
-        // old 2.2.0 bridge. Never let a re-download silently replace the tested
-        // v2.3.1 module. The correct release asset must report 2.3.1.0.
+        // Accept maintained 2.3.x binaries, including the overlay's 2.3.2.
+        // Reject old 2.2 builds without tying support to one exact patch version.
         try
         {
-            string? version = FileVersionInfo.GetVersionInfo(path).FileVersion;
-            return string.Equals(version, "2.3.1.0", StringComparison.OrdinalIgnoreCase);
+            var version = FileVersionInfo.GetVersionInfo(path);
+            return HoYoShadeHub.Extensions.Games.BridgeCompatibility.IsSupported(
+                new Version(version.FileMajorPart, version.FileMinorPart, version.FileBuildPart, version.FilePrivatePart));
         }
         catch
         {

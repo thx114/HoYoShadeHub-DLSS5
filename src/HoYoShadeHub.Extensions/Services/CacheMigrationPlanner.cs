@@ -16,6 +16,27 @@ public static class CacheMigrationPlanner
     public const string OptiScalerKind = "optiscaler";
 
     public const string ModulesKind = "modules";
+    public const string PortableLayoutFileName = "portable-layout.json";
+
+    /// <summary>Explicit current full-package layout; does not suppress prompts for unmarked legacy installs.</summary>
+    public static bool HasSupportedPortableLayout(string userDataRoot)
+    {
+        try
+        {
+            if (!File.Exists(Path.Combine(userDataRoot, ".portable"))
+                || !File.Exists(Path.Combine(userDataRoot, "HoYoShadeHub.exe"))) return false;
+            using var document = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(userDataRoot, PortableLayoutFileName)));
+            var marker = document.RootElement;
+            return marker.GetProperty("schema").GetInt32() == 1
+                && marker.GetProperty("layout").GetString() == "full-portable-v1"
+                && marker.GetProperty("moduleRoot").GetString() == "Modules"
+                && marker.GetProperty("optiscalerRoot").GetString() == "OptiScaler"
+                && marker.GetProperty("cacheRoot").GetString() == "cache";
+        }
+        catch { return false; }
+    }
+
 
     /// <summary>
     /// 要不要弹「版本更新引导」：
@@ -29,7 +50,8 @@ public static class CacheMigrationPlanner
         bool legacyOptiScalerExists,
         bool cacheOptiScalerExists,
         bool legacyModulesExists,
-        bool cacheModulesExists)
+        bool cacheModulesExists,
+        bool supportedPortableLayout = false)
     {
         // 注意：OptiScaler **不参与迁移**（用户明确要求）—— 它自己的库
         // <基准>\OptiScaler\<来源>\<版本>\ 本来就多版本共存，原地用即可。
@@ -37,7 +59,7 @@ public static class CacheMigrationPlanner
         _ = legacyOptiScalerExists;
         _ = cacheOptiScalerExists;
 
-        if (cacheMigrated)
+        if (cacheMigrated || supportedPortableLayout)
         {
             return false;
         }

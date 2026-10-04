@@ -18,8 +18,6 @@ namespace HoYoShadeHub.Features.GameLauncher;
 /// </summary>
 internal static class GenshinEarlyLaunch
 {
-    private const uint CreateSuspended = 0x00000004;
-
     public sealed record Result(Process? Process, string? Error);
 
     public static Task<Result> StartAsync(string exePath, string arguments, string workingDirectory,

@@ -1140,6 +1140,18 @@ Fsr2TranslationMode=2
     /// <summary>OptiScaler 配置文件名</summary>
     public const string ConfigFileName = "OptiScaler.ini";
 
+    /// <summary>Prepare the selected game profile before early LoadLibrary can read OptiScaler.ini.</summary>
+    public static bool PrepareGenshinEarlyConfiguration(string buildDirectory, string gameKey)
+    {
+        if (string.IsNullOrWhiteSpace(buildDirectory) || string.IsNullOrWhiteSpace(gameKey)
+            || !File.Exists(Path.Combine(buildDirectory, "OptiScaler.dll"))) return false;
+        if (!OptiScalerProfiles.Activate(buildDirectory, gameKey)) return false;
+        // Older DLLs do not implement the guide switch; their valid runtime path
+        // must still be prepared before injection.
+        EnsureGenshinNativeGuides(buildDirectory);
+        return EnsureConfigDllPath(buildDirectory);
+    }
+
     /// <summary>原神启用本 fork 0.1.9+ 时，profile 激活后保持外部 NR guide 坐标修正。</summary>
     public static bool EnsureGenshinNativeGuides(string buildDirectory)
     {

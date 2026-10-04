@@ -119,7 +119,9 @@ internal static class CacheMigrationService
                 legacyOptiScalerExists: Directory.Exists(Path.Combine(userData, "OptiScaler")),
                 cacheOptiScalerExists: Directory.Exists(AppConfig.OptiScalerCachePath),
                 legacyModulesExists: Directory.Exists(Path.Combine(userData, "Modules")),
-                cacheModulesExists: Directory.Exists(AppConfig.ModulesCachePath));
+                cacheModulesExists: Directory.Exists(AppConfig.ModulesCachePath),
+                supportedPortableLayout: AppConfig.IsPortable
+                    && CacheMigrationPlanner.HasSupportedPortableLayout(userData));
         }
         catch
         {

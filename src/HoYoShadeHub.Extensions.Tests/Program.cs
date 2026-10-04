@@ -11,6 +11,13 @@ using HoYoShadeHub.Extensions.Services;
 using System.IO.Compression;
 using System.Text.Json;
 
+// Controlled worker for lifecycle regression; no real XXMI/game is touched.
+if (args.Length > 0 && args[0] == "owned-process-test-worker")
+{
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return 0;
+}
+
 // 临时诊断入口：overlay-install <zip> <HoYoShade 根> <OptiScaler 根> <模块根> <缓存根> [临时目录]
 // 拿真包往一份「假装的安装目录」上盖一遍，验证识别 / 落位 / 归档都对。
 // overlay-noshade（或 HoYoShade 根传 "-"）= 模拟「本机还没装 HoYoShade」的全新便携包。
@@ -2949,6 +2956,18 @@ if (!string.IsNullOrEmpty(releaseDll))
         && repaired.Contains("Preset=1") && repaired.Contains("ResourceFlip=true"), "原神重复键清理且其他设置保留");
     Check(OptiScalerRuntime.EnsureGenshinNativeGuides(nativeBuild) && File.ReadAllText(nativeIni) == repaired,
         "原神 guide 配置重复启动幂等");
+    string profileDir = Path.Combine(nativeBuild, "profiles");
+    Directory.CreateDirectory(profileDir);
+    string earlyProfile = Path.Combine(profileDir, "hk4e_cn.ini");
+    File.WriteAllText(earlyProfile, "[DLSS]\nNativeScreenSpaceGuides=false\n[Libraries]\nOptiDllPath=auto\n[FrameGen]\nFGOutput=DLSSG\n");
+    Check(OptiScalerRuntime.PrepareGenshinEarlyConfiguration(nativeBuild, "hk4e_cn"), "首次早期注入前准备原神配置");
+    string beforeLoad = File.ReadAllText(nativeIni);
+    Check(beforeLoad.Contains("NativeScreenSpaceGuides=true")
+        && beforeLoad.Contains("OptiDllPath = " + Path.Combine(nativeBuild, "OptiScaler"))
+        && beforeLoad.Contains("FGOutput=DLSSG"), "LoadLibrary前已修正库路径且保留FG配置");
+    File.WriteAllText(earlyProfile, File.ReadAllText(earlyProfile).Replace("OptiDllPath=auto", "OptiDllPath=Z:\\previous-machine"));
+    Check(OptiScalerRuntime.PrepareGenshinEarlyConfiguration(nativeBuild, "hk4e_cn")
+        && !File.ReadAllText(nativeIni).Contains("previous-machine"), "换目录后早期profile路径重新固定");
     File.Delete(nativeIni);
     Check(!OptiScalerRuntime.EnsureGenshinNativeGuides(nativeBuild), "不生成缺失的游戏配置");
 }
@@ -3341,6 +3360,91 @@ Check(PackAutoActionFile.Parse("""{"steps":[{"action":"wait","seconds":1.5}]}"""
         Check(false, "conditions：仓库 catalog/conditions.json 存在");
     }
 }
+
+Console.WriteLine("== Known MiHoYo exe routing and installed Bridge compatibility ==");
+string knownRoot = Path.Combine(root, "known-game-routing");
+Directory.CreateDirectory(knownRoot);
+string knownExe = Path.Combine(knownRoot, "StarRail.exe");
+File.WriteAllText(knownExe, "fake executable");
+Check(KnownGameSelection.Resolve(knownExe, []) == new GameBiz(GameBiz.hkrpg_cn), "StarRail exe routes to built-in game");
+File.WriteAllText(Path.Combine(knownRoot, "config.ini"), "[General]\nchannel=14\n");
+Check(KnownGameSelection.Resolve(knownExe, []) == new GameBiz(GameBiz.hkrpg_bilibili), "Bilibili config uses built-in B server scheme");
+File.WriteAllText(Path.Combine(knownRoot, "config.ini"), "[General]\ngame_biz=hkrpg_global\n");
+Check(KnownGameSelection.Resolve(knownExe, []) == new GameBiz(GameBiz.hkrpg_global), "Explicit valid region wins over filename fallback");
+Check(KnownGameSelection.Resolve(knownExe, [new KnownGameCandidate(GameBiz.hkrpg_bilibili, "B server", knownRoot, "StarRail.exe")])
+    == new GameBiz(GameBiz.hkrpg_bilibili), "Existing exact install keeps original launcher scheme");
+string unknownExe = Path.Combine(knownRoot, "MyGame.exe");
+File.WriteAllText(unknownExe, "unknown executable");
+Check(KnownGameSelection.Resolve(unknownExe, []) is null, "Unknown exe remains a custom game even beside MiHoYo config");
+File.WriteAllText(Path.Combine(knownRoot, "config.ini"), "[General]\ngame_biz=hk4e_cn\n");
+Check(KnownGameSelection.Resolve(knownExe, []) == new GameBiz(GameBiz.hkrpg_cn), "Mismatched game family config rejected");
+Check(BridgeCompatibility.IsSupported(new Version(2,3,2,0)), "Overlay Bridge2.3.2 accepted");
+Check(BridgeCompatibility.IsSupported(new Version(2,3,1,0)), "Previous Bridge2.3.1 retained");
+Check(!BridgeCompatibility.IsSupported(new Version(2,2,0,0)) && !BridgeCompatibility.IsSupported(null), "Unsupported old/missing Bridge rejected");
+
+Console.WriteLine("== Current full portable layout does not trigger legacy upgrade guidance ==");
+string portableLayoutRoot = Path.Combine(root, "full-portable-layout");
+Directory.CreateDirectory(portableLayoutRoot);
+File.WriteAllText(Path.Combine(portableLayoutRoot, "HoYoShadeHub.exe"), "stub");
+File.WriteAllText(Path.Combine(portableLayoutRoot, ".portable"), "");
+Check(!CacheMigrationPlanner.HasSupportedPortableLayout(portableLayoutRoot), "Unmarked legacy layout still detected normally");
+string layoutMarker = Path.Combine(portableLayoutRoot, CacheMigrationPlanner.PortableLayoutFileName);
+File.WriteAllText(layoutMarker, "{\"schema\":1,\"layout\":\"full-portable-v1\",\"moduleRoot\":\"Modules\",\"optiscalerRoot\":\"OptiScaler\",\"cacheRoot\":\"cache\"}");
+Check(CacheMigrationPlanner.HasSupportedPortableLayout(portableLayoutRoot), "Current supported full package layout recognized");
+Check(!CacheMigrationPlanner.NeedsMigration(false, true, false, true, false, true, false, true),
+    "Fresh full package does not ask to upgrade root modules or bundled plugins");
+Check(CacheMigrationPlanner.NeedsMigration(false, false, false, false, false, true, false),
+    "Actual unmarked legacy Modules migration remains available");
+File.WriteAllText(layoutMarker, "{\"schema\":99}");
+Check(!CacheMigrationPlanner.HasSupportedPortableLayout(portableLayoutRoot), "Unknown layout schema cannot silence migration");
+File.WriteAllText(layoutMarker, "invalid json");
+Check(!CacheMigrationPlanner.HasSupportedPortableLayout(portableLayoutRoot), "Corrupt layout marker safely ignored");
+
+Console.WriteLine("== XXMI graphics prerequisite identity ==");
+string requestedGimi = Path.Combine(root, "XXMI", "GIMI", "d3d11.dll");
+Check(GraphicsModulePrerequisite.Matches(requestedGimi, "d3d11.dll", requestedGimi), "Actual GIMI graphics DLL accepted");
+Check(!GraphicsModulePrerequisite.Matches(requestedGimi, "d3d11.dll", Path.Combine(root, "Windows", "System32", "d3d11.dll")),
+    "System d3d11 with same basename does not mark XXMI ready");
+Check(GraphicsModulePrerequisite.Matches("ReShade64.dll", "ReShade64.dll", Path.Combine(root, "ReShade64.dll")),
+    "Existing basename-based ReShade order unchanged");
+Check(!GraphicsModulePrerequisite.Matches(requestedGimi, "d3d11.dll", ""), "Unknown module path does not mark GIMI ready");
+
+Console.WriteLine("== Genshin manual XXMI uses ordinary launcher routing ==");
+Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, false, true), "Manual XXMI bypasses immediate graphics batch");
+Check(GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, false, false), "Without XXMI existing early graphics path retained");
+Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(true, false, false), "Injection-only mode not changed into direct start");
+Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, true, false), "Starward launch remains separate");
+
+Console.WriteLine("== XXMI new launch enum does not corrupt old start-method enum ==");
+Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("Direct") == "OPTION_REMOVED", "Invalid Direct trial value repaired");
+Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("DIRECT") == "OPTION_REMOVED", "Invalid uppercase DIRECT repaired");
+Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("OPTION_REMOVED") == "OPTION_REMOVED", "Current deprecated placeholder retained");
+Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("MANUAL") == "MANUAL", "Existing accepted MANUAL retained");
+Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("") == "OPTION_REMOVED", "Missing obsolete key uses current placeholder");
+
+Console.WriteLine("== Pre-launch process cleanup is bounded to supplied instances ==");
+using (var worker = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+{
+    FileName = Environment.ProcessPath!, Arguments = "owned-process-test-worker",
+    UseShellExecute = false, CreateNoWindow = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+}))
+{
+    Check(worker is not null, "Controlled process started");
+    if (worker is not null)
+    {
+        var cleanup = await OwnedProcessShutdown.CloseAsync([worker], TimeSpan.FromMilliseconds(100));
+        Check(cleanup.Success && worker.HasExited && cleanup.Closed == 1, "Supplied headless process retired before configuration write");
+        var closedAgain = await OwnedProcessShutdown.CloseAsync([worker], TimeSpan.FromMilliseconds(100));
+        Check(closedAgain.Success && closedAgain.Forced == 0, "Already exited process is not killed again");
+    }
+}
+var noInstances = await OwnedProcessShutdown.CloseAsync([], TimeSpan.FromMilliseconds(100));
+Check(noInstances.Success && noInstances.Closed == 0, "No XXMI instances proceeds immediately");
+
+Check(XxmiLaunchModes.Parse("manual") == XxmiLaunchMode.Manual, "Manual launch selection parsed");
+Check(XxmiLaunchModes.Parse("OFFICIAL") == XxmiLaunchMode.Official, "Official launch selection parsed");
+Check(XxmiLaunchModes.Parse(null) == XxmiLaunchMode.Official, "Existing users keep current official default");
+Check(XxmiLaunchModes.Parse("unknown") == XxmiLaunchMode.Official, "Invalid saved mode safely uses current default");
 
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }

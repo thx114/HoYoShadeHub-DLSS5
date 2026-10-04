@@ -2263,6 +2263,19 @@ public static class AppConfig
         SetValue(value, BuildLaunchOptionKey(gameId, "use_xxmi_inject"));
     }
 
+    public static HoYoShadeHub.Extensions.Games.XxmiLaunchMode GetXxmiLaunchMode(GameId gameId) =>
+        HoYoShadeHub.Extensions.Games.XxmiLaunchModes.Parse(GetValue<string>(null, BuildLaunchOptionKey(gameId, "xxmi_launch_mode")));
+
+    public static void SetXxmiLaunchMode(GameId gameId, HoYoShadeHub.Extensions.Games.XxmiLaunchMode mode) =>
+        SetValue(mode == HoYoShadeHub.Extensions.Games.XxmiLaunchMode.Manual ? "manual" : "official",
+            BuildLaunchOptionKey(gameId, "xxmi_launch_mode"));
+
+    public static string? XxmiLauncherPath
+    {
+        get => GetValue<string>(null, "hysx_xxmi_launcher_path");
+        set => SetValue(value, "hysx_xxmi_launcher_path");
+    }
+
     /// <summary>用户手动指定的这个游戏的 MI 实例目录（空 = 自动找）</summary>
     public static string? GetXxmiInstance(string gameBiz)
     {
