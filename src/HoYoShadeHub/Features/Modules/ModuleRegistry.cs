@@ -94,7 +94,7 @@ public static class ModuleRegistry
         "Genshin FSR Bridge",
         "原神 DX11 FSR2 → OptiScaler Bridge。模块从我们的 GitHub release 下载；单独启用不会加载 OptiScaler，启用 OptiScaler 时由 Bridge 进程内加载当前选择的构建。",
         "thx114/genshin_fsr_brigde",
-        "^v2\\.3\\.1-fg-\\d+$",
+        "^v2\\.3\\.\\d+-fg-(?:delay-)?\\d+$",
         "https://github.com/thx114/genshin_fsr_brigde/releases",
         "Dx11FsrBridge.dll",
         ["genshin", "fsr", "bridge", "frame-generation"],

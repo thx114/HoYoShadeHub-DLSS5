@@ -1140,6 +1140,31 @@ Fsr2TranslationMode=2
     /// <summary>OptiScaler 配置文件名</summary>
     public const string ConfigFileName = "OptiScaler.ini";
 
+    /// <summary>原神启用本 fork 0.1.9+ 时，profile 激活后保持外部 NR guide 坐标修正。</summary>
+    public static bool EnsureGenshinNativeGuides(string buildDirectory)
+    {
+        string dll = Path.Combine(buildDirectory, "OptiScaler.dll");
+        string ini = Path.Combine(buildDirectory, ConfigFileName);
+        if (!File.Exists(dll) || !File.Exists(ini)) return false;
+        var version = System.Diagnostics.FileVersionInfo.GetVersionInfo(dll);
+        if (version.FileMajorPart != 0 || version.FileMinorPart != 1 || version.FileBuildPart < 9)
+            return false;
+        string text = File.ReadAllText(ini);
+        string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var section = new System.Text.RegularExpressions.Regex(
+            @"(?ms)(^\[DLSS\][ \t]*\r?\n)(.*?)(?=^\[|\z)");
+        if (!section.IsMatch(text)) return false;
+        string updated = section.Replace(text, match =>
+        {
+            string body = System.Text.RegularExpressions.Regex.Replace(match.Groups[2].Value,
+                @"(?mi)^[ \t]*NativeScreenSpaceGuides[ \t]*=[^\r\n]*(?:\r?\n|$)", string.Empty);
+            return match.Groups[1].Value + "NativeScreenSpaceGuides=true" + newline + body;
+        }, 1);
+        if (!string.Equals(updated, text, StringComparison.Ordinal))
+            File.WriteAllText(ini, updated, new System.Text.UTF8Encoding(false));
+        return true;
+    }
+
     /// <summary>
     /// 把 ini 里 <c>[Libraries] OptiDllPath</c> 写成构建目录下 <c>OptiScaler</c> 文件夹的绝对路径。
     /// 默认值 auto 解析为相对「游戏 exe 目录」的 <c>.\OptiScaler</c>，外部注入（DLL 在数据目录）

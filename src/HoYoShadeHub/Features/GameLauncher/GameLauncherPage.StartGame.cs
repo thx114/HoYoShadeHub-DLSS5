@@ -687,6 +687,12 @@ public sealed partial class GameLauncherPage : PageBase
                     _logger.LogInformation("OptiScaler ini profile activated: {Game} ({Build})", gameKey, buildDirectory);
                 }
 
+                if (isGenshin && buildDirectory is not null
+                    && OptiScalerRuntime.EnsureGenshinNativeGuides(buildDirectory))
+                {
+                    _logger.LogInformation("原神 native DX11 NR guide 修正已在 profile 激活后启用 ({Build})", buildDirectory);
+                }
+
                 // 旧构建（早于 v1.2.1）的 profile / ini 可能还是 OptiDllPath=auto，激活后再钉绝对路径；
                 // 游戏退出 Store 时修正后的主 ini 会回写 profile，下次启动即一致
                 if (buildDirectory is not null && OptiScalerRuntime.EnsureConfigDllPath(buildDirectory))
@@ -797,16 +803,12 @@ public sealed partial class GameLauncherPage : PageBase
             }
         }
 
-        // ③ XXMI：照 XXMI 自己的流程（参考它自己的日志）：
-        //      SetupHook(d3d11.dll) → 启动游戏（ZZZ 还要带 -use-d3d12）→ 额外注入实例里配的 Extra Libraries
-        //      （用户 ZZMI 里那个「d3d12.dll」其实是 OptiScaler）→ WaitForInjection 校验 → Unhook。
-        //    现状：3dmloader 的 HookLibrary 需要先把 MI 的 d3d11.dll LoadLibrary 进"注入器进程"找 CBTProc
-        //    入口，而 3DMigoto 那份 d3d11.dll 在普通进程里 LoadLibrary 会 ERROR_DLL_INIT_FAILED(1114)，
-        //    所以这条路在我们 App 进程里必然返回 200。要在我们这边走通，得把这一步放到一个"干净"的辅助进程里
-        //    （见 docs/GAMES-AND-INJECT.md §11 的待办），先不接线，避免误导用户。
+        // ③ XXMI：3dmigoto 的钩子**由 XXMI Launcher 自己挂**（启动前就已经挂好、正等游戏进程），
+        //     我们这边只负责把 shade / OptiScaler / 模块注进去，所以这里只需要记一笔，
+        //     真正要定序的是「等 3DMigoto 的 d3d11 落模块表再注 ReShade」（见上面的 shadeWaitForModule）。
         if (UseXxmiInject && CurrentGameId is { } xxmiGameId)
         {
-            _logger.LogInformation("XXMI 注入已勾选（{Game}）：当前实现还未接上 Hook（3dmloader 的 HookLibrary 在 App 进程里会 200）",
+            _logger.LogInformation("XXMI 注入已勾选（{Game}）：3dmigoto 钩子由 XXMI Launcher 挂，这里只注额外模块 / shade",
                 xxmiGameId.GameBiz);
         }
 
@@ -1777,31 +1779,57 @@ public sealed partial class GameLauncherPage : PageBase
             // **放统一入口**：以前挂在注入流程里，走别的启动路径的游戏（绝区零）就漏了。
             EnsureGameDlssgForMfg();
 
-            // 「启用 XXMI 注入」：**按 XXMI 的方式启动** —— 挂起起进程 → 往进程里 Inject 3DMigoto 的
-            // d3d11.dll → 恢复线程（注入发生在 D3D 初始化前，且 DllMain 在游戏进程里跑，不会踩 1114）。
-            // 这条会自己把游戏起起来（跟 XXMI Launcher 一样），所以后面的正常启动流程直接跳过。
-            // 「启用 XXMI」新语义：不是让 XXMI 起游戏，而是 ——
-            // 1) 把 XXMI 里本游戏导入器的启动方式写成 Manual；2) 调起 XXMI Launcher 后台驻留；
-            // 3) Hub 走下面的正常启动流程（游戏 + shade/OptiScaler 注入），模型替换由 XXMI 接管。
+            // 「启用 XXMI」= **手动模式共存四步**（XXMI 的注入器负责模型替换，Hub 负责启动游戏 + shade/OptiScaler）：
+            //   1) 点「启动游戏」；
+            //   2) 把 XXMI 里本游戏导入器的启动方式写成 Manual（XXMI 不再自己拉起游戏）；
+            //   3) 唤起 XXMI 走它自己的「启动游戏」流程并**等它把注入器挂好**（手动模式下它只挂钩子等游戏进程）；
+            //   4) 下面照常注我们自己的东西（shade / OptiScaler / 模块）；
+            //   5) 由 Hub 启动游戏。
+            // 步骤 3 的等待不能省：XXMI 启动流程的**第一件事**是 _ensure_game_close()「确保游戏已关闭」，
+            // 它会按进程名把已经在跑的游戏结束掉 —— 抢在它前面起游戏就会被它杀掉，表现就是「启用XXMI 时
+            // 游戏起不来」（2026-10-04 00:30 实机日志：Hub 起 XXMI 后 0.25 秒起游戏 → 0.6 秒后被 XXMI 杀掉）。
             // 这是实机验证可共存的组合（挂起注入 CLI 与注入式 ReShade 互斥的那套已废弃）。
             if (UseXxmiInject && CurrentGameId is { } xxmiManualGameId)
             {
                 string? gameName = _currentGameEntry?.DisplayName;
-                string manualErr = XxmiInjector.PrepareManualMode(xxmiManualGameId, gameName);
+                string? xxmiManualExeName = null;
+
+                try
+                {
+                    xxmiManualExeName = await _gameLauncherService.GetGameExeNameAsync(xxmiManualGameId);
+                }
+                catch { }
+
+                // 步骤 2：把 XXMI 本游戏的导入器改成手动模式 —— XXMI 不再自己拉游戏，只挂注入器；
+                // 顺带把真实进程名钉进配置（手动模式下 XXMI 只能靠这个认游戏，详见 PrepareManualMode）
+                string manualErr = XxmiInjector.PrepareManualMode(xxmiManualGameId, gameName, xxmiManualExeName);
+
                 if (!string.IsNullOrWhiteSpace(manualErr))
                 {
+                    _logger.LogWarning("XXMI 手动模式没设上：{Error}", manualErr);
                     DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
                         "XXMI", manualErr, 10000));
                 }
                 else
                 {
-                    string? xxmiManualExe = null;
-                    try
+                    string? xxmiManualExe = string.IsNullOrWhiteSpace(xxmiManualExeName)
+                        ? null
+                        : Path.Combine(GameInstallPath, xxmiManualExeName);
+
+                    // 步骤 3：唤起 XXMI 走它自己的「启动游戏」流程，并**等它把注入器挂好**再往下走。
+                    // 它启动的第一件事是「确保游戏已关闭」（按进程名杀游戏），抢在它前面起游戏会被它杀掉 ——
+                    // 这正是「启用XXMI 时游戏起不来」的原因（详见 XxmiInjector.ArmForManualLaunchAsync）
+                    XxmiInjector.XxmiArmResult xxmiArm = await XxmiInjector.ArmForManualLaunchAsync(
+                        xxmiManualGameId, gameName, xxmiManualExe, System.Threading.CancellationToken.None);
+
+                    AppConfig.XxmiLastLaunch = xxmiArm.Message;
+
+                    if (!xxmiArm.Armed)
                     {
-                        xxmiManualExe = Path.Combine(GameInstallPath, await _gameLauncherService.GetGameExeNameAsync(xxmiManualGameId));
+                        // 没就绪只是这次没有模型替换：游戏照常启动，别拦着（步骤 4 / 5 照走）
+                        DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
+                            "XXMI", xxmiArm.Message, 12000));
                     }
-                    catch { }
-                    XxmiInjector.StartLauncherIfNeeded(xxmiManualGameId, gameName, null); // 步骤2：无 GUI 调起 XXMI（-x 导入器 -n）
                 }
             }
 
@@ -1948,24 +1976,6 @@ public sealed partial class GameLauncherPage : PageBase
             bool launchingBlenderPlugin = LaunchGenshinBlenderPlugin || LaunchZZZBlenderPlugin;
             bool useShader = UseHoYoShade || UseOpenHoYoShade;
             bool useStarward = UseStarwardLauncher;
-
-            // The tested v2.3.1 package injects Bridge + OptiScaler before the
-            // rendering stack. Injecting ReShade in the same normal launch creates
-            // the transparent-window path (OptiScaler Dx11wDx12 shared handles fail).
-            // Keep ReShade available through the separate injection-mode flow, which
-            // is how the stable test was performed.
-            if (useShader && !UseInjectMode && UseOptiScaler
-                && CurrentGameId is { } genshinOptiGame
-                && ModuleRegistry.IsGenshin(genshinOptiGame))
-            {
-                useShader = false;
-                _logger.LogWarning(
-                    "原神 + v2.3.1 Bridge + OptiScaler：普通启动跳过 HoYoShade，避免透明窗口；需要 ReShade 请在游戏稳定后使用注入模式");
-                InAppToast.MainWindow?.Warning(
-                    "原神 OptiScaler 启动隔离",
-                    "本次普通启动暂不加载 HoYoShade/ReShade，避免与 v2.3.1 Bridge + OptiScaler 产生透明窗口。游戏稳定后请用注入模式加载 ReShade。",
-                    10000);
-            }
 
             // Check if Blender plugin injection process is already running
             string? runningInjectionProcess = CheckBlenderPluginInjectionProcessRunning();

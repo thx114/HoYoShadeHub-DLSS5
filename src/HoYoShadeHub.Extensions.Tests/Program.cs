@@ -2934,6 +2934,24 @@ foreach (string input in new[]
     Check(OptiScalerRuntime.EnsureConfigDllPath(minimalBuild) && File.ReadAllText(minimalIni) == once,
         "path repair is idempotent");
 }
+// Exercise the actual release version gate and Genshin profile migration.
+string? releaseDll = Environment.GetEnvironmentVariable("HYS_RELEASE_OPTI_DLL");
+if (!string.IsNullOrEmpty(releaseDll))
+{
+    string nativeBuild = Path.Combine(root, "genshin-native-profile");
+    Directory.CreateDirectory(nativeBuild);
+    File.Copy(releaseDll, Path.Combine(nativeBuild, "OptiScaler.dll"));
+    string nativeIni = Path.Combine(nativeBuild, "OptiScaler.ini");
+    File.WriteAllText(nativeIni, "[DLSS]\r\nNativeScreenSpaceGuides = false\r\nNativeScreenSpaceGuides=auto\r\nPreset=1\r\n[OptiFG]\r\nResourceFlip=true\r\n");
+    Check(OptiScalerRuntime.EnsureGenshinNativeGuides(nativeBuild), "原神新版本 profile 修正启用");
+    string repaired = File.ReadAllText(nativeIni);
+    Check(repaired.Contains("NativeScreenSpaceGuides=true") && !repaired.Contains("NativeScreenSpaceGuides = false")
+        && repaired.Contains("Preset=1") && repaired.Contains("ResourceFlip=true"), "原神重复键清理且其他设置保留");
+    Check(OptiScalerRuntime.EnsureGenshinNativeGuides(nativeBuild) && File.ReadAllText(nativeIni) == repaired,
+        "原神 guide 配置重复启动幂等");
+    File.Delete(nativeIni);
+    Check(!OptiScalerRuntime.EnsureGenshinNativeGuides(nativeBuild), "不生成缺失的游戏配置");
+}
 File.Delete(minimalIni);
 Check(!OptiScalerRuntime.EnsureConfigDllPath(minimalBuild), "missing INI not fabricated");
 Check(!OptiScalerRuntime.EnsureConfigDllPath(Path.Combine(root, "absent-build")), "missing build not fabricated");
@@ -2997,9 +3015,8 @@ staleProfile.Save();
 GameIniBootstrapResult boot6 = GameIniBootstrap.Ensure(bootEntry, bootHost);
 ReShadeProfile fixedSecondary = ReShadeProfile.Load(staleSecondary);
 Check(boot6.SyncedSecondary && !boot6.CreatedSecondary, "识别为同步已有 ReShade2.ini（不是新建）");
-Check(fixedSecondary.GetValue("ADDON", "AddonPath") ==
-      ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("ADDON", "AddonPath"),
-    "ReShade2.ini 的 AddonPath 被主 ini 覆盖");
+Check(string.IsNullOrEmpty(fixedSecondary.GetValue("ADDON", "AddonPath")),
+    "ReShade2.ini 的 AddonPath 保持为空，不重复加载 Present 插件");
 string? mainDisabled = ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("ADDON", "DisabledAddons");
 Check(fixedSecondary.GetValue("ADDON", "DisabledAddons") == mainDisabled,
     "ReShade2.ini 的 DisabledAddons 跟主 ini 一致（主没有则副本的死键也被摘掉）");

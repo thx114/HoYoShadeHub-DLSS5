@@ -72,7 +72,7 @@
       "id": "mfg-ada",
       "name": "OptiScaler MFG Ada（本 fork）",
       "repository": "thx114/OptiScaler-MFG-Ada",
-      "description": "本 fork：RTX 40（Ada）DX11 游戏多帧生成。门补丁 + 双向 NvAPI 架构伪装 + midpoint 修正（默认开），包内两处 dlssg 均为 310.9.1。runtime-* tag 只是 dlssg 单文件，会自动跳过。",
+      "description": "本 fork：RTX40原生DLSS+MFG，与外部RenoDX Present NR配合。0.1.9修正原神整组guide坐标、FG共享输入CPU同步、菜单及分辨率重建；runtime-*为单文件运行库版本。",
       "tagPattern": "^mfg-ada-",
       "tags": [
         "mfg",

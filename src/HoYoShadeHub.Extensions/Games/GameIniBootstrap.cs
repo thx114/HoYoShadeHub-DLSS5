@@ -117,6 +117,11 @@ public static class GameIniBootstrap
 
             foreach (string key in main.GetSectionKeys(section))
             {
+                // This runtime has no addons; don't first copy a path that would
+                // be cleared below on every launch and defeat idempotence.
+                if (string.Equals(section, "ADDON", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(key, "AddonPath", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 string? value = main.GetValue(section, key);
                 if (!string.Equals(secondary.GetValue(section, key), value, StringComparison.Ordinal))
                 {

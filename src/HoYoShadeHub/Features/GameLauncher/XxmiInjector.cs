@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -115,58 +116,118 @@ internal sealed class XxmiInjector
     public sealed record XxmiLaunchResult(bool Started, bool Injected, string Message);
 
     /// <summary>
-    /// **用 XXMI Launcher 自己的命令行静默启动**：<c>XXMI Launcher.exe "&lt;游戏 exe&gt;" -x ZZMI -n</c>
-    /// （<c>-n/--nogui</c> = 不开界面）。
-    /// 这是正解：ZZMI 里那份 <c>d3d11.dll</c> 是"受控版"（ini 头写着 intended to be loaded by XXMI Launcher），
-    /// 我们自己 Inject 进去它能加载但完全不初始化（连 d3d11_log.txt 都不写）；而 XXMI Launcher 有 CLI，
-    /// 可以让它**在后台**把整条启动+注入流程跑完，我们不用碰它的 dll。
+    /// 3dmloader 的 loader 互斥体：XXMI 挂钩子（<c>HookLibrary</c>）时建，被注入的 DLL 靠它判断
+    /// loader 在不在。它存在的时间 = 「钩子已挂好、正等游戏进程出现」—— 正好是我们要等的「注入器已就绪」。
     /// </summary>
-    /// <summary>
-    /// 把 XXMI 里本游戏导入器的启动方式（process_start_method）写成 Manual（Native/Shell/Manual 三选一），
-    /// 并让 XXMI Launcher 处于运行状态。之后由 Hub 自己启动游戏 —— XXMI 在后台按手动模式接管
-    /// 模型替换（含 extra_libraries），与 Hub 注入链共存（已实机验证可共存的组合）。
-    /// </summary>
-    public static string PrepareManualMode(GameId gameId, string? gameName)
-        => SetStartMethod(gameId, gameName, "Manual");
+    private const string LoaderMutexName = "Local\\3DMigotoLoader";
 
-    /// <summary>写 XXMI 导入器的启动方式（Native / Shell / Manual）。空串=成功。</summary>
-    public static string SetStartMethod(GameId gameId, string? gameName, string method)
+    private const uint MutexSynchronize = 0x00100000;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr OpenMutexW(uint desiredAccess, bool inheritHandle, string name);
+
+    /// <summary>XXMI 的 loader 互斥体现在在不在（在 = 有实例正挂着钩子等游戏）</summary>
+    public static bool LoaderArmed()
     {
-        string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);
-        if (instance is null || importer is null)
+        IntPtr handle = OpenMutexW(MutexSynchronize, false, LoaderMutexName);
+
+        if (handle == IntPtr.Zero)
         {
-            return "找不到 XXMI 实例（到「模型替换」页确认 MI 目录）";
+            return false;
         }
 
-        string configPath = Path.GetFullPath(Path.Combine(instance, "..", "XXMI Launcher Config.json"));
-        if (!File.Exists(configPath))
+        CloseHandle(handle);
+        return true;
+    }
+
+    /// <summary>XXMI 2.3.9 起「启动方式」是 <c>game_launch</c>（GameLaunch 枚举），手动模式 = MANUAL</summary>
+    private const string ManualGameLaunch = "MANUAL";
+
+    /// <summary>XXMI 2.3.9 之前的旧键值；现在只剩占位 OPTION_REMOVED，写了不生效，留着照顾老版本</summary>
+    private const string LegacyManualStartMethod = "Manual";
+
+    /// <summary>
+    /// 把 XXMI 里本游戏导入器的启动方式写成**手动模式**：手动模式下 XXMI 不会自己拉起游戏，
+    /// 只把注入器挂上、等游戏进程出现，模型替换交给它。空串 = 成功，否则是失败原因。
+    /// <paramref name="gameExeName"/> 传本次要启动的真实 exe 名（如 YuanShen.exe），用来钉住进程名。
+    /// </summary>
+    public static string PrepareManualMode(GameId gameId, string? gameName, string? gameExeName = null)
+    {
+        string? configPath = Xxmi.XxmiLocator.FindConfigPath(gameId.GameBiz, gameName, out string? importer);
+
+        if (configPath is null || importer is null)
         {
-            return "找不到 XXMI Launcher Config.json：" + configPath;
+            return "找不到 XXMI 配置文件（到「模型替换」页确认 MI 目录）";
         }
 
         try
         {
-            var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath))!;
-            var importerNode = root["Importers"]?[importer]?["Importer"];
-            if (importerNode is null)
+            System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath));
+
+            if (root is null
+                || root["Importers"]?[importer]?["Importer"] is not System.Text.Json.Nodes.JsonObject block)
             {
                 return "XXMI 配置里没有导入器 " + importer;
             }
 
-            string current = importerNode["process_start_method"]?.GetValue<string>() ?? string.Empty;
-            if (!string.Equals(current, method, StringComparison.OrdinalIgnoreCase))
-            {
-                string backup = configPath + ".bak-before-manual-mode";
-                if (!File.Exists(backup))
-                {
-                    File.Copy(configPath, backup);
-                }
+            // XXMI 2.3.9 把「启动方式」从 process_start_method 搬到了 game_launch
+            // （GameLaunch 枚举：DIRECT/STEAM/EPIC_GAMES/CUSTOM/MANUAL），旧键只剩占位 OPTION_REMOVED。
+            // **只写旧键等于没写**：XXMI 还按 DIRECT 自己把游戏拉起来，跟 Hub 的启动/注入流程撞车
+            // （原神那次启动后报「没有找到崩铁」就是它）。两个键都写，新键管 2.3.9+，旧键留给老版本。
+            string oldLaunch = block["game_launch"]?.GetValue<string>() ?? string.Empty;
+            string oldLegacy = block["process_start_method"]?.GetValue<string>() ?? string.Empty;
+            bool changed = false;
 
-                importerNode["process_start_method"] = method;
-                File.WriteAllText(configPath, root.ToJsonString());
-                Logger.LogInformation("XXMI {Importer} 启动方式已写成 {Method}（原值 {Old}，备份 {Backup})",
-                    importer, method, current, backup);
+            if (!string.Equals(oldLaunch, ManualGameLaunch, StringComparison.OrdinalIgnoreCase))
+            {
+                block["game_launch"] = ManualGameLaunch;
+                changed = true;
             }
+
+            if (!string.Equals(oldLegacy, LegacyManualStartMethod, StringComparison.OrdinalIgnoreCase))
+            {
+                block["process_start_method"] = LegacyManualStartMethod;
+                changed = true;
+            }
+
+            // 手动模式下 XXMI 拿不到游戏 exe 路径（get_game_paths() 对手动模式直接返回 None），
+            // 进程名只能退回**导入器的默认值** —— GIMI 默认是 GenshinImpact.exe，而国服原神是
+            // YuanShen.exe（我们自己的日志里注入目标也一直是 YuanShen.exe）。名字不对，XXMI 的
+            // WaitForInjection / 等窗口检测就盯着一个永远不会出现的进程，60 秒后报
+            // 「无法检测到游戏进程 GenshinImpact.exe 的窗口」，模型替换直接失效。
+            // 所以手动模式必须把真实进程名钉死：game_process_exe_enabled=true + game_process_exe=<真实 exe 名>。
+            string oldExe = block["game_process_exe"]?.GetValue<string>() ?? string.Empty;
+            bool exeEnabled = block["game_process_exe_enabled"]?.GetValue<bool>() ?? false;
+
+            if (!string.IsNullOrWhiteSpace(gameExeName)
+                && (!exeEnabled || !string.Equals(oldExe, gameExeName, StringComparison.OrdinalIgnoreCase)))
+            {
+                block["game_process_exe_enabled"] = true;
+                block["game_process_exe"] = gameExeName;
+                changed = true;
+            }
+
+            if (!changed)
+            {
+                return string.Empty;
+            }
+
+            string backup = configPath + ".bak-before-manual-mode";
+
+            if (!File.Exists(backup))
+            {
+                File.Copy(configPath, backup);
+            }
+
+            File.WriteAllText(configPath,
+                root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
+                new UTF8Encoding(false));
+
+            Logger.LogInformation(
+                "XXMI {Importer} 已写成手动模式：game_launch {OldLaunch}→{NewLaunch}、process_start_method {OldLegacy}→{NewLegacy}、"
+                + "进程名 {OldExe}(enabled={OldEnabled})→{NewExe}(enabled=true)（备份 {Backup}）",
+                importer, oldLaunch, ManualGameLaunch, oldLegacy, LegacyManualStartMethod,
+                oldExe, exeEnabled, gameExeName, backup);
 
             return string.Empty;
         }
@@ -177,57 +238,248 @@ internal sealed class XxmiInjector
         }
     }
 
-    /// <summary>让 XXMI Launcher 处于运行状态（手动模式下由它接管模型替换）；已在跑就跳过</summary>
-    public static void StartLauncherIfNeeded(GameId gameId, string? gameName, string? gameExePath)
+    /// <summary>这次唤起 XXMI 的结果：<c>Armed</c> 为假只是这次没有模型替换，别拦着游戏启动</summary>
+    public sealed record XxmiArmResult(bool Armed, string Message);
+
+    private static readonly TimeSpan XxmiArmTimeout = TimeSpan.FromSeconds(25);
+
+    /// <summary>
+    /// **唤起 XXMI 走它自己的「启动游戏」流程**（<c>XXMI Launcher.exe "&lt;游戏 exe&gt;" -x ZZMI -n</c>），
+    /// 并**等它把注入器挂好再返回**。
+    ///
+    /// 手动模式下 XXMI 不会真去起游戏，只把 3dmloader 的钩子挂上、然后等游戏进程出现。这一步必须等：
+    /// XXMI 启动流程的第一件事是 <c>_ensure_game_close()</c>「确保游戏已关闭」，它会按进程名把**已经在跑的
+    /// 游戏结束掉**。实机日志（2026-10-04 00:30，星铁）：Hub 起 XXMI 后 0.25 秒就起游戏 → 0.6 秒后
+    /// XXMI 把它杀掉 → 启动器报 "Failed to start game process"（12 秒等不到进程），XXMI 自己报
+    /// 「无法检测到游戏进程 StarRail.exe 的窗口」。所以顺序只能是：
+    /// 写手动模式 → 唤起 XXMI 并等钩子挂好 → 注我们自己的东西 → 起游戏。
+    ///
+    /// 「挂好了」用两个信号判定，任一个成立即可（都是钩子挂好之后的）：
+    /// <list type="bullet">
+    /// <item>loader 互斥体出现（<c>HookLibrary</c> 建的，跟 XXMI 日志级别无关）；</item>
+    /// <item>启动日志里出现「Waiting for user to start the game process」（手动模式挂好钩子后打的那行）。</item>
+    /// </list>
+    /// </summary>
+    public static async Task<XxmiArmResult> ArmForManualLaunchAsync(
+        GameId gameId, string? gameName, string? gameExePath, CancellationToken cancellationToken)
     {
         try
         {
-            if (Process.GetProcessesByName("XXMI Launcher").Length > 0)
+            string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out string? importer);
+
+            if (instance is null || importer is null)
             {
-                return;
+                return new(false, "找不到 XXMI 实例（到「模型替换」页确认 MI 目录）");
             }
 
-            string? importer = Xxmi.XxmiLocator.ImporterForGame(gameId.GameBiz, gameName);
-            if (string.IsNullOrWhiteSpace(importer))
-            {
-                return;
-            }
-            string? instance = Xxmi.XxmiLocator.FindInstance(gameId.GameBiz, gameName, out _);
-            if (instance is null)
-            {
-                return;
-            }
+            string? launcher = null;
 
-            DirectoryInfo? dir = new(instance);
-            while (dir is not null)
+            for (DirectoryInfo? dir = new(instance); dir is not null; dir = dir.Parent)
             {
                 string candidate = Path.Combine(dir.FullName, "Resources", "Bin", "XXMI Launcher.exe");
+
                 if (File.Exists(candidate))
                 {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = candidate,
-                        // 必须带 -x <导入器>：裸起会让 Launcher 处理它当前激活的导入器
-                        // （上次用过的 SRMI），原神启动后会去找崩铁报「没有找到崩铁」
-                        // 与用户手动双击完全一致：GUI 模式、不带任何参数
-                        // （-n / -x / exe 参数的语义我们未确认，裸起曾导致 Launcher 去找崩铁）
-                        // 无 GUI 后台附加模式：-x 指定本游戏的导入器，不带 exe（不带参数会让
-                        // Launcher 处理它上次激活的导入器 → 原神启动去等崩铁）
-                        Arguments = $"-x {importer} -n",
-UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden,
-                    });
-                    Logger.LogInformation("XXMI Launcher 已调起（手动模式接管）：{Path}", candidate);
-                    return;
+                    launcher = candidate;
+                    break;
+                }
+            }
+
+            if (launcher is null)
+            {
+                return new(false, "找不到 XXMI Launcher.exe");
+            }
+
+            string? configPath = Xxmi.XxmiLocator.FindConfigPath(gameId.GameBiz, gameName, out _);
+            string logPath = Path.Combine(
+                Path.GetDirectoryName(configPath) ?? Path.GetDirectoryName(launcher) ?? string.Empty,
+                "XXMI Launcher Log.txt");
+
+            // 上一次没等到游戏、弹着错误框停在那儿的 XXMI 还占着 loader 互斥体，新实例的 HookLibrary
+            // 会直接返回 100（"another instance is running"）—— 先把它收掉，本次才能干净地挂钩子。
+            if (LoaderArmed())
+            {
+                KillArmedLaunchers();
+
+                if (!await WaitForDisarmAsync(5000, cancellationToken).ConfigureAwait(false))
+                {
+                    return new(false, "XXMI 里有残留的注入器实例（多半是上次没等到游戏留下的），新实例挂不上钩子；"
+                        + "请先关掉 XXMI 再启动");
+                }
+            }
+
+            long logOffset = File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
+
+            // 带 exe 路径：明确告诉 XXMI「这次启动的是哪个游戏」（配了 -x 时它只用来认游戏，手动模式下不会真拉起）
+            string arguments = string.IsNullOrWhiteSpace(gameExePath)
+                ? $"-x {importer} -n"
+                : $"\"{gameExePath}\" -x {importer} -n";
+
+            Process? started;
+
+            try
+            {
+                started = Process.Start(new ProcessStartInfo
+                {
+                    FileName = launcher,
+                    Arguments = arguments,
+                    WorkingDirectory = Path.GetDirectoryName(launcher),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "调起 XXMI Launcher 失败");
+                return new(false, "调起 XXMI Launcher 失败：" + ex.Message);
+            }
+
+            if (started is null)
+            {
+                return new(false, "调起 XXMI Launcher 失败");
+            }
+
+            Logger.LogInformation("XXMI Launcher 已调起（pid {Pid}，手动模式接管）：\"{Exe}\" {Args}",
+                started.Id, launcher, arguments);
+
+            var stopwatch = Stopwatch.StartNew();
+
+            while (stopwatch.Elapsed < XxmiArmTimeout)
+            {
+                await Task.Delay(150, cancellationToken).ConfigureAwait(false);
+
+                if (LoaderArmed() || LogSaysArmed(logPath, ref logOffset))
+                {
+                    string processName = Path.GetFileName(gameExePath ?? string.Empty);
+
+                    Logger.LogInformation("XXMI 注入器已就绪（{Seconds:F1} 秒）：钩子已挂上，等游戏进程 {Process}",
+                        stopwatch.Elapsed.TotalSeconds,
+                        processName.Length > 0 ? processName : "(XXMI 配置里的游戏 exe)");
+
+                    return new(true, "XXMI 注入器已就绪");
                 }
 
-                dir = dir.Parent;
+                if (started.HasExited)
+                {
+                    break;
+                }
             }
+
+            // 没挂上：把这次起的实例收回来（它还没挂钩子，收掉不会有副作用），然后照常启动游戏 ——
+            // 手动模式没挂上只是这次没有模型替换，不该拦着游戏。
+            string reason = started.HasExited
+                ? "XXMI Launcher 提前退出"
+                : $"XXMI 注入器 {XxmiArmTimeout.TotalSeconds:F0} 秒内没挂上钩子";
+
+            try
+            {
+                if (!started.HasExited)
+                {
+                    started.Kill(entireProcessTree: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning("收回 XXMI Launcher 失败：{Message}", ex.Message);
+            }
+
+            Logger.LogWarning("{Reason}：本次没有模型替换，游戏照常启动", reason);
+            return new(false, reason + "：本次没有模型替换");
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "调起 XXMI Launcher 失败");
+            Logger.LogWarning(ex, "唤起 XXMI 失败");
+            return new(false, "唤起 XXMI 失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 收掉**还挂着钩子**的 XXMI Launcher 残留实例。它们多半是上一次没等到游戏、弹着错误框停在那儿的
+    /// （实机见过好几个），占着 loader 互斥体让新实例 HookLibrary 返回 100。
+    /// </summary>
+    private static int KillArmedLaunchers()
+    {
+        int killed = 0;
+
+        foreach (Process process in Process.GetProcessesByName("XXMI Launcher"))
+        {
+            using (process)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(3000);
+                    killed++;
+                    Logger.LogInformation("已收掉残留的 XXMI Launcher（pid {Pid}）：它还挂着 3dmigoto 钩子", process.Id);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning("结束残留 XXMI Launcher（pid {Pid}）失败：{Message}", process.Id, ex.Message);
+                }
+            }
+        }
+
+        return killed;
+    }
+
+    /// <summary>等 loader 互斥体消失（收掉残留实例后它会随进程一起释放）</summary>
+    private static async Task<bool> WaitForDisarmAsync(int timeoutMs, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        while (stopwatch.ElapsedMilliseconds < timeoutMs)
+        {
+            if (!LoaderArmed())
+            {
+                return true;
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+
+        return !LoaderArmed();
+    }
+
+    /// <summary>
+    /// 从 <paramref name="offset"/> 往后读 XXMI 启动日志，看有没有「钩子已挂好、等游戏进程」那行
+    /// （<c>Waiting for user to start the game process …</c>）。XXMI 还在往里写，所以用
+    /// <see cref="FileShare.ReadWrite"/> 打开；日志被截断 / 轮转过就从头再来。
+    /// </summary>
+    private static bool LogSaysArmed(string logPath, ref long offset)
+    {
+        try
+        {
+            if (!File.Exists(logPath))
+            {
+                return false;
+            }
+
+            using FileStream stream = new(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+            if (stream.Length < offset)
+            {
+                offset = 0;     // 被截断 / 轮转过
+            }
+
+            if (stream.Length == offset)
+            {
+                return false;
+            }
+
+            stream.Seek(offset, SeekOrigin.Begin);
+
+            using StreamReader reader = new(stream, Encoding.UTF8);
+            string text = reader.ReadToEnd();
+            offset = stream.Length;
+
+            // 手动模式挂好钩子后 XXMI 打的就是这行（源码里写死的英文，跟界面语言无关）
+            return text.Contains("Waiting for user to start the game process", StringComparison.Ordinal);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "读 XXMI 启动日志失败：{Path}", logPath);
+            return false;
         }
     }
 
