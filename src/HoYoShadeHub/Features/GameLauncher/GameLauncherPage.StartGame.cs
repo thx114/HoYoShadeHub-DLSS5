@@ -680,6 +680,13 @@ public sealed partial class GameLauncherPage : PageBase
                                 && CurrentGameId is { } wantedOptiGame
                                 && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(wantedOptiGame));
         if (bridgeSpecForCleanup is not null
+            && OptiScalerRuntime.EnsureFsrBridgeRenderScale(Path.GetDirectoryName(bridgeSpecForCleanup.Path), 0.6f))
+        {
+            _logger.LogInformation("原神 FSR Bridge 渲染精度已固定为 0.6：{Directory}",
+                Path.GetDirectoryName(bridgeSpecForCleanup.Path));
+        }
+
+        if (bridgeSpecForCleanup is not null
             && !optiScalerWanted
             && OptiScalerRuntime.RemoveFsrBridgeAutoload(
                 Path.GetDirectoryName(bridgeSpecForCleanup.Path), out string? autoloadBackup))
@@ -1980,6 +1987,7 @@ public sealed partial class GameLauncherPage : PageBase
                     }
                     string bridgeDirectory = Path.GetDirectoryName(bridgePath)!;
                     OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
+                    OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, 0.6f);
                     OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiPath);
                     _logger.LogInformation("原神早期配置已准备：profile={Game}，OptiDllPath={Runtime}；随后才创建进程并注入",
                         earlyGenshin.GameBiz.Value, Path.Combine(buildDirectory, "OptiScaler"));

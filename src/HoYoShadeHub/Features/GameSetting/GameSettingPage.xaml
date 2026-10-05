@@ -124,7 +124,7 @@
                                     Spacing="8">
                             <TextBlock VerticalAlignment="Center"
                                        Text="目标帧率" />
-                            <NumberBox Width="120"
+                            <NumberBox Width="200"
                                        Minimum="60"
                                        Maximum="1000"
                                        SpinButtonPlacementMode="Inline"

@@ -18,7 +18,7 @@ internal sealed record DriverCheckResult(DriverCheckLevel Level, string? Version
 /// 用 DLSS5 插件时检查 NVIDIA 驱动版本（用户要求的区间）：
 
 /// <list type="bullet">
-/// <item>&gt; 616.64 → 红：驱动版本高于 616.64 可能存在 dlss5 插件兼容性问题</item>
+/// <item>&gt;= 616.56 → 绿：驱动版本满足 DLSS5 插件要求</item>
 /// <item>&lt; 616.56 → 黄：驱动版本低于 616.56 可能存在些微 dlss5 插件兼容性问题</item>
 /// <item>&lt; 610.47 → 红：驱动版本低于 610.47 可能 dlss5 插件报错</item>
 /// </list>
@@ -28,7 +28,6 @@ internal sealed record DriverCheckResult(DriverCheckLevel Level, string? Version
 /// </summary>
 internal static class NvidiaDriverCheck
 {
-    private const int MaxOk = 61664;      // 616.64
     private const int MinSoft = 61656;    // 616.56
     private const int MinHard = 61047;    // 610.47
 
@@ -45,10 +44,6 @@ internal static class NvidiaDriverCheck
             return new DriverCheckResult(DriverCheckLevel.Error, version, $"驱动版本低于610.47可能dlss5插件报错（当前 {version}）");
         }
 
-        if (value > MaxOk)
-        {
-            return new DriverCheckResult(DriverCheckLevel.Error, version, $"驱动版本高于616.64可能存在dlss5插件兼容性问题（当前 {version}）");
-        }
 
         if (value < MinSoft)
         {

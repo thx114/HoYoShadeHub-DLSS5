@@ -371,7 +371,7 @@ public sealed partial class GamePluginPage : PageBase
 
     /// <summary>
     /// 这个游戏装了 DLSS5 插件时，检查 NVIDIA 驱动版本（用户要求的区间）：
-    /// &gt;616.64 红、&lt;616.56 黄、&lt;610.47 红。
+    /// &gt;=616.56 绿、&lt;616.56 黄、&lt;610.47 红（不设上限）。
     /// </summary>
     private void UpdateDriverWarning()
     {
@@ -395,7 +395,7 @@ public sealed partial class GamePluginPage : PageBase
             if (result.Level is DriverCheckLevel.Ok)
             {
                 // 区间内也显示，让用户知道当前驱动版本被识别到了
-                TextBlock_DriverWarning.Text = $"NVIDIA 驱动 {result.Version}（DLSS5 插件要求区间内）";
+                TextBlock_DriverWarning.Text = $"NVIDIA 驱动 {result.Version}（满足 DLSS5 插件要求）";
                 TextBlock_DriverWarning.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorSuccessBrush"];
             }
             else

@@ -163,7 +163,8 @@ public static class ModuleRegistry
         }
 
         ModuleDefinition? bridge = Find(GenshinFsrBridgeId);
-        if (bridge is null || EnsureBundledGenshinFsrBridge() is null)
+        string? bridgeDll = EnsureBundledGenshinFsrBridge();
+        if (bridge is null || bridgeDll is null)
         {
             return false;
         }
@@ -172,6 +173,19 @@ public static class ModuleRegistry
         bridge.Enabled = true;
         RemoveManualGenshinFsrBridgeSelections(gameId);
         SetUsed(gameId, bridge.Id, true);
+
+        // Bridge-side state is per versioned module directory, not the flat module root.
+        // Prepare it here as soon as the Bridge is associated with the game, so a later
+        // injection-list mismatch cannot leave the game with only Bridge hooks and no Opti.
+        string bridgeDirectory = Path.GetDirectoryName(bridgeDll)!;
+        OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, 0.6f);
+        if (AppConfig.GetUseOptiScalerLaunchOption(gameId)
+            && AppConfig.GetSelectedOptiScalerDll(gameId) is { Length: > 0 } selectedOpti)
+        {
+            OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
+            OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, selectedOpti);
+        }
+
         // OptiScaler depends on the Bridge, so make the module launch option explicit.
         AppConfig.SetUseModulesLaunchOption(gameId, true);
         return true;

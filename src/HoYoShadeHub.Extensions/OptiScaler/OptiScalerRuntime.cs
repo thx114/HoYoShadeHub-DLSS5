@@ -761,6 +761,45 @@ Fsr2TranslationMode=2
         }
     }
 
+    /// <summary>
+    /// 原神 Bridge 的渲染精度不是注册表值，而是 Bridge DLL 目录旁的
+    /// <c>Dx11FsrBridge.render-scale.cache</c>。FSR Bridge 开启时固定到 0.6，
+    /// 让 DX11 FSR 输入保持低于 1，避免 Bridge/OptiScaler 走原生 1.0 路径。
+    /// </summary>
+    public static bool EnsureFsrBridgeRenderScale(string? directory, float scale = 0.6f)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return false;
+        }
+
+        // Bridge 当前候选为 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.999。
+        int index = scale switch
+        {
+            <= 0.25f => 0,
+            <= 0.35f => 1,
+            <= 0.45f => 2,
+            <= 0.55f => 3,
+            <= 0.65f => 4,
+            <= 0.75f => 5,
+            <= 0.85f => 6,
+            <= 0.95f => 7,
+            _ => 8,
+        };
+
+        try
+        {
+            string path = Path.Combine(directory, "Dx11FsrBridge.render-scale.cache");
+            File.WriteAllText(path, $"version 1{Environment.NewLine}index {index}{Environment.NewLine}",
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>撤走 autoload 清单时留的备份后缀（只留第一份，避免盖掉用户自己放的东西）</summary>
     public const string FsrBridgeAutoloadBackupSuffix = ".hysx-backup";
 

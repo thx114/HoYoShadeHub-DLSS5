@@ -709,33 +709,6 @@
                     Background="{ThemeResource CustomAcrylicBrush}"
                     CornerRadius="8"
                     Padding="12,8">
-            <!--  OptiScaler 与 HoYoShade / OpenHoYoShade 同时启用时的冲突提示（滚动跑马灯）  -->
-            <Border x:Name="Border_OptiScalerConflict"
-                    Margin="0,0,0,8"
-                    Padding="6,3"
-                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-                    CornerRadius="4"
-                    Visibility="Collapsed">
-                <Grid x:Name="Grid_OptiScalerConflict"
-                      Width="240"
-                      Height="16"
-                      SizeChanged="OptiScalerMarquee_SizeChanged">
-                    <Canvas x:Name="Canvas_OptiScalerConflict">
-                        <TextBlock x:Name="TextBlock_OptiScalerConflict"
-                                   Canvas.Top="0"
-                                   FontSize="12"
-                                   Foreground="{ThemeResource SystemFillColorCautionBrush}"
-                                   IsTextScaleFactorEnabled="False"
-                                   SizeChanged="OptiScalerMarquee_SizeChanged"
-                                   Text="OptiScaler 与 HoYoShade 同时启用可能出现插件冲突或兼容性问题"
-                                   TextWrapping="NoWrap">
-                            <TextBlock.RenderTransform>
-                                <TranslateTransform x:Name="OptiScalerMarqueeTransform" />
-                            </TextBlock.RenderTransform>
-                        </TextBlock>
-                    </Canvas>
-                </Grid>
-            </Border>
 
             <TextBlock Text="{x:Bind lang:Lang.GameLauncherPage_LaunchOptions}"
                        FontSize="12"
