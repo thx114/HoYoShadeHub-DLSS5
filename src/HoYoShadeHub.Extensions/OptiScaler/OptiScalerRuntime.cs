@@ -893,8 +893,10 @@ Fsr2TranslationMode=2
     ];
 
     /// <summary>
-    /// Copies the upscaler replacement DLLs next to OptiScaler. Same policy as EnsureNrdll:
-    /// an existing target of identical size is left alone so user-swapped versions survive.
+    /// Copies the upscaler replacement DLLs next to both OptiScaler entry points:
+    /// the build root and <c>build\OptiScaler</c>. Some fg-only packages load
+    /// relative to the component directory, while the injector/runtime still probes
+    /// the build root. Keep both locations complete and preserve same-sized user swaps.
     /// </summary>
     /// <returns>file names copied this time</returns>
     public static List<string> EnsureUpscalerReplacements(
@@ -916,34 +918,41 @@ Fsr2TranslationMode=2
         }
         candidates.Add(addonsDirectory);
 
+        string componentDirectory = Path.Combine(buildDirectory, "OptiScaler");
+        Directory.CreateDirectory(componentDirectory);
+        string[] targetDirectories = [buildDirectory, componentDirectory];
+
         foreach (string fileName in UpscalerReplacementFileNames)
         {
-            string target = Path.Combine(buildDirectory, fileName);
-            string? source = FindFileSource(target, fileName, candidates);
+            string? source = FindFileSource(null, fileName, candidates);
             if (source is null)
             {
                 continue;
             }
 
-            try
+            foreach (string targetDirectory in targetDirectories)
             {
-                bool sameFile = string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
-                if (sameFile)
+                string target = Path.Combine(targetDirectory, fileName);
+                try
                 {
-                    continue;
-                }
+                    bool sameFile = string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
+                    if (sameFile)
+                    {
+                        continue;
+                    }
 
-                if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(source).Length)
+                    if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(source).Length)
+                    {
+                        continue;
+                    }
+
+                    File.Copy(source, target, overwrite: true);
+                    copied.Add(Path.GetRelativePath(buildDirectory, target));
+                }
+                catch
                 {
-                    continue;
+                    // A failed copy must not fail the caller.
                 }
-
-                File.Copy(source, target, overwrite: true);
-                copied.Add(fileName);
-            }
-            catch
-            {
-                // A failed copy must not fail the caller.
             }
         }
 
@@ -953,7 +962,8 @@ Fsr2TranslationMode=2
     /// <summary>Are the upscaler replacement DLLs present next to OptiScaler?</summary>
     public static bool HasUpscalerReplacements(string buildDirectory)
         => !string.IsNullOrWhiteSpace(buildDirectory)
-           && File.Exists(Path.Combine(buildDirectory, DlssSrFileName));
+           && (File.Exists(Path.Combine(buildDirectory, "nvngx_dlss.dll"))
+               || File.Exists(Path.Combine(buildDirectory, "OptiScaler", "nvngx_dlss.dll")));
 
     /// <summary>Generic "find this file in the candidate directories" helper.</summary>
     public static string? FindFileSource(

@@ -1810,14 +1810,25 @@ public sealed partial class GameSelector : UserControl
         }
     }
 
-    /// <summary>这个 biz 的安装目录：已配的路径 → 注册表里的 GameInstallPath；都没有返回 null</summary>
+    /// <summary>
+    /// 这个 biz 的安装目录：已配路径 / 注册表路径必须真的包含主 exe；
+    /// 注册表可能残留旧的 <c>games</c> 目录，而实际游戏已经搬到同级的 <c>game</c> 目录，
+    /// 这时从注册表路径的上层最多向下找两层。
+    /// </summary>
     private static string? TryFindInstallPath(GameBiz gameBiz)
     {
-        string? path = GameLauncherService.GetGameInstallPath(gameBiz);
-        if (!string.IsNullOrWhiteSpace(path)
-            && (Directory.Exists(path) || AppConfig.GetGameInstallPathRemovable(gameBiz)))
+        string exeName = GameLauncherService.GetGameExeName(gameBiz)
+                          ?? KnownProcessNames.ForBiz(gameBiz)
+                          ?? string.Empty;
+        if (exeName.Length == 0)
         {
-            return path;
+            return null;
+        }
+
+        string? configured = GameLauncherService.GetGameInstallPath(gameBiz);
+        if (IsUsableGameFolder(configured, exeName))
+        {
+            return configured;
         }
 
         string key = string.Empty;
@@ -1834,13 +1845,66 @@ public sealed partial class GameSelector : UserControl
             key = gameBiz.GetGameRegistryKey();
         }
 
-        if (string.IsNullOrWhiteSpace(key) || key == "HKEY_CURRENT_USER")
+        string? registryPath = string.IsNullOrWhiteSpace(key) || key == "HKEY_CURRENT_USER"
+            ? null
+            : Registry.GetValue(key, "GameInstallPath", null) as string;
+
+        if (IsUsableGameFolder(registryPath, exeName))
         {
-            return null;
+            return registryPath;
         }
 
-        path = Registry.GetValue(key, "GameInstallPath", null) as string;
-        return Directory.Exists(path) ? path : null;
+        // HYP 常见残留：注册表仍是 ...\\games\\Genshin Impact Game，
+        // 盘上实际目录却变成 ...\\game\\Genshin Impact Game。
+        // 以已知路径的上层为搜索根，避免全盘遍历。
+        foreach (string root in SearchParentRoots(configured, registryPath))
+        {
+            GameFolderSearchResult found = GameFolderLocator.Locate(root, exeName);
+            if (found.Found && IsUsableGameFolder(found.Directory, exeName))
+            {
+                return found.Directory;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsUsableGameFolder(string? path, string exeName) =>
+        !string.IsNullOrWhiteSpace(path)
+        && Directory.Exists(path)
+        && File.Exists(Path.Combine(path, exeName));
+
+    private static IEnumerable<string> SearchParentRoots(params string?[] paths)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string? path in paths)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            string? current = path;
+            for (int i = 0; i < 3 && !string.IsNullOrWhiteSpace(current); i++)
+            {
+                string full;
+                try
+                {
+                    full = Path.GetFullPath(current);
+                }
+                catch
+                {
+                    break;
+                }
+
+                if (seen.Add(full))
+                {
+                    yield return full;
+                }
+
+                current = Directory.GetParent(full)?.FullName;
+            }
+        }
     }
 
     /// <summary>
@@ -1884,5 +1948,4 @@ public sealed partial class GameSelector : UserControl
 
 
 }
-
 

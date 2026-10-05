@@ -623,6 +623,24 @@ public sealed partial class GameLauncherPage : PageBase
     {
         List<InjectDllSpec> specs = [];
 
+        // 原神的 Bridge 是 OptiScaler 的进程内宿主。Opti 已启用时，启动前自动关联 Bridge，
+        // 避免模块页勾选但每游戏 used-keys 仍是旧配置，导致 Bridge 注入后不再 autoload Opti。
+        if (includeGameExtras && UseOptiScaler && CurrentGameId is { } genshin
+            && ModuleRegistry.IsGenshin(genshin))
+        {
+            if (ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(genshin))
+            {
+                UseModules = true;
+                _logger.LogInformation("原神 OptiScaler 启动前自动关联 Genshin FSR Bridge：{Game}",
+                    genshin.GameBiz);
+            }
+            else
+            {
+                _logger.LogWarning("原神 OptiScaler 启动前未能关联 Genshin FSR Bridge：{Game}",
+                    genshin.GameBiz);
+            }
+        }
+
         // ⓪ 黑名单绕行（鸣潮）：shade 本体最先注，OptiScaler / 模块跟在后面
         if (!string.IsNullOrWhiteSpace(shadeReShadeDll) && File.Exists(shadeReShadeDll))
         {

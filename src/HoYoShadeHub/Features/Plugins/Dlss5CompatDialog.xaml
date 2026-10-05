@@ -25,6 +25,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -66,14 +67,24 @@
             </StackPanel>
         </Grid>
 
+        <StackPanel Grid.Row="1" Spacing="4">
+            <ProgressBar Minimum="0"
+                         Maximum="100"
+                         Value="{x:Bind CheckProgress, Mode=OneWay}"
+                         Height="4" />
+            <TextBlock Text="{x:Bind CheckProgressStatus, Mode=OneWay}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Style="{ThemeResource CaptionTextBlockStyle}" />
+        </StackPanel>
+
         <InfoBar x:Name="InfoBar_Status"
-                 Grid.Row="1"
+                 Grid.Row="2"
                  IsClosable="True"
                  IsOpen="False"
                  Severity="Informational" />
 
         <!--  20 条结果  -->
-        <ScrollViewer Grid.Row="2" Padding="0,0,6,0">
+        <ScrollViewer Grid.Row="3" Padding="0,0,6,0">
             <ItemsControl ItemsSource="{x:Bind Items}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="local:Dlss5CompatItem">
@@ -148,7 +159,7 @@
             </ItemsControl>
         </ScrollViewer>
 
-        <TextBlock Grid.Row="3"
+        <TextBlock Grid.Row="4"
                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                    Style="{ThemeResource CaptionTextBlockStyle}"
                    Text=" 检测只读不写盘；只有点「修复」才会动文件。第三方 dll / 链接是「移到备份目录」而不是删除。"

@@ -1950,6 +1950,19 @@ public sealed partial class GlobalPluginPage : PageBase
                 build.Directory,
                 _manager?.Host.AddonsPath);
 
+            // FSR-only 游戏（原神）需要 nvngx_dlss.dll / nvngx_dlssd.dll 放在 OptiScaler
+            // 构建目录中；GitHub 的 fg-only 包本身不一定携带它们，安装时自动从
+            // HoYoShade Addons 或其它已安装构建补齐，避免用户装完后只能退回 FSR。
+            List<string> upscalerReplacements = OptiScalerRuntime.EnsureUpscalerReplacements(
+                build.Directory,
+                _manager?.Host.AddonsPath,
+                OptiScalerBuilds.Select(v => v.Build.Directory));
+            if (upscalerReplacements.Count > 0)
+            {
+                _logger.LogInformation("OptiScaler upscaler replacements: {Files}",
+                    string.Join(", ", upscalerReplacements));
+            }
+
             // ini 默认 OptiDllPath=auto 按游戏 exe 目录解析，外部注入要钉成数据目录的绝对路径
             if (OptiScalerRuntime.EnsureConfigDllPath(build.Directory))
             {
