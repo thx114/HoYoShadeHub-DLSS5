@@ -71,5 +71,24 @@ JSON 三种形态等价：`{"steps":[...]}` / `{"actions":[...]}` / 裸数组 `[
 HoYoShadeHub.exe startgame --biz hk4e_cn   :: 裸启动游戏进程（不带任何插件）
 ```
 
+## 日志快照（每局一份）
+
+```bat
+:: 把「当前这一局」的日志抄一份出来（Bridge / OptiScaler / ReShade / Hub），并打印目录
+D:\APPS\HoYoShadeHub\HoYoShadeHub.exe collectlogs --biz hk4e_cn
+D:\APPS\HoYoShadeHub\HoYoShadeHub.exe collectlogs --pid 43980
+```
+
+- 走启动页 / `run` 启动的游戏**本来就会自动快照**到
+  `<启动器目录>\log\sessions\<时间>_<进程名>_<pid>\`：启动瞬间记状态 + 抄配置、启动后 45 秒、
+  之后每 5 分钟、进程退出各抄一次（进程被强杀 / 卡死也留得下 5 分钟内的现场）。
+- `collectlogs` 是给「游戏由官方启动器启动、Hub 没参与」的情况兜底：一条命令拿到当前一局。
+- 每个文件夹里有 `session.txt`（源路径、大小、修改时间、Bridge/OptiScaler 版本）+ 抄来的
+  `bridge-*.log` / `opti-*.log` / `shade-ReShade.log` / 各 ini / Hub 当天日志。
+- 为什么必须这样：**Bridge、ReShade、OptiScaler 都是每次启动重写自己的日志**
+  （OptiScaler 是 basic_file_sink truncate，Bridge 是 ini `truncate_on_start=1`），
+  让客户手动挑文件必然把不同几次运行混在一起 —— 实测两起工单都发来了上一次运行的 OptiScaler.log。
+- 保留最近 15 局、单文件最多 16 MiB、总量 256 MiB，超了自动从最旧的删。
+
 完整动作词汇见 `src/HoYoShadeHub/Features/Plugins/LauncherActionRunner.cs` 顶部分发；JSON 解析见 `HoYoShadeHub.Extensions/ReShade/PackAutoAction.cs`。每次 CLI 调用都会写日志：`D:\APPS\HoYoShadeHub\log\HoYoShadeHub_当天日期.log`。
 

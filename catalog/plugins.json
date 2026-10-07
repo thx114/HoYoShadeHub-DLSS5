@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-01T00:00:00Z",
+  "updatedAt": "2026-10-07T00:00:00Z",
   "_readme": [
     "远端插件目录：不重新发版也能加/改插件条目（按 id 覆盖内置的同 id 条目，新 id 直接追加）。",
     "字段语义见仓库 docs/OPEN-SOURCE-PLAN.md；改完务必跑一遍扩展自测的 --online（会逐条解析 tag/资产、并检查规则能不能命中资产名）。",
@@ -26,7 +26,8 @@
         "HoYoShade"
       ],
       "conflictsWith": [
-        "renodx.dlss5.superanus"
+        "renodx.dlss5.superanus",
+        "gitc.uplift"
       ],
       "source": {
         "type": "github-release",
@@ -62,7 +63,8 @@
         "HoYoShade"
       ],
       "conflictsWith": [
-        "renodx.dlss5"
+        "renodx.dlss5",
+        "gitc.uplift"
       ],
       "source": {
         "type": "github-release",
@@ -78,6 +80,63 @@
           "match": "*.addon64",
           "to": "reshade-shaders/Addons",
           "flatten": true
+        }
+      ]
+    },
+    {
+      "id": "gitc.uplift",
+      "name": "GITC Uplift（DLSS 神经渲染）",
+      "version": "latest",
+      "author": "ghostinthecamera",
+      "description": "GITC Uplift —— 面向虚拟摄影的 DLSS 5 神经渲染（DLSS-NR）实现，DX9~DX12 / Vulkan / OpenGL 都吃，设置写在游戏 ReShade.ini 的 [Uplift] 段。装法与上游手册一致：压缩包 Addons 目录整个照搬进 HoYoShade\\reshade-shaders\\Addons（gitc-uplift.addon64 + gitc-uplift-helper64.exe + GITC-Uplift 文件夹），Shaders 里的 .fx 铺进 reshade-shaders\\Shaders。⚠️ 它和 RenoDX 那几支 NR 插件是同一件事的不同实现（上游明确要求先删掉 renodx-dlss*.addon64，否则 Uplift 罢工），条目之间已声明互斥。⚠️ 它**不含** NVIDIA 的 nvngx_dlssnr.dll：装完要把 310.8 那份放进 reshade-shaders\\Addons\\GITC-Uplift\\（30/40 系要用带 RTX40 的变体；「DLL 配置」页装的那份就在 Addons 里，Uplift 也认）。别放游戏 exe 旁边 —— 50 系上游戏的 DLSS 会先加载那一份，Uplift 反而用不上。",
+      "homepage": "https://github.com/ghostinthecamera/GITC-Uplift",
+      "tags": [
+        "dlss5",
+        "neural",
+        "rtx",
+        "photography"
+      ],
+      "hosts": [
+        "HoYoShade"
+      ],
+      "conflictsWith": [
+        "renodx.dlss5",
+        "renodx.dlss5.superanus",
+        "renodx.dlss.sf",
+        "dlss5.neural.interposer"
+      ],
+      "source": {
+        "type": "github-release",
+        "repository": "ghostinthecamera/GITC-Uplift",
+        "tagPattern": "^v\\d",
+        "assetPattern": "GITC-Uplift-*.zip"
+      },
+      "addonPatterns": [
+        "gitc-uplift*"
+      ],
+      "rules": [
+        {
+          "match": "**/Addons/gitc-uplift.addon64",
+          "to": "reshade-shaders/Addons",
+          "flatten": true
+        },
+        {
+          "match": "**/Addons/gitc-uplift-helper64.exe",
+          "to": "reshade-shaders/Addons",
+          "flatten": true,
+          "optional": true
+        },
+        {
+          "match": "**/Addons/GITC-Uplift/**",
+          "to": "reshade-shaders",
+          "flatten": false,
+          "optional": true
+        },
+        {
+          "match": "**/Shaders/*.fx",
+          "to": "reshade-shaders/Shaders",
+          "flatten": true,
+          "optional": true
         }
       ]
     },
@@ -106,6 +165,9 @@
       "addonPatterns": [
         "renodx-dlss.addon64*",
         "renodx-dlss(ShortFuse*"
+      ],
+      "conflictsWith": [
+        "gitc.uplift"
       ],
       "rules": [
         {
@@ -138,6 +200,9 @@
       },
       "addonPatterns": [
         "*interposer*"
+      ],
+      "conflictsWith": [
+        "gitc.uplift"
       ],
       "rules": [
         {

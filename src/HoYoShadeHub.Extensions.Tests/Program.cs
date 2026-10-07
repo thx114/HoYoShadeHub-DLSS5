@@ -363,7 +363,7 @@ Check(liveEntries.Length >= 6, $"插件目录有 {liveEntries.Length} 个有效�
 Check(liveEntries.All(e => e.IsValid), "所有条目都通过 IsValid 校验");
 Check(liveEntries.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == liveEntries.Length, "id 无重复");
 // renodx.hkrpg（RenoDX 星铁）按用户要求删掉了 —— 只允许以墓碑（removed: true）形式存在
-string[] expectedIds = ["renodx.dlss5", "renodx.dlss5.superanus", "renodx.dlss.sf", "renodx.ue.doffix", "dlss5.neural.interposer", "dlss5.bridge", "hoyoshade.presets"];
+string[] expectedIds = ["renodx.dlss5", "renodx.dlss5.superanus", "gitc.uplift", "renodx.dlss.sf", "renodx.ue.doffix", "dlss5.neural.interposer", "dlss5.bridge", "hoyoshade.presets"];
 Check(expectedIds.All(id => liveEntries.Any(e => e.Id == id)), "插件条目齐全（含 thx114/hoyodlss5 的 Neural Interposer）");
 Check(builtin.Extensions.All(e => e.Id != "renodx.hkrpg" || e.Removed), "renodx.hkrpg（RenoDX 星铁）已按用户要求删除（墓碑不算活条目）");
 
@@ -394,9 +394,60 @@ foreach (var entry in builtin.Extensions.Where(e => e.ConflictsWith is { Length:
     }
 }
 
+// GITC Uplift（ghostinthecamera/GITC-Uplift）：落位形状必须跟上游压缩包一致 ——
+// 压缩包的 Addons 目录整个照搬（addon64 + helper64.exe + GITC-Uplift 文件夹），
+// Shaders 里的 .fx 铺进 Shaders，README / LICENSE 不装。
+var uplift = liveEntries.First(e => e.Id == "gitc.uplift");
+Check(uplift.Tags?.Contains("dlss5") == true, "gitc.uplift 带 dlss5 标签（NR 判定 + dll 需求都靠它）");
+Check(uplift.ConflictsWith?.Contains("renodx.dlss5") == true,
+    "gitc.uplift 与 RenoDX DLSS5 互斥（上游明确要求先删掉 renodx-dlss*）");
+Check(ExtensionAddonMatcher.MatchExtensionId(liveEntries, "gitc-uplift.addon64") == "gitc.uplift",
+    "自己手动塞进 Addons 的 gitc-uplift.addon64 也会被这个条目认领");
+
+// 条件表平时由 RemoteCatalogService 从远端（首跑用随包种子）喂进来，这里直接读仓库那份
+string upliftConditionsPath = Path.Combine(repoCatalogDir ?? "", "conditions.json");
+Check(File.Exists(upliftConditionsPath), "仓库里有 catalog/conditions.json");
+AddonConditions.LoadJson(File.ReadAllText(upliftConditionsPath));
+Check(AddonConditions.MatchAddon("gitc-uplift") is { Dlss5: true, HookPointCapable: false, RenoDxDlss5: false },
+    "conditions：gitc-uplift 算 DLSS5 类，但不是 RenoDX 那套（hook 点控件不该出现）");
+Check(AddonNameResolver.GetKnownInternalName("gitc-uplift") == "GITC Uplift",
+    "addon 卡片用内部名 GITC Uplift 显示");
+AddonConditions.Load(null);   // 还原成内置默认，别影响后面的用例
+
+string upliftStaging = Path.Combine(root, "gitc-uplift-payload");
+Directory.CreateDirectory(Path.Combine(upliftStaging, "Addons", "GITC-Uplift"));
+Directory.CreateDirectory(Path.Combine(upliftStaging, "Shaders"));
+File.WriteAllText(Path.Combine(upliftStaging, "Addons", "gitc-uplift.addon64"), "fake addon");
+File.WriteAllText(Path.Combine(upliftStaging, "Addons", "gitc-uplift.addon32"), "fake addon 32");
+File.WriteAllText(Path.Combine(upliftStaging, "Addons", "gitc-uplift-helper64.exe"), "fake helper");
+File.WriteAllText(Path.Combine(upliftStaging, "Addons", "GITC-Uplift", "Put nvngx_dlssnr.dll here.txt"), "nvngx 放这儿");
+File.WriteAllText(Path.Combine(upliftStaging, "Shaders", "Uplift.fx"), "shader");
+File.WriteAllText(Path.Combine(upliftStaging, "Shaders", "UpliftMask.fx"), "shader");
+File.WriteAllText(Path.Combine(upliftStaging, "README.md"), "不进安装");
+File.WriteAllText(Path.Combine(upliftStaging, "LICENSE"), "不进安装");
+File.WriteAllText(Path.Combine(upliftStaging, "THIRD_PARTY_NOTICES.md"), "不进安装");
+
+var upliftPayload = new ResolvedExtensionPayload { PayloadRoot = upliftStaging, ResolvedTag = "v1.1.7" };
+var upliftPlan = ExtensionInstaller.BuildPlan(upliftPayload, uplift);
+var upliftDest = upliftPlan.ToDictionary(p => p.SourceFile, p => p.RelativePath, StringComparer.OrdinalIgnoreCase);
+Check(upliftDest.TryGetValue("Addons/gitc-uplift.addon64", out string? upliftAddonDest)
+      && upliftAddonDest == "reshade-shaders/Addons/gitc-uplift.addon64",
+    $"addon64 → Addons（实际 {upliftAddonDest ?? "无"}）");
+Check(upliftDest.TryGetValue("Addons/gitc-uplift-helper64.exe", out string? upliftHelperDest)
+      && upliftHelperDest == "reshade-shaders/Addons/gitc-uplift-helper64.exe",
+    "helper64.exe 和 addon 并排（上游要求同一版本一起放）");
+Check(upliftDest.TryGetValue("Addons/GITC-Uplift/Put nvngx_dlssnr.dll here.txt", out string? upliftNrDest)
+      && upliftNrDest == "reshade-shaders/Addons/GITC-Uplift/Put nvngx_dlssnr.dll here.txt",
+    "GITC-Uplift 文件夹连层级一起保留（nvngx_dlssnr.dll 要放这儿）");
+Check(upliftDest.TryGetValue("Shaders/Uplift.fx", out string? upliftFxDest)
+      && upliftFxDest == "reshade-shaders/Shaders/Uplift.fx",
+    $"Uplift.fx → reshade-shaders/Shaders（实际 {upliftFxDest ?? "无"}）");
+Check(!upliftDest.ContainsKey("Addons/gitc-uplift.addon32"),
+    "addon32 不装：HoYoShade 只有 64 位宿主（ReShade64.dll），32 位那份用不上");
+Check(upliftDest.Count == 5, $"只落这 5 个文件，README / LICENSE / THIRD_PARTY_NOTICES 不装（实际 {upliftDest.Count}）");
+
 var diag = manager.Diagnose();
 Check(diag.AddonPathConfigured, "体检：AddonPath 已配置");
-
 Console.WriteLine();
 Console.WriteLine("== 10. 版本下拉的排序（GitHub 按创建时间列，我们按发布时间排）==");
 // 真实样本：RankFTW/rhi-repo 的 releases 页前四条。卡片顺序 = 创建顺序，发布时间是乱序的（09-19 / 09-18 / 09-20 / 09-21）。
@@ -481,7 +532,8 @@ if (args.Contains("--online"))
     Console.WriteLine();
     Console.WriteLine("== 11. 联网校验内置条目的 source（--online）==");
     var resolver = new GithubReleaseResolver();
-    foreach (var entry in builtin.Extensions.Where(e => e.Source.Type == ExtensionSourceType.GithubRelease))
+    // 墓碑（removed: true，比如 renodx.hkrpg）只有 id、没有 source，别拿去解析
+    foreach (var entry in builtin.Extensions.Where(e => !e.Removed && e.Source.Type == ExtensionSourceType.GithubRelease))
     {
         try
         {

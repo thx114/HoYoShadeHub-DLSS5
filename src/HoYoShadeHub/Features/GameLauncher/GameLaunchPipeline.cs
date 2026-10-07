@@ -261,7 +261,7 @@ public static class GameLaunchPipeline
         {
             if (blockForInjection)
             {
-                await InjectLoopAsync(processName, specs, TimeSpan.FromMinutes(5), report, ct);
+                await InjectLoopAsync(gameId, processName, specs, TimeSpan.FromMinutes(5), report, ct);
             }
             else
             {
@@ -269,7 +269,7 @@ public static class GameLaunchPipeline
                 {
                     try
                     {
-                        await InjectLoopAsync(processName, specs, TimeSpan.FromMinutes(20), null, CancellationToken.None);
+                        await InjectLoopAsync(gameId, processName, specs, TimeSpan.FromMinutes(20), null, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -688,6 +688,7 @@ public static class GameLaunchPipeline
 
     /// <summary>等进程 → 按「注入时机」预热 → VirtualAllocEx 注入 → 桥就绪再注后面的。</summary>
     private static async Task InjectLoopAsync(
+        GameId gameId,
         string processName,
         IReadOnlyList<InjectSpec> specs,
         TimeSpan budget,
@@ -789,7 +790,7 @@ public static class GameLaunchPipeline
             await Task.Delay(survivalCheck, ct);
             if (DllInjector.IsProcessAlive(pid))
             {
-                HookInjectedTarget(target, processName, pid, specs);
+                HookInjectedTarget(target, processName, pid, specs, gameId);
                 return;
             }
 
@@ -847,8 +848,12 @@ public static class GameLaunchPipeline
     }
 
     /// <summary>注稳了：游戏退出时把 OptiScaler 主 ini 回写 profile（页面 HookInjectedTarget 的移植）。</summary>
-    private static void HookInjectedTarget(Process target, string processName, int pid, IReadOnlyList<InjectSpec> specs)
+    private static void HookInjectedTarget(Process target, string processName, int pid, IReadOnlyList<InjectSpec> specs, GameId gameId)
     {
+        // 本局日志快照（Bridge / OptiScaler / ReShade / Hub）：CLI / 插件走这条注入路径时也要有一局，
+        // 否则客户从命令行启动就只有手动收集的老日志（见 GameSessionLogCollector）。
+        GameSessionLogCollector.Begin(gameId, pid, processName, process: target);
+
         try
         {
             target.EnableRaisingEvents = true;

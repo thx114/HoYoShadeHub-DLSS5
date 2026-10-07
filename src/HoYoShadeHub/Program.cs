@@ -70,7 +70,8 @@ public static class Program
                 // 而不是在这里走 GUI 的 runas 重启（不等待、无输出、退出码恒 0）。
                 // rpc / playtime：静默通道，永不提权。
                 if (arg is "rpc" or "playtime" or "run" or "auto" or "action"
-                    or "stopgame" or "killgame" or "startgame" or "testgame" or "test-game" or "selftest")
+                    or "stopgame" or "killgame" or "startgame" or "testgame" or "test-game" or "selftest"
+                    or "collectlogs" or "collect-logs" or "sessionlogs")
                 {
                     skip = true;
                 }
@@ -172,6 +173,11 @@ public static class Program
                 return 0;
             }
 
+            if (args[0].ToLower() is "collectlogs" or "collect-logs" or "sessionlogs")
+            {
+                return CollectSessionLogs(config);
+            }
+
             if (args[0].ToLower().StartsWith("hoyoshadehub://"))
             {
                 // ConfigureAwait(false)：协议处理在主线程上同步阻塞等待，
@@ -203,6 +209,66 @@ public static class Program
             global::System.Threading.SynchronizationContext.SetSynchronizationContext(context);
             new App();
         });
+        return 0;
+    }
+
+    /// <summary>
+    /// <c>collectlogs</c>：立刻把「当前这一局」的日志（Bridge / OptiScaler / ReShade / Hub 自己）
+    /// 抄进 <c>log\sessions\&lt;时间&gt;_&lt;进程名&gt;_&lt;pid&gt;\</c>，并打印这个目录。
+    /// 用法：<c>HoYoShadeHub.exe collectlogs --biz hk4e_cn [--pid 43980] [--name YuanShen]</c>。
+    ///
+    /// <para>游戏是官方启动器起的、Hub 没参与时也能用 —— 这类工单里客户只能手动挑文件，
+    /// 而 Bridge / ReShade / OptiScaler 三家都是每次启动重写自己的日志，于是必然发错局。</para>
+    /// </summary>
+    private static int CollectSessionLogs(IConfiguration config)
+    {
+        GameBiz biz = (GameBiz)config.GetValue<string>("biz");
+        GameId? gameId = biz.Value.Length == 0 ? null : GameId.FromGameBiz(biz);
+        int pid = config.GetValue<int>("pid");
+        string? name = config.GetValue<string>("name");
+
+        System.Diagnostics.Process? process = null;
+        if (pid > 0)
+        {
+            try
+            {
+                process = System.Diagnostics.Process.GetProcessById(pid);
+            }
+            catch (Exception ex)
+            {
+                CliPrint($"找不到 pid {pid}：{ex.Message}", error: true);
+            }
+        }
+        else if (gameId is not null)
+        {
+            try
+            {
+                process = AppConfig.GetService<GameLauncherService>()
+                    .GetGameProcessAsync(gameId).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                CliPrint($"查找游戏进程失败：{ex.Message}", error: true);
+            }
+        }
+
+        if (process is null)
+        {
+            CliPrint(gameId is null
+                ? "没给 --biz / --pid：只按当前安装痕迹导出离线快照。"
+                : "没找到正在运行的游戏进程：只按当前安装痕迹导出离线快照。");
+        }
+
+        string processName = process?.ProcessName ?? name ?? "manual";
+        string? directory = GameSessionLogCollector.CaptureNow(
+            gameId, process?.Id ?? 0, processName, commandLine: null, process: process);
+        if (directory is null)
+        {
+            CliPrint("导出失败：详见 Hub 日志。", error: true);
+            return 1;
+        }
+
+        CliPrint($"已导出本局日志快照：{directory}");
         return 0;
     }
 

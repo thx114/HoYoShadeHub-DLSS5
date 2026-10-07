@@ -20,7 +20,7 @@ new=out/'OptiScaler/mfg-ada/mfg-ada-0.1.9'
 repo = root/'OptiScaler-MFG-Ada'
 shutil.copy2(repo/'release/optiscaler-mfg-ada-fg-only-0.1.9/OptiScaler.dll', new/'OptiScaler.dll')
 profile = (repo/'presets/Genshin-NR.ini').read_text(encoding='utf-8-sig')
-for relative in ['OptiScaler.ini','profiles/hk4e_cn.ini']:
+for relative in ['OptiScaler.ini','profiles/hk4e_cn.ini','profiles/hk4e_global.ini','profiles/hk4e_bilibili.ini']:
     path=new/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(profile,encoding='utf-8')
 for path in [out/'GamePack/40-原神 x6.ini',out/'OptiScaler/presets/40-原神 x6.ini']:
     path.write_text(profile,encoding='utf-8')
@@ -56,7 +56,7 @@ Bridge默认关闭input dump，无机器绝对路径，AMD SDK沿用包内module
 '''
 (out/'GamePack/README.txt').write_text(readme,encoding='utf-8')
 m=json.loads((out/'filelist.json').read_text(encoding='utf-8-sig'))
-m['version']='2.5';m['note']='原神NR guide对齐修复；OptiScaler0.1.9 CPU同步、菜单/resize修正；Bridge2.3.2实例隔离；未包含失败GPU Wait性能实验。'
+m['game']='hk4e';m['version']='2.5';m['note']='原神NR guide对齐修复；OptiScaler0.1.9 CPU同步、菜单/resize修正；Bridge2.3.2实例隔离；未包含失败GPU Wait性能实验。'
 m['optiscaler']['version']='mfg-ada-0.1.9'
 m['files']=[{'path':p.relative_to(out).as_posix(),'size':p.stat().st_size} for p in sorted(out.rglob('*')) if p.is_file() and p.name!='filelist.json']
 manifest=out/'filelist.json'

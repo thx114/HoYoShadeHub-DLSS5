@@ -1218,6 +1218,11 @@ public sealed partial class GameLauncherPage : PageBase
     /// <summary>注入成功且目标稳定：让背景释放显存，并挂上「游戏退出」的钩子</summary>
     private void HookInjectedTarget(Process target, string processName, int pid, IReadOnlyList<InjectDllSpec> specs)
     {
+        // 本局日志快照（Bridge / OptiScaler / ReShade / Hub）：这三家都是每次启动重写自己的日志，
+        // 客户手动收集时必然张冠李戴（实测两起工单都发来了上一次运行的 OptiScaler.log）。
+        // 这里按 pid 存一局，进程退出时收尾；同一 pid 重复调用只会建一个（见 GameSessionLogCollector）。
+        GameSessionLogCollector.Begin(CurrentGameId, pid, processName, process: target);
+
         // 游戏起来了：让背景停掉并释放显存（跟 Hub 自己启动游戏时的行为一致）；
         // 游戏退出再发一条，让背景回来 —— 用户报过「壁纸在游戏关闭后没有恢复」
         DispatcherQueue?.TryEnqueue(() => WeakReferenceMessenger.Default.Send(new GameStartedMessage()));
@@ -2019,6 +2024,14 @@ public sealed partial class GameLauncherPage : PageBase
 
                     GameState = GameState.GameIsRunning;
                     GameProcess = early.Process;
+
+                    // 本局日志快照：早期路径没走 StartExtraDllInjection 的 spec 列表（Bridge/OptiScaler
+                    // 是 GenshinEarlyLaunch 直接批量注入的），在这里单独开一局；后面 ReShade 注入再调
+                    // Begin 时按 pid 去重，不会重复建目录。
+                    GameSessionLogCollector.Begin(earlyGenshin, early.Process.Id,
+                        earlyProcessName ?? Path.GetFileName(earlyExe),
+                        exePath: earlyExe, commandLine: earlyArguments.Trim(), process: early.Process);
+
                     WeakReferenceMessenger.Default.Send(new GameStartedMessage());
                     if (UseFpsUnlock)
                     {
