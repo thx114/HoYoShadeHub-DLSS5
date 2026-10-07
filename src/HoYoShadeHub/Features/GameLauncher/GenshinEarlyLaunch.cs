@@ -10,24 +10,23 @@ using System.Threading.Tasks;
 namespace HoYoShadeHub.Features.GameLauncher;
 
 /// <summary>
-/// v2.3.1 Bridge and OptiScaler must enter Genshin immediately after
-/// CreateProcess, before the normal launcher path has initialized its D3D stack.
-/// This mirrors unlockfps_nc's CreateProcess -> inject DllList sequence.
-/// The reference config does not use CREATE_SUSPENDED, so keep the process
-/// running while the two DLLs are loaded.
+/// v2.3.1 Bridge, OptiScaler, and ReShade must enter Genshin immediately after
+/// CreateProcess using the parent process handle, before the normal launcher
+/// path has initialized its D3D stack and before anti-cheat (mhyprot/HoYoKProtect)
+/// blocks external VirtualAllocEx/OpenProcess.
 /// </summary>
 internal static class GenshinEarlyLaunch
 {
     public sealed record Result(Process? Process, string? Error);
 
     public static Task<Result> StartAsync(string exePath, string arguments, string workingDirectory,
-        string bridgeDll, string? ffx12Dll, string optiDll, Action<string>? report = null)
+        string bridgeDll, string? ffx12Dll, string optiDll, string? shadeDll = null, Action<string>? report = null)
     {
-        return Task.Run(() => Start(exePath, arguments, workingDirectory, bridgeDll, ffx12Dll, optiDll, report));
+        return Task.Run(() => Start(exePath, arguments, workingDirectory, bridgeDll, ffx12Dll, optiDll, shadeDll, report));
     }
 
     private static Result Start(string exePath, string arguments, string workingDirectory,
-        string bridgeDll, string? ffx12Dll, string optiDll, Action<string>? report)
+        string bridgeDll, string? ffx12Dll, string optiDll, string? shadeDll, Action<string>? report)
     {
         if (!File.Exists(exePath))
             return new(null, "找不到原神主程序：" + exePath);
@@ -44,7 +43,7 @@ internal static class GenshinEarlyLaunch
 
         try
         {
-            report?.Invoke($"CreateProcess 后立即注入 Bridge + OptiScaler（pid {pi.dwProcessId}）");
+            report?.Invoke($"CreateProcess 后由父句柄立即注入图形栈（pid {pi.dwProcessId}）");
             List<string> dlls = [bridgeDll];
             if (!string.IsNullOrWhiteSpace(ffx12Dll) && File.Exists(ffx12Dll))
             {
@@ -52,16 +51,22 @@ internal static class GenshinEarlyLaunch
                 report?.Invoke("Bridge 后预加载 FFX12 SDK，再注入 OptiScaler");
             }
             dlls.Add(optiDll);
+            if (!string.IsNullOrWhiteSpace(shadeDll) && File.Exists(shadeDll))
+            {
+                dlls.Add(shadeDll);
+                report?.Invoke($"OptiScaler 后预加载 {Path.GetFileName(shadeDll)}");
+            }
+
             if (!DllInjector.InjectIntoHandle(pi.hProcess, dlls, out string injectError))
             {
                 TerminateProcess(pi.hProcess, 1);
-                return new(null, "Bridge/OptiScaler 批量早期注入失败：" + injectError);
+                return new(null, "图形栈批量早期注入失败：" + injectError);
             }
 
-            report?.Invoke($"Bridge + OptiScaler 已按 test DllList 顺序注入（pid {pi.dwProcessId}）");
+            report?.Invoke($"图形栈已按有序链注入完成（pid {pi.dwProcessId}）");
             Process process = Process.GetProcessById(checked((int)pi.dwProcessId));
             process.EnableRaisingEvents = true;
-            report?.Invoke($"Bridge + OptiScaler 已在 CreateProcess 后立即注入（pid {pi.dwProcessId}）");
+            report?.Invoke($"图形栈已在 CreateProcess 阶段完成全量注入（pid {pi.dwProcessId}）");
             return new(process, null);
         }
         finally
@@ -115,6 +120,3 @@ internal static class GenshinEarlyLaunch
         public uint dwThreadId;
     }
 }
-
-
-

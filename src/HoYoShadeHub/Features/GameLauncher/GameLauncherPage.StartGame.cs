@@ -2008,8 +2008,20 @@ public sealed partial class GameLauncherPage : PageBase
                     if (AppConfig.GetEnableDX12(earlyGenshin.GameBiz))
                         earlyArguments += " -use-d3d12";
                     _logger.LogInformation("原神早期启动使用用户参数：{Arguments}", earlyArguments.Trim());
+
+                    string? earlyShadeDll = null;
+                    string earlyShadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
+                    if (UseHoYoShade || UseOpenHoYoShade)
+                    {
+                        string candidate = Path.Combine(AppConfig.UserDataFolder, earlyShadeName, "ReShade64.dll");
+                        if (File.Exists(candidate))
+                        {
+                            earlyShadeDll = candidate;
+                        }
+                    }
+
                     GenshinEarlyLaunch.Result early = await GenshinEarlyLaunch.StartAsync(
-                        earlyExe, earlyArguments.Trim(), GameInstallPath!, bridgePath, ffx12Path, optiPath,
+                        earlyExe, earlyArguments.Trim(), GameInstallPath!, bridgePath, ffx12Path, optiPath, earlyShadeDll,
                         text => _logger.LogInformation("{Text}", text));
                     if (early.Process is null)
                     {
@@ -2034,23 +2046,15 @@ public sealed partial class GameLauncherPage : PageBase
                         _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
                     }
 
-                    // OptiScaler/Bridge are already in the process. Load ReShade
-                    // afterwards in the same normal launch, matching the user's
-                    // previously working injection-mode test without re-injecting
-                    // Bridge or OptiScaler.
-                    if (UseHoYoShade || UseOpenHoYoShade)
+                    // Bridge、OptiScaler 与 ReShade 已全部在 CreateProcess 阶段由父进程句柄
+                    // 批量有序注入完成（免受反作弊 OpenProcess / VirtualAllocEx 拒绝访问拦截）。
+                    if (earlyShadeDll is not null)
                     {
-                        string shadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
-                        string shadeDll = Path.Combine(AppConfig.UserDataFolder, shadeName, "ReShade64.dll");
-                        if (File.Exists(shadeDll))
+                        _logger.LogInformation("原神早期图形栈：已在 CreateProcess 阶段由父进程句柄直接批量注入 {ShadeName}，避开反作弊拦截", earlyShadeName);
+                        DispatcherQueue?.TryEnqueue(() =>
                         {
-                            int shadeDelay = 0;
-                            _logger.LogInformation(
-                                "原神早期 Bridge/OptiScaler 已稳定，安排正常流程后置注入 {ShadeName}（delay={Delay}s）",
-                                shadeName, shadeDelay);
-                            StartExtraDllInjection(earlyProcessName, shadeDll, shadeName,
-                                shadeDelaySeconds: shadeDelay, includeGameExtras: false, targetProcessId: early.Process.Id);
-                        }
+                            InAppToast.MainWindow?.Success(earlyShadeName, $"已把 {earlyShadeName} 注入 {earlyProcessName}（pid {early.Process.Id}）。", 8000);
+                        });
                     }
                     if (UseXxmiInject)
                     {
