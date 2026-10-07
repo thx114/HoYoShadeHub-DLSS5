@@ -211,7 +211,11 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     XamlRoot = XamlRoot,
                     Title = "FSR Bridge 缺失",
-                    Content = "已安装模块或覆盖包中没有受支持的 Dx11FsrBridge.dll，请重新导入原神覆盖包或下载 FSR Bridge。",
+                    Content = "已安装模块或覆盖包中没有受支持的 Dx11FsrBridge.dll（需要 2.3.1 及以上），"
+                              + "请重新导入原神覆盖包或从「全局插件 → 模块」下载 FSR Bridge。"
+                              + Environment.NewLine + Environment.NewLine
+                              + "已查找这些位置：" + Environment.NewLine
+                              + ModuleRegistry.DescribeGenshinFsrBridgeSearch(),
                     CloseButtonText = "确定",
                 }.ShowAsync();
                 return false;
@@ -658,10 +662,7 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 if (specs.All(s => !string.Equals(s.Path, path, StringComparison.OrdinalIgnoreCase)))
                 {
-                    bool waitReady = string.Equals(
-                        Path.GetFileName(path),
-                        OptiScalerRuntime.FsrBridgeDllName,
-                        StringComparison.OrdinalIgnoreCase)
+                    bool waitReady = ModuleRegistry.IsGenshinFsrBridgeDll(path)
                         && BridgeSupportsInProcessOpti(path);
 
                     // 每个模块自己的「注入时机」；没单独设就用全局预热默认
@@ -674,8 +675,7 @@ public sealed partial class GameLauncherPage : PageBase
         // ①' 桥在场、这次却没要用 OptiScaler：把上次留下的 autoload 清单撤走。
         //     否则桥启动时仍会照它把 OptiScaler 拉回进程里 —— 表现就是「明明关掉了 opt 还自带 opt」。
         //     撤走时先备份一份（只留第一份），重新勾上 opt 会在下面 ② 里写回去。
-        InjectDllSpec? bridgeSpecForCleanup = specs.FirstOrDefault(s =>
-            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+        InjectDllSpec? bridgeSpecForCleanup = specs.FirstOrDefault(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
         bool optiScalerWanted = includeGameExtras && UseOptiScaler
                                 && CurrentGameId is { } wantedOptiGame
                                 && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(wantedOptiGame));
@@ -757,8 +757,7 @@ public sealed partial class GameLauncherPage : PageBase
                 // 改由已注入的桥在进程内 LoadLibraryW 加载 OptiScaler（不走外部注入 API，mhyprot 拦不到）：
                 // 写 sidecar 到桥 DLL 同目录，桥 initialize() 末尾读它并起线程加载。
                 // 没桥的游戏（星铁/绝区零）仍走外部注入，行为不变。
-                InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s =>
-                    string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+                InjectDllSpec? bridgeSpec = specs.FirstOrDefault(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
                 // shade 走 inject.exe 时（正常启动路径），OptiScaler 必须排在 ReShade64 之后注：
                 // 两条路径各自抢跑，OptiScaler 先 hook 上 D3D11/DXGI 会让 NR 吃不到原生 DLSS 数据
                 // （崩铁卡旧帧案，时好时坏 = 竞态）。黑名单绕行时 shade 是本列表 spec[0] 顺序已保证，不用等。
@@ -781,9 +780,7 @@ public sealed partial class GameLauncherPage : PageBase
                     if (autoloadTarget is not null && bridgeOwnsOpti)
                     {
                         // v2.2 Bridge consumes autoload.txt.
-                        int bridgeIndex = specs.FindIndex(s =>
-                            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName,
-                                StringComparison.OrdinalIgnoreCase));
+                        int bridgeIndex = specs.FindIndex(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
                         if (bridgeIndex >= 0)
                         {
                             specs[bridgeIndex] = specs[bridgeIndex] with
@@ -847,7 +844,7 @@ public sealed partial class GameLauncherPage : PageBase
         // 模块装的时候会补一份，但手动放的 / 从别的构建目录解析出来的路径不一定有，这里再兜一次。
         foreach (InjectDllSpec spec in specs)
         {
-            if (string.Equals(Path.GetFileName(spec.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+            if (ModuleRegistry.IsGenshinFsrBridgeDll(spec.Path))
             {
                 OptiScalerRuntime.EnsureFsrBridgeIni(Path.GetDirectoryName(spec.Path) ?? string.Empty);
             }
@@ -1973,8 +1970,7 @@ public sealed partial class GameLauncherPage : PageBase
                 string? earlyProcessName = await _gameLauncherService.GetGameExeNameAsync(earlyGenshin);
                 string earlyExe = Path.Combine(GameInstallPath!, earlyProcessName);
                 string? bridgePath = ModuleRegistry.ResolveInjectionDlls(earlyGenshin)
-                    .FirstOrDefault(x => string.Equals(Path.GetFileName(x.DllPath),
-                        OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase)).DllPath;
+                    .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath;
                 string? optiPath = EnsureNamedOptiScalerDll(
                     AppConfig.GetSelectedOptiScalerDll(earlyGenshin),
                     AppConfig.GetOptiScalerDllName(earlyGenshin));

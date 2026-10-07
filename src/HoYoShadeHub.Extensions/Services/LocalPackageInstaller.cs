@@ -2,6 +2,7 @@ using HoYoShadeHub.Core;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Dlls;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using System.Text.Json;
@@ -414,8 +415,17 @@ public sealed class LocalPackageInstaller
                 ZipExtractor.ExtractToDirectory(file, extract);
                 CopyTree(extract, target);
 
-                // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll
-                OptiScalerLibrary.NormalizePrimaryDll(target);
+                // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll。
+                // 原神 FSR 桥的包不走这条路：它的正身名（Dx11FsrBridge.dll）被改掉之后，
+                // 模块解析 / ini / 启动体检就都找不到桥了（见 FsrBridgePayload）。
+                if (FsrBridgePayload.LooksLikeBridgeDirectory(target))
+                {
+                    FsrBridgePayload.NormalizeDll(target);
+                }
+                else
+                {
+                    OptiScalerLibrary.NormalizePrimaryDll(target);
+                }
             }
             finally
             {

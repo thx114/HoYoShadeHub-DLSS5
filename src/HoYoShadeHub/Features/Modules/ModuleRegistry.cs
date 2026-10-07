@@ -4,6 +4,7 @@ using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
 using HoYoShadeHub.Extensions.Services;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -87,6 +88,11 @@ public static class ModuleRegistry
 {
     private const string GenshinFsrBridgeId = "genshin-fsr-bridge";
 
+    private static readonly ILogger _logger = AppConfig.GetLogger<RegistryLogToken>();
+
+    /// <summary>日志类别占位（静态类不能做泛型参数）</summary>
+    private sealed class RegistryLogToken { }
+
     // Metadata fallback only: the DLL is never shipped inside HoYoShadeHub.
     // The actual module is downloaded from our GitHub release catalog.
     private static readonly ModuleDefinition GenshinFsrBridge = new(
@@ -151,6 +157,108 @@ public static class ModuleRegistry
         => gameId.GameBiz.ToString().StartsWith("hk4e_", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// 原神 FSR 桥的模块目录可能出现的位置：当前模块根 / 迁移前的 <c>Modules</c> / 缓存模块根。
+    /// </summary>
+    public static IEnumerable<string> GenshinFsrBridgeRoots()
+    {
+        yield return AppConfig.ModuleDirectory(GenshinFsrBridgeId);
+
+        if (!string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
+        {
+            yield return Path.Combine(AppConfig.UserDataFolder, "Modules", GenshinFsrBridgeId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(AppConfig.ModulesCachePath))
+        {
+            yield return Path.Combine(AppConfig.ModulesCachePath, GenshinFsrBridgeId);
+        }
+    }
+
+    /// <summary>
+    /// 这个路径是不是原神 FSR 桥要注入的那份 DLL：文件名是正身名，**或者**它就在桥的模块目录里。
+    ///
+    /// <para>
+    /// 后半条是为 1.4.3.1 那批装出来的模块准备的：下载器把桥的 <c>Dx11FsrBridge.dll</c> 改名成了
+    /// <c>OptiScaler.dll</c>（见 <see cref="HoYoShadeHub.Extensions.Games.FsrBridgePayload"/>），
+    /// 光比文件名的话，注入列表、autoload/ini 准备、体检报告会一起认不出桥。
+    /// 只看目录归属不看文件名，所以 OptiScaler 库里的那份 <c>OptiScaler.dll</c> 不会被误认。
+    /// </para>
+    /// </summary>
+    public static bool IsGenshinFsrBridgeDll(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        if (string.Equals(Path.GetFileName(path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        foreach (string root in GenshinFsrBridgeRoots())
+        {
+            if (PathIsUnder(path!, root))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool PathIsUnder(string path, string? root)    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        try
+        {
+            string folder = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(path).StartsWith(folder, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 目录里桥的那份 DLL（正身名 → 历史别名 → 目录里唯一的 DLL）；体检报告 / 日志用，
+    /// 这样「装了但被改过名」不会再被写成「缺失」。
+    /// </summary>
+    public static string? FindGenshinFsrBridgeDll(string? directory)
+        => HoYoShadeHub.Extensions.Games.FsrBridgePayload.FindDll(directory);
+
+    /// <summary>
+    /// 桥找不到时给用户看的诊断串：找过哪些目录、每个目录里有哪些 DLL。
+    /// 以前这里只报「缺失」，用户和我们都看不出到底是没装、装错地方还是名字不对。
+    /// </summary>
+    public static string DescribeGenshinFsrBridgeSearch()
+    {
+        var lines = new List<string>();
+        foreach (string root in GenshinFsrBridgeRoots())
+        {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            if (!Directory.Exists(root))
+            {
+                lines.Add($"{root}（目录不存在）");
+                continue;
+            }
+
+            IReadOnlyList<string> dlls = HoYoShadeHub.Extensions.Games.FsrBridgePayload.ListDllNames(root);
+            lines.Add($"{root}（{(dlls.Count == 0 ? "没有 DLL" : string.Join("、", dlls))}）");
+        }
+
+        return lines.Count == 0 ? "（没有可查的模块目录）" : string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
     /// Ensures the bundled Genshin FSR Bridge is ready and selected for this game.
     /// The Bridge is injected as a module; OptiScaler is loaded by the Bridge from
     /// the launch-time autoload file, so this method never enables OptiScaler itself.
@@ -173,6 +281,7 @@ public static class ModuleRegistry
         bridge.Enabled = true;
         RemoveManualGenshinFsrBridgeSelections(gameId);
         SetUsed(gameId, bridge.Id, true);
+        _logger.LogInformation("Genshin FSR Bridge 已就绪：{Dll}", bridgeDll);
 
         // Bridge-side state is per versioned module directory, not the flat module root.
         // Prepare it here as soon as the Bridge is associated with the game, so a later
@@ -202,7 +311,7 @@ public static class ModuleRegistry
         List<string> keys = [.. raw];
         int removed = keys.RemoveAll(key =>
             !string.Equals(key, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(Path.GetFileName(key), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+            && IsGenshinFsrBridgeDll(key));
         if (removed > 0)
         {
             AppConfig.SetUsedModuleKeys(gameId, keys);
@@ -315,7 +424,7 @@ public static class ModuleRegistry
             // 添加的 Dx11FsrBridge.dll；不能把两个同名 Bridge 同时注入目标进程。
             if (IsGenshin(gameId)
                 && !entry.IsBuiltin
-                && string.Equals(Path.GetFileName(entry.DllPath), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+                && IsGenshinFsrBridgeDll(entry.DllPath))
             {
                 continue;
             }
@@ -510,7 +619,7 @@ public static class ModuleRegistry
         // 1) 指定版本：只认那个版本目录
         if (!string.IsNullOrWhiteSpace(versionTag)
             && VersionDirectory(module, versionTag!) is { } picked
-            && FindInjectDll(picked, module.DllHint) is { } pickedDll)
+            && FindModuleInjectDll(module, picked) is { } pickedDll)
         {
             return IsAcceptedModuleDll(module, pickedDll) ? pickedDll : null;
         }
@@ -520,7 +629,7 @@ public static class ModuleRegistry
         {
             foreach (OptiScalerBuild build in new OptiScalerLibrary(module.Directory).List())
             {
-                string? dll = FindInjectDll(build.Directory, module.DllHint);
+                string? dll = FindModuleInjectDll(module, build.Directory);
                 if (dll is not null && IsAcceptedModuleDll(module, dll))
                 {
                     return dll;
@@ -529,7 +638,7 @@ public static class ModuleRegistry
         }
 
         // 3) 兜底：整个模块目录递归找（安装程序型模块的文件直接铺在根目录里）
-        string? inModuleDir = FindInjectDll(module.Directory, module.DllHint);
+        string? inModuleDir = FindModuleInjectDll(module, module.Directory);
         if (inModuleDir is not null && IsAcceptedModuleDll(module, inModuleDir))
         {
             return inModuleDir;
@@ -545,7 +654,7 @@ public static class ModuleRegistry
             string cached = Path.Combine(AppConfig.ModulesCachePath, module.Id);
             foreach (string installed in new[] { legacy, cached })
             {
-                string? dll = FindInjectDll(installed, module.DllHint);
+                string? dll = FindModuleInjectDll(module, installed);
                 if (dll is not null && IsAcceptedModuleDll(module, dll)) return dll;
             }
         }
@@ -559,7 +668,7 @@ public static class ModuleRegistry
                 foreach (Extensions.Services.OptiScalerBuild build in library.List()
                              .Where(b => string.Equals(b.SourceId, module.Id, StringComparison.OrdinalIgnoreCase)))
                 {
-                    string? dll = FindInjectDll(build.Directory, module.DllHint);
+                    string? dll = FindModuleInjectDll(module, build.Directory);
                     if (dll is not null && IsAcceptedModuleDll(module, dll))
                     {
                         return dll;
@@ -660,6 +769,50 @@ public static class ModuleRegistry
         }
 
         return dlls.Count == 1 ? dlls[0] : null;
+    }
+
+    /// <summary>
+    /// 模块目录里要注入的那份 DLL。原神 FSR 桥额外容忍「正身名 → 历史别名 → 目录里唯一的 DLL」
+    /// 三种形态，并把别名归位成正身名 —— 1.4.3.1 的下载器把桥改名成了 <c>OptiScaler.dll</c>，
+    /// 只按 dllHint 找的话模块会一直显示「缺失」（见
+    /// <see cref="HoYoShadeHub.Extensions.Games.FsrBridgePayload"/>）。
+    /// 归位是幂等的：正身名已在就什么都不做；改不动（游戏正跑、文件被占）就照别名继续用。
+    /// </summary>
+    private static string? FindModuleInjectDll(ModuleDefinition module, string directory)
+    {
+        if (!string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase))
+        {
+            return FindInjectDll(directory, module.DllHint);
+        }
+
+        string? dll = HoYoShadeHub.Extensions.Games.FsrBridgePayload.FindDll(
+            directory, path => IsAcceptedModuleDll(module, path));
+        if (dll is null)
+        {
+            _logger.LogWarning("FSR Bridge：{Directory} 里没有可用的 {Hint}（目录里的 DLL：{Found}）",
+                directory,
+                OptiScalerRuntime.FsrBridgeDllName,
+                string.Join("、", HoYoShadeHub.Extensions.Games.FsrBridgePayload.ListDllNames(directory)));
+            return null;
+        }
+
+        if (!string.Equals(Path.GetFileName(dll), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+        {
+            string? canonical = HoYoShadeHub.Extensions.Games.FsrBridgePayload.NormalizeDll(Path.GetDirectoryName(dll));
+            if (canonical is not null)
+            {
+                _logger.LogWarning(
+                    "FSR Bridge：{Directory} 里的桥 DLL 被旧版下载器改名成了 {Alias}；已归位成 {Canonical}",
+                    Path.GetDirectoryName(dll), Path.GetFileName(dll), Path.GetFileName(canonical));
+                return canonical;
+            }
+
+            _logger.LogWarning(
+                "FSR Bridge：{Directory} 里的桥 DLL 叫 {Alias}（不是 {Hint}），改名失败（文件可能被占用）；先照这个路径注入",
+                Path.GetDirectoryName(dll), Path.GetFileName(dll), OptiScalerRuntime.FsrBridgeDllName);
+        }
+
+        return dll;
     }
 
     /// <summary>

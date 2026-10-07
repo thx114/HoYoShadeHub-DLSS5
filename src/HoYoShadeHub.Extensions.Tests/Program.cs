@@ -1841,6 +1841,58 @@ Directory.CreateDirectory(bridgeWithDll);
 File.WriteAllText(Path.Combine(bridgeWithDll, OptiScalerRuntime.FsrBridgeDllName), "fake");
 Check(OptiScalerRuntime.HasFsrBridge(bridgeWithDll), "DLL 在就算有桥（ini 只是覆盖项，桥自带代码默认值）");
 
+// 2026-10-07 用户实测：1.4.3.1 的模块下载器把桥的 Dx11FsrBridge.dll 改名成了 OptiScaler.dll
+//（OptiScalerLibrary.NormalizePrimaryDll 对所有 Release 模块一律归一化），之后所有「按文件名
+// 找桥」的地方都认不出来 —— 模块明明装好了却一直报「FSR Bridge 缺失」。
+Console.WriteLine("-- 桥被旧下载器改名成 OptiScaler.dll（装了也要认得出来）--");
+string hostPe = Environment.ProcessPath
+    ?? System.Reflection.Assembly.GetEntryAssembly()?.Location
+    ?? throw new InvalidOperationException("拿不到测试宿主自己的 PE 路径");
+
+string renamedBridge = Path.Combine(root, "bridge-renamed", "genshin-fsr-bridge", "v2.3.4-fg-20261006");
+Directory.CreateDirectory(renamedBridge);
+File.Copy(hostPe, Path.Combine(renamedBridge, FsrBridgePayload.LegacyAliasDllName), overwrite: true);
+File.WriteAllText(Path.Combine(renamedBridge, FsrBridgePayload.IniName), OptiScalerRuntime.FsrBridgeIniTemplate);
+
+Check(!File.Exists(Path.Combine(renamedBridge, FsrBridgePayload.DllName)), "复现现场：目录里只有 OptiScaler.dll，没有 Dx11FsrBridge.dll");
+Check(FsrBridgePayload.LooksLikeBridgeDirectory(renamedBridge), "带桥 ini 的目录仍然认得出来（判据不认光秃秃的 OptiScaler.dll）");
+string? renamedFound = FsrBridgePayload.FindDll(renamedBridge);
+Check(renamedFound is not null && Path.GetFileName(renamedFound) == FsrBridgePayload.LegacyAliasDllName, "别名那份被当成桥要注入的 DLL");
+Check(HostBridgeVersion() == "2.3.4.0", $"测试宿主自己的版本号就是 2.3.4.0（实际 {HostBridgeVersion()}）");
+Check(BridgeAccepted(renamedFound!), "2.3.4.0 的桥过版本门（这就是用户机上那份的版本）");
+Check(OptiScalerRuntime.HasFsrBridge(renamedBridge), "HasFsrBridge：改名之后也算有桥");
+
+string? renamedBack = FsrBridgePayload.NormalizeDll(renamedBridge);
+Check(renamedBack is not null && Path.GetFileName(renamedBack) == FsrBridgePayload.DllName, "归位：OptiScaler.dll → Dx11FsrBridge.dll");
+Check(File.Exists(Path.Combine(renamedBridge, FsrBridgePayload.DllName)) && !File.Exists(Path.Combine(renamedBridge, "OptiScaler.dll")), "归位之后目录里就是正身名");
+Check(Path.GetFileName(FsrBridgePayload.NormalizeDll(renamedBridge)!) == FsrBridgePayload.DllName, "再归位一次是幂等的（不报错、不覆盖）");
+
+string canonicalBridge = Path.Combine(root, "bridge-canonical");
+Directory.CreateDirectory(canonicalBridge);
+File.WriteAllText(Path.Combine(canonicalBridge, FsrBridgePayload.DllName), "canonical");
+Check(Path.GetFileName(FsrBridgePayload.FindDll(canonicalBridge)!) == FsrBridgePayload.DllName, "正身名优先（原来的行为不变）");
+Check(FsrBridgePayload.NormalizeDll(canonicalBridge) is not null && !File.Exists(Path.Combine(canonicalBridge, "OptiScaler.dll")), "正身名已在时归位是空操作");
+File.WriteAllText(Path.Combine(canonicalBridge, FsrBridgePayload.LegacyAliasDllName), "alias");
+Check(Path.GetFileName(FsrBridgePayload.FindDll(canonicalBridge)!) == FsrBridgePayload.DllName
+      && File.Exists(Path.Combine(canonicalBridge, "OptiScaler.dll")), "两个名字都在时用正身名，别名原样留着");
+
+string optiOnlyDir = Path.Combine(root, "opti-only-build", "dlss-unlocked", "NR-v0.9.10");
+Directory.CreateDirectory(optiOnlyDir);
+File.WriteAllText(Path.Combine(optiOnlyDir, "OptiScaler.dll"), "opti");
+File.WriteAllText(Path.Combine(optiOnlyDir, "OptiScaler.ini"), "opti-ini");
+Check(!FsrBridgePayload.LooksLikeBridgeDirectory(optiOnlyDir), "纯 OptiScaler 构建目录不算桥");
+Check(FsrBridgePayload.NormalizeDll(optiOnlyDir) is null && File.Exists(Path.Combine(optiOnlyDir, "OptiScaler.dll")), "不把真正的 OptiScaler.dll 改名成桥");
+Check(!OptiScalerRuntime.HasFsrBridge(optiOnlyDir), "HasFsrBridge 也不会把纯 OptiScaler 目录当成桥");
+
+Check(!BridgeCompatibility.IsSupported(new Version(2, 2, 9, 0)), "2.2.9.0 的旧桥仍然被拒");
+Check(!BridgeCompatibility.IsSupported(new Version(2, 3, 0, 0)), "2.3.0 仍然被拒（要 >= 2.3.1）");
+Check(BridgeCompatibility.IsSupported(new Version(2, 3, 4, 0)), "2.3.4.0 放行");
+
+string fakeBridgeDir = Path.Combine(root, "bridge-fake-dll");
+Directory.CreateDirectory(fakeBridgeDir);
+File.WriteAllText(Path.Combine(fakeBridgeDir, FsrBridgePayload.LegacyAliasDllName), "not-a-real-pe");
+Check(!BridgeAccepted(Path.Combine(fakeBridgeDir, FsrBridgePayload.LegacyAliasDllName)), "0.0.0.0 的假 DLL 过不了版本门（不会被拿去注入）");
+
 // 桥的 autoload 清单：跟着「启用OptiScaler」走 —— 开了写回去、关了撤走（先留一份备份）
 string autoloadRoot = Path.Combine(root, "bridge-autoload");
 string autoloadBridge = Path.Combine(autoloadRoot, "payload", "Bridge");
@@ -3505,6 +3557,30 @@ static void WriteZipText(ZipArchive zip, string entryName, string text)
     ZipArchiveEntry entry = zip.CreateEntry(entryName);
     using var writer = new StreamWriter(entry.Open());
     writer.Write(text);
+}
+
+static string HostBridgeVersion()
+{
+    string path = Environment.ProcessPath
+        ?? System.Reflection.Assembly.GetEntryAssembly()?.Location
+        ?? string.Empty;
+    return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion ?? string.Empty;
+}
+
+// 和 ModuleRegistry.IsAcceptedModuleDll 同一把尺：桥只收 2.3.1+。本测试宿主只引用 Extensions
+// 那个程序集（拿不到 ModuleRegistry），所以这里照抄那道门，顺便证明 2.2.x 还是会被拒。
+static bool BridgeAccepted(string path)
+{
+    try
+    {
+        System.Diagnostics.FileVersionInfo v = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+        return BridgeCompatibility.IsSupported(
+            new Version(v.FileMajorPart, v.FileMinorPart, v.FileBuildPart, v.FilePrivatePart));
+    }
+    catch
+    {
+        return false;
+    }
 }
 
 return _failed == 0 ? 0 : 1;

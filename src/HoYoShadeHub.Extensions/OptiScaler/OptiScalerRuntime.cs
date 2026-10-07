@@ -672,10 +672,12 @@ EnableFsr2GetProcAddressShim=1
 Fsr2TranslationMode=2
 """;
 
-    /// <summary>目录里有没有桥（DLL 在就算）</summary>
+    /// <summary>目录里有没有桥（DLL 在就算）。正身名 <c>Dx11FsrBridge.dll</c> 优先；
+    /// 1.4.3.1 那批模块里桥被下载器改名成了 <c>OptiScaler.dll</c>，靠桥自己的 ini / 清单认出来。</summary>
     public static bool HasFsrBridge(string directory)
         => !string.IsNullOrWhiteSpace(directory)
-           && File.Exists(Path.Combine(directory, FsrBridgeDllName));
+           && (File.Exists(Path.Combine(directory, FsrBridgeDllName))
+               || Games.FsrBridgePayload.LooksLikeBridgeDirectory(directory));
 
     /// <summary>
     /// 补齐桥的文件。DLL 只能靠下载，这里不生成；ini 缺失就写一份 <see cref="FsrBridgeIniTemplate"/>。

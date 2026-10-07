@@ -9,6 +9,9 @@
     <AssemblyName>HoYoShadeHub.Extensions.Tests</AssemblyName>
     <!-- 这是一个自测宿主，不是单元测试项目：不需要 xunit，直接 dotnet run 看结果 -->
     <IsPackable>false</IsPackable>
+    <!-- 桥的解析用例要一个「2.3.4.0 的真 PE」当素材：拿宿主自己当那份 DLL，
+         版本号跟用户机上装的那份桥一致（省得往仓库里塞二进制）。 -->
+    <Version>2.3.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

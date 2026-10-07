@@ -1,5 +1,6 @@
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Archives;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using System.Diagnostics;
 using System.IO.Compression;
@@ -221,8 +222,18 @@ public sealed class OptiScalerDownloader
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             MoveDirectory(extractRoot, target);
 
-            // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll
-            OptiScalerLibrary.NormalizePrimaryDll(target);
+            // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll。
+            // 但原神 FSR 桥的资产本来就带正身名（Dx11FsrBridge.dll + Dx11FsrBridge.ini）：
+            // 把它当 OptiScaler 归一化会改名成 OptiScaler.dll，模块解析、ini/autoload 准备、
+            // 启动体检就全都找不到桥了（1.4.3.1 实测：模块下载成功却一直报「FSR Bridge 缺失」）。
+            if (FsrBridgePayload.LooksLikeBridgeDirectory(target))
+            {
+                FsrBridgePayload.NormalizeDll(target);
+            }
+            else
+            {
+                OptiScalerLibrary.NormalizePrimaryDll(target);
+            }
 
             WriteBuildManifest(target, source, tag, artifact.AssetName);
 

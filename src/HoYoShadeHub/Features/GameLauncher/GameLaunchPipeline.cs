@@ -505,10 +505,7 @@ public static class GameLaunchPipeline
             {
                 if (specs.All(s => !string.Equals(s.Path, path, StringComparison.OrdinalIgnoreCase)))
                 {
-                    bool waitReady = string.Equals(
-                        Path.GetFileName(path),
-                        OptiScalerRuntime.FsrBridgeDllName,
-                        StringComparison.OrdinalIgnoreCase)
+                    bool waitReady = ModuleRegistry.IsGenshinFsrBridgeDll(path)
                         && BridgeSupportsInProcessOpti(path);
                     int delay = AppConfig.GetModuleInjectDelayEffective(key, gameId.GameBiz);
                     specs.Add(new InjectSpec(path, name, WaitForReady: waitReady, DelaySeconds: delay));
@@ -517,8 +514,7 @@ public static class GameLaunchPipeline
         }
 
         // ①' 桥在场但这次不用 OptiScaler：撤走 autoload 清单（否则桥会把 OptiScaler 又拉回去）
-        InjectSpec? bridgeSpec = specs.FirstOrDefault(s =>
-            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase));
+        InjectSpec? bridgeSpec = specs.FirstOrDefault(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
         if (bridgeSpec is not null
             && !optiScalerWanted
             && OptiScalerRuntime.RemoveFsrBridgeAutoload(Path.GetDirectoryName(bridgeSpec.Path), out _))
@@ -576,9 +572,7 @@ public static class GameLaunchPipeline
                         : null;
                     if (autoloadTarget is not null && bridgeOwnsOpti)
                     {
-                        int bridgeIndex = specs.FindIndex(s =>
-                            string.Equals(Path.GetFileName(s.Path), OptiScalerRuntime.FsrBridgeDllName,
-                                StringComparison.OrdinalIgnoreCase));
+                        int bridgeIndex = specs.FindIndex(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
                         if (bridgeIndex >= 0)
                         {
                             specs[bridgeIndex] = specs[bridgeIndex] with
@@ -628,7 +622,7 @@ public static class GameLaunchPipeline
         // 桥的 ini 必须和它被注入的那个 DLL 同目录
         foreach (InjectSpec spec in specs)
         {
-            if (string.Equals(Path.GetFileName(spec.Path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+            if (ModuleRegistry.IsGenshinFsrBridgeDll(spec.Path))
             {
                 OptiScalerRuntime.EnsureFsrBridgeIni(Path.GetDirectoryName(spec.Path) ?? string.Empty);
             }
