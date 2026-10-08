@@ -173,8 +173,11 @@ public sealed partial class GameLauncherPage : PageBase
                 UseOptiScaler = false;
             }
 
-            // XXMI：只对 XXMI 支持的游戏显示「启用XXMI」，注入模式下点不了
+            // XXMI / Rocket：Rocket 是原神外部启动准备模式。
             UpdateXxmiInjectVisibility();
+            OnPropertyChanged(nameof(RocketVisibility));
+            OnPropertyChanged(nameof(CanUseRocket));
+            if (!CanUseRocket && UseRocket) UseRocket = false;
 
             // 帧率解锁：只对原神显示
             UpdateFpsUnlockVisibility();
@@ -358,7 +361,7 @@ public sealed partial class GameLauncherPage : PageBase
         get
         {
             // 如果选择了Starward启动器或Blender插件，总是启用启动按钮
-            if (UseStarwardLauncher || LaunchGenshinBlenderPlugin || LaunchZZZBlenderPlugin || UseHoYoShade || UseOpenHoYoShade)
+            if (UseStarwardLauncher || LaunchGenshinBlenderPlugin || LaunchZZZBlenderPlugin || UseHoYoShade || UseOpenHoYoShade || UseRocket)
             {
                 return true;
             }
@@ -377,6 +380,20 @@ public sealed partial class GameLauncherPage : PageBase
 
     /// <summary>注入模式 + 勾了 HoYoShade / OpenHoYoShade 之一 → 按钮显示「启动注入器」</summary>
     public bool IsShadeInjectMode => UseInjectMode && (UseHoYoShade || UseOpenHoYoShade);
+
+    /// <summary>Rocket 联动准备模式：Hub 不创建游戏进程。</summary>
+    private bool _isRocketWaiting;
+    public bool IsRocketMode
+    {
+        get => _isRocketWaiting;
+        private set => SetProperty(ref _isRocketWaiting, value);
+    }
+
+    public bool CanUseRocket => CurrentGameId is { GameBiz.Game: GameBiz.hk4e } && !UseXxmiInject;
+    public Visibility RocketInstructionVisibility => UseRocket ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility RocketVisibility => CurrentGameId is { GameBiz.Game: GameBiz.hk4e }
+        ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>
     /// 注入模式但一个 HoYoShade 都没勾 → 不架 ReShade 注入器，只等游戏进程注「额外注入 DLL」/ OptiScaler。
@@ -529,8 +546,8 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    /// <summary>帧率解锁目标值（fps），范围 60-1000。按游戏记</summary>
-    private int _fpsUnlockTarget = 120;
+    /// <summary>帧率解锁目标值（fps），范围 60-1000。按游戏记（默认 119 = 安全上限，见 AppConfig）</summary>
+    private int _fpsUnlockTarget = AppConfig.FpsUnlockWarnThreshold;
     public int FpsUnlockTarget
     {
         get => _fpsUnlockTarget;
@@ -554,7 +571,7 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>注入模式下不能同时用 XXMI（XXMI 要自己把游戏拉起来）</summary>
-    public bool CanUseXxmiInject => !UseInjectMode;
+    public bool CanUseXxmiInject => !UseInjectMode && !UseRocket;
 
     /// <summary>XXMI 支持这个游戏才显示「启用XXMI」（不支持的游戏显示它没有意义）</summary>
     public Visibility XxmiInjectVisibility
@@ -566,10 +583,31 @@ public sealed partial class GameLauncherPage : PageBase
     private void UpdateXxmiInjectVisibility()
     {
         OnPropertyChanged(nameof(XxmiInjectVisibility));
+        OnPropertyChanged(nameof(RocketVisibility));
+        OnPropertyChanged(nameof(CanUseRocket));
 
         if (XxmiInjectVisibility != Visibility.Visible && _useXxmiInject)
         {
             UseXxmiInject = false;
+        }
+    }
+
+    private bool _useRocket;
+    public bool UseRocket
+    {
+        get => _useRocket;
+        set
+        {
+            if (value && UseXxmiInject) value = false;
+            if (SetProperty(ref _useRocket, value))
+            {
+                IsRocketMode = false;
+                if (value) UseXxmiInject = false;
+                OnPropertyChanged(nameof(RocketInstructionVisibility));
+                OnPropertyChanged(nameof(IsRocketMode));
+                OnPropertyChanged(nameof(CanUseXxmiInject));
+                NotifyLaunchModeChanged();
+            }
         }
     }
 
@@ -580,8 +618,11 @@ public sealed partial class GameLauncherPage : PageBase
         get => _useXxmiInject;
         set
         {
+            // Enforce exclusion in the setter too, not only the greyed UI.
+            if (value && UseRocket) value = false;
             if (SetProperty(ref _useXxmiInject, value))
             {
+                OnPropertyChanged(nameof(CanUseRocket));
                 NotifyLaunchModeChanged();
             }
         }
@@ -765,10 +806,14 @@ public sealed partial class GameLauncherPage : PageBase
 
     private void NotifyLaunchModeChanged()
     {
+        // A change after preparation must not retain a stale "ready/waiting" label.
+        IsRocketMode = false;
         OnPropertyChanged(nameof(ShouldEnableStartButton));
         OnPropertyChanged(nameof(IsShaderOnlyLaunchMode));
         OnPropertyChanged(nameof(IsShadeInjectMode));
         OnPropertyChanged(nameof(IsWaitProcessMode));
+        OnPropertyChanged(nameof(IsRocketMode));
+        OnPropertyChanged(nameof(CanUseXxmiInject));
         SaveLaunchOptionsForCurrentClient();
         UpdateOptiScalerConflict();
     }
@@ -782,6 +827,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         _isApplyingSavedLaunchOptions = true;
+        IsRocketMode = false;
         try
         {
             // 启动游戏：界面上那条已经藏了，默认就是启动 —— 不读老设置（老设置里关过的用户不该被卡住）
@@ -794,6 +840,7 @@ public sealed partial class GameLauncherPage : PageBase
             bool useModules = AppConfig.GetUseModulesLaunchOption(CurrentGameId);
             bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(CurrentGameId);
             bool useXxmiInject = AppConfig.GetUseXxmiInjectLaunchOption(CurrentGameId);
+            bool useRocket = AppConfig.GetUseRocketLaunchOption(CurrentGameId);
             bool useFpsUnlock = AppConfig.GetUseFpsUnlockLaunchOption(CurrentGameId);
             int fpsUnlockTarget = AppConfig.GetFpsUnlockTarget(CurrentGameId);
 
@@ -821,7 +868,9 @@ public sealed partial class GameLauncherPage : PageBase
             _launchZZZBlenderPlugin = launchZZZBlenderPlugin;
             _useModules = useModules;
             _useOptiScaler = useOptiScaler;
-            _useXxmiInject = useXxmiInject;
+            // Normalize saved conflicts independently of the previous page state.
+            _useRocket = useRocket && CurrentGameId is { GameBiz.Game: GameBiz.hk4e };
+            _useXxmiInject = useXxmiInject && !_useRocket;
             _useFpsUnlock = useFpsUnlock;
             _fpsUnlockTarget = fpsUnlockTarget;
 
@@ -834,6 +883,11 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(UseModules));
             OnPropertyChanged(nameof(UseOptiScaler));
             OnPropertyChanged(nameof(UseXxmiInject));
+            OnPropertyChanged(nameof(UseRocket));
+            OnPropertyChanged(nameof(IsRocketMode));
+            OnPropertyChanged(nameof(RocketVisibility));
+            OnPropertyChanged(nameof(CanUseRocket));
+            OnPropertyChanged(nameof(RocketInstructionVisibility));
             OnPropertyChanged(nameof(UseFpsUnlock));
             OnPropertyChanged(nameof(FpsUnlockTarget));
             OnPropertyChanged(nameof(XxmiInjectVisibility));
@@ -872,6 +926,7 @@ public sealed partial class GameLauncherPage : PageBase
         AppConfig.SetUseModulesLaunchOption(CurrentGameId, _useModules);
         AppConfig.SetUseOptiScalerLaunchOption(CurrentGameId, _useOptiScaler);
         AppConfig.SetUseXxmiInjectLaunchOption(CurrentGameId, _useXxmiInject);
+        AppConfig.SetUseRocketLaunchOption(CurrentGameId, _useRocket);
         AppConfig.SetUseFpsUnlockLaunchOption(CurrentGameId, _useFpsUnlock);
         AppConfig.SetFpsUnlockTarget(CurrentGameId, _fpsUnlockTarget);
     }
@@ -981,6 +1036,11 @@ public sealed partial class GameLauncherPage : PageBase
     private async Task ClickStartGameButtonAsync()
     {
         await Task.Delay(1);
+        if (UseRocket)
+        {
+            await PrepareRocketAsync();
+            return;
+        }
         switch (GameState)
         {
             case GameState.None:

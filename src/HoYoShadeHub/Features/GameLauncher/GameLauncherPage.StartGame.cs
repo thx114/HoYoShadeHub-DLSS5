@@ -306,6 +306,7 @@ public sealed partial class GameLauncherPage : PageBase
             GameProcess = await _gameLauncherService.GetGameProcessAsync(CurrentGameId);
             if (GameProcess != null)
             {
+                IsRocketMode = false;
                 GameState = GameState.GameIsRunning;
                 _logger.LogInformation("Game is running ({name}, {pid})", GameProcess.ProcessName, GameProcess.Id);
                 return true;
@@ -619,6 +620,45 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
+    /// <summary>
+    /// FSR 桥声明支持的游戏版本（桥目录里的 <c>Dx11FsrBridge.game-versions.txt</c>，桥的发布包自带）
+    /// 和本机版本对不上时提醒一句。只提示、不拦启动 —— 桥自己也会拒绝它不认的版本，
+    /// 启动器多拦一道只会让「明明能跑」的用户起不来游戏。异步等版本读盘，不拖慢启动。
+    /// </summary>
+    private async Task WarnIfFsrBridgeGameVersionUnsupportedAsync(string bridgePath)
+    {
+        try
+        {
+            IReadOnlyList<string> supported = OptiScalerRuntime.ReadFsrBridgeGameVersions(Path.GetDirectoryName(bridgePath));
+
+            // 空表 = 桥没带标记文件（老包），不下判断
+            if (supported.Count == 0 || CurrentGameId is not { } gameId)
+            {
+                return;
+            }
+
+            Version? gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(gameId);
+            if (OptiScalerRuntime.MatchFsrBridgeGameVersion(supported, gameVersion) != false)
+            {
+                return;
+            }
+
+            string supportedText = string.Join("、", supported);
+            _logger.LogWarning("FSR Bridge 不支持当前游戏版本：游戏 {Game}，桥声明 {Supported}",
+                gameVersion, supportedText);
+
+            DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning(
+                "FSR 桥版本不匹配",
+                $"当前游戏版本 {gameVersion} 不在桥支持的范围里（{supportedText}）。仍然继续启动，"
+                + "画面异常 / 进不去就先换回桥支持的版本。",
+                12000));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "FSR Bridge game version check");
+        }
+    }
+
     /// <param name="shadeReShadeDll">
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
@@ -694,6 +734,12 @@ public sealed partial class GameLauncherPage : PageBase
             _logger.LogInformation(
                 "已撤走 FSR Bridge 的 OptiScaler autoload 清单（本次没启用 OptiScaler）：备份 {Backup}",
                 autoloadBackup);
+        }
+
+        // 桥声明的支持版本和本机游戏版本对不上 → 提醒一句（只提示，不拦启动）
+        if (bridgeSpecForCleanup is not null)
+        {
+            _ = WarnIfFsrBridgeGameVersionUnsupportedAsync(bridgeSpecForCleanup.Path);
         }
 
         // ② OptiScaler：启动选项勾了「启用OptiScaler」+「全局插件 → OptiScaler」的总开关开着
@@ -1810,6 +1856,13 @@ public sealed partial class GameLauncherPage : PageBase
 
     private async Task StartGameAsync()
     {
+        // Rocket owns process creation and GIMI. Exit before all Hub launch,
+        // injector, automatic pack action, driver setting and chain-cleanup code.
+        if (UseRocket)
+        {
+            await PrepareRocketAsync();
+            return;
+        }
         try
         {
             // 多人/反作弊游戏在跑：注入链一律暂停，避免封号（关闭该游戏后自动恢复）
@@ -1874,6 +1927,13 @@ public sealed partial class GameLauncherPage : PageBase
             // **放统一入口**：以前挂在注入流程里，走别的启动路径的游戏（绝区零）就漏了。
             EnsureGameDlssgForMfg();
 
+            // 「有序注入链」是否可用（见 GenshinLaunchRouting.CanUseOrderedInjectChain）。
+            // 可用时 XXMI 退成「只挂 GUI、不注入」（SKIP），Hub 在 CreateProcess 那一刻只注桥，
+            // 桥在游戏进程内按清单把 GIMI(d3d11) → OptiScaler → ReShade 依次 LoadLibraryW。
+            bool orderedInjectChain = false;
+            bool pairedStarRailLaunch = false;
+            string? pairedSrmiLoader = null;
+
             // Local recovery baseline: official XXMI owns game startup, as in
             // the coexistence run identified by the user. Hub arms its injectors first.
             if (UseXxmiInject && !UseInjectMode && CurrentGameId is { } officialGame)
@@ -1888,14 +1948,50 @@ public sealed partial class GameLauncherPage : PageBase
                 string exeName = await _gameLauncherService.GetGameExeNameAsync(officialGame);
                 string exe = Path.Combine(GameInstallPath, exeName);
                 if (!File.Exists(exe)) throw new FileNotFoundException("游戏主程序不存在", exe);
-                string configError = XxmiInjector.PrepareManualMode(officialGame, _currentGameEntry?.DisplayName, exeName, manual: AppConfig.GetXxmiLaunchMode(officialGame) == XxmiLaunchMode.Manual);
-                if (!string.IsNullOrWhiteSpace(configError))
-                {
-                    InAppToast.MainWindow?.Error("XXMI 配置失败", configError, 10000);
-                    return;
-                }
                 bool manualXxmi = AppConfig.GetXxmiLaunchMode(officialGame) == XxmiLaunchMode.Manual;
-                if (manualXxmi)
+                if (officialGame.GameBiz.Value.StartsWith("hkrpg_", StringComparison.OrdinalIgnoreCase))
+                {
+                    pairedSrmiLoader = XxmiInjector.FindLoader(officialGame, _currentGameEntry?.DisplayName);
+                    pairedStarRailLaunch = StarRailXxmiLaunchRouting.CanUsePairedGraphicsLaunch(
+                        UseXxmiInject, UseInjectMode, UseStarwardLauncher, UseOptiScaler, UseModules,
+                        AppConfig.GetEnableDX12(officialGame.GameBiz), officialGame.GameBiz.Value, GameInstallPath,
+                        AppConfig.GetSelectedOptiScalerDll(officialGame), pairedSrmiLoader)
+                        && XxmiInjector.FindInjector(officialGame, _currentGameEntry?.DisplayName) is not null;
+                }
+                if (!pairedStarRailLaunch)
+                {
+                    string configError = XxmiInjector.PrepareManualMode(officialGame, _currentGameEntry?.DisplayName, exeName, manual: manualXxmi);
+                    if (!string.IsNullOrWhiteSpace(configError))
+                    {
+                        InAppToast.MainWindow?.Error("XXMI 配置失败", configError, 10000);
+                        return;
+                    }
+                }
+                string chainBridgeDll = ModuleRegistry.ResolveInjectionDlls(officialGame)
+                    .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath;
+                orderedInjectChain = GenshinLaunchRouting.CanUseOrderedInjectChain(
+                    manualXxmi, UseInjectMode, UseStarwardLauncher, UseOptiScaler,
+                    ModuleRegistry.IsGenshin(officialGame), GameInstallPath, chainBridgeDll);
+
+                if (orderedInjectChain)
+                {
+                    // **必须在唤起 XXMI 之前写**：XXMI 是启动时读一次配置、缓存进内存的，
+                    // 等它起来再写 SKIP 已经晚了 —— 它会照旧注入 GIMI 的 d3d11.dll，
+                    // 而 GIMI 拒载后留下的 CreateDXGIFactory1 钩子会把游戏打崩（0xC0000005）。
+                    string skipError = XxmiInjector.PrepareInjectModeSkip(officialGame, _currentGameEntry?.DisplayName);
+                    if (!string.IsNullOrWhiteSpace(skipError))
+                    {
+                        InAppToast.MainWindow?.Error("XXMI 注入模式", skipError, 10000);
+                        return;
+                    }
+                    _logger.LogInformation(
+                        "XXMI 有序注入链：XXMI 注入模式=SKIP（GIMI 不进进程）；外部只注桥 {Bridge}，其余层由桥按清单加载",
+                        chainBridgeDll);
+                    // 故意不做 HoYoShade inject.exe 准备、也不开 Hub 额外注入器：那两条正是
+                    // 「多个注入者抢时间」的旧路线，会跟链的顺序打架。落到下面的早期批注入分支。
+                }
+
+                if (manualXxmi && !pairedStarRailLaunch)
                 {
                     var armed = await XxmiInjector.ArmForManualLaunchAsync(officialGame,
                         _currentGameEntry?.DisplayName, exe, System.Threading.CancellationToken.None);
@@ -1906,62 +2002,131 @@ public sealed partial class GameLauncherPage : PageBase
                         return;
                     }
                 }
-                string? processName = await ResolveTargetProcessNameAsync();
-                if (string.IsNullOrWhiteSpace(processName)) throw new InvalidOperationException("未确定游戏进程名");
-                if (UseHoYoShade || UseOpenHoYoShade)
+
+                if (!orderedInjectChain && !pairedStarRailLaunch)
                 {
-                    string shadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
-                    string shadePath = Path.Combine(AppConfig.UserDataFolder, shadeName);
-                    var ready = await InjectorHelper.StartAndWaitForReadyAsync(
-                        Path.Combine(shadePath, "inject.exe"), exeName, shadePath, _logger, shadeName);
-                    if (!ready.success)
+                    // 上一次走链时被改成 SKIP 了。这条分支靠 XXMI 自己注入 GIMI，
+                    // 不还原就会静默地完全没有模型替换（不报错、mod 就是不生效）。
+                    string restoreError = XxmiInjector.RestoreInjectMode(officialGame, _currentGameEntry?.DisplayName);
+                    if (!string.IsNullOrWhiteSpace(restoreError))
                     {
-                        InAppToast.MainWindow?.Error("HoYoShade 注入器准备失败", $"退出码 {ready.exitCode}", 10000);
-                        return;
+                        _logger.LogWarning("XXMI 注入模式还原失败：{Error}；本次可能没有 GIMI 模型替换", restoreError);
                     }
-                }
-                // This prepares profiles, runtime paths and Bridge autoload before
-                // the official launcher starts its game, never a second Hub process.
-                StartExtraDllInjection(processName);
-                Process? target;
-                if (manualXxmi)
-                {
-                    _logger.LogInformation("XXMI 模式=手动：一秒交接与 Hub 注入器准备完成，游戏由 Hub 创建");
-                    target = await _gameLauncherService.StartGameAsync(officialGame, GameInstallPath);
-                }
-                else
-                {
-                    var launch = XxmiInjector.LaunchOfficialBaseline(officialGame, _currentGameEntry?.DisplayName, exe);
-                    AppConfig.XxmiLastLaunch = launch.Message;
-                    if (!launch.Started)
+                    string? processName = await ResolveTargetProcessNameAsync();
+                    if (string.IsNullOrWhiteSpace(processName)) throw new InvalidOperationException("未确定游戏进程名");
+                    if (UseHoYoShade || UseOpenHoYoShade)
+                    {
+                        string shadeName = UseHoYoShade ? "HoYoShade" : "OpenHoYoShade";
+                        string shadePath = Path.Combine(AppConfig.UserDataFolder, shadeName);
+                        var ready = await InjectorHelper.StartAndWaitForReadyAsync(
+                            Path.Combine(shadePath, "inject.exe"), exeName, shadePath, _logger, shadeName);
+                        if (!ready.success)
+                        {
+                            InAppToast.MainWindow?.Error("HoYoShade 注入器准备失败", $"退出码 {ready.exitCode}", 10000);
+                            return;
+                        }
+                    }
+                    // This prepares profiles, runtime paths and Bridge autoload before
+                    // the official launcher starts its game, never a second Hub process.
+                    StartExtraDllInjection(processName);
+                    Process? target;
+                    if (manualXxmi)
+                    {
+                        _logger.LogInformation("XXMI 模式=手动：一秒交接与 Hub 注入器准备完成，游戏由 Hub 创建");
+                        target = await _gameLauncherService.StartGameAsync(officialGame, GameInstallPath);
+                    }
+                    else
+                    {
+                        var launch = XxmiInjector.LaunchOfficialBaseline(officialGame, _currentGameEntry?.DisplayName, exe);
+                        AppConfig.XxmiLastLaunch = launch.Message;
+                        if (!launch.Started)
+                        {
+                            _extraInjectCts?.Cancel();
+                            InAppToast.MainWindow?.Error("XXMI 官方启动", launch.Message, 10000);
+                            return;
+                        }
+                        _logger.LogInformation("XXMI 模式=官方：Hub 图形注入器已准备，游戏只由 XXMI 创建");
+                        target = await DllInjector.WaitForProcessAsync(processName, TimeSpan.FromSeconds(15),
+                            System.Threading.CancellationToken.None);
+                    }
+                    if (target is not null)
+                    {
+                        GameProcess = target; GameState = GameState.GameIsRunning;
+                        WeakReferenceMessenger.Default.Send(new GameStartedMessage());
+                        _logger.LogInformation("XXMI 官方启动检测到游戏：pid {Pid}；模型和 FG 状态仍待日志确认", target.Id);
+                        if (UseFpsUnlock) _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                    }
+                    else
                     {
                         _extraInjectCts?.Cancel();
-                        InAppToast.MainWindow?.Error("XXMI 官方启动", launch.Message, 10000);
+                        InAppToast.MainWindow?.Warning("XXMI 启动未检测到游戏", "15秒内没有检测到原神进程；已停止本次 Hub 额外注入。请检查 XXMI 日志。", 10000);
+                    }
+                    return;
+                }
+            }
+
+            // StarRail has no Bridge/modules in this route. Inject paired SRMI,
+            // then selected Opt/ReShade while the main thread is suspended.
+            // Do not start XXMI Launcher: it can download over the paired DLL.
+            if (pairedStarRailLaunch && CurrentGameId is { } pairedGame)
+            {
+                string pairedExeName = await _gameLauncherService.GetGameExeNameAsync(pairedGame);
+                string pairedExe = Path.Combine(GameInstallPath!, pairedExeName);
+                string? pairedOpt = EnsureNamedOptiScalerDll(AppConfig.GetSelectedOptiScalerDll(pairedGame), AppConfig.GetOptiScalerDllName(pairedGame));
+                string? pairedBuild = pairedOpt is null ? null : Path.GetDirectoryName(pairedOpt);
+                if (pairedBuild is null || !File.Exists(pairedOpt)
+                    || !StarRailXxmiLaunchRouting.HasPairedLoaderExports(pairedSrmiLoader)
+                    || !OptiScalerProfiles.Activate(pairedBuild, pairedGame.GameBiz.Value)
+                    || !OptiScalerRuntime.EnsureConfigDllPath(pairedBuild))
+                {
+                    InAppToast.MainWindow?.Error("SRMI 配套启动", "配套 DLL 或 OptiScaler 配置不可用；尚未创建游戏进程。", 10000);
+                    return;
+                }
+                string? pairedShade = null;
+                if (UseHoYoShade || UseOpenHoYoShade)
+                {
+                    pairedShade = Path.Combine(AppConfig.UserDataFolder, UseHoYoShade ? "HoYoShade" : "OpenHoYoShade", "ReShade64.dll");
+                    if (!File.Exists(pairedShade))
+                    {
+                        InAppToast.MainWindow?.Error("SRMI 配套启动", "找不到选中的 ReShade DLL；尚未创建游戏进程。", 10000);
                         return;
                     }
-                    _logger.LogInformation("XXMI 模式=官方：Hub 图形注入器已准备，游戏只由 XXMI 创建");
-                    target = await DllInjector.WaitForProcessAsync(processName, TimeSpan.FromSeconds(15),
-                        System.Threading.CancellationToken.None);
                 }
-                if (target is not null)
+                string pairedArguments = AppConfig.GetStartArgument(pairedGame.GameBiz)?.Trim() ?? string.Empty;
+                if (AppConfig.GetUsePopupWindow(pairedGame.GameBiz)) pairedArguments += " -popupwindow";
+                _gameLauncherService.EnsureGameIniReady(pairedGame);
+                _logger.LogInformation("崩铁 SRMI-first：无模块/Bridge；挂起启动，SRMI→OptiScaler→ReShade；不唤起 XXMI Launcher（{Loader}）", pairedSrmiLoader);
+                var pairedLaunch = XxmiInjector.Launch(pairedGame, pairedExe, _currentGameEntry?.DisplayName, pairedArguments.Trim(),
+                    StarRailXxmiLaunchRouting.GraphicsLibraries(pairedOpt!, pairedShade), pairedGraphicsStack: true);
+                AppConfig.XxmiLastLaunch = pairedLaunch.Message;
+                if (!pairedLaunch.Started || !pairedLaunch.Injected || pairedLaunch.ProcessId is not { } pairedPid)
                 {
-                    GameProcess = target; GameState = GameState.GameIsRunning;
-                    WeakReferenceMessenger.Default.Send(new GameStartedMessage());
-                    _logger.LogInformation("XXMI 官方启动检测到游戏：pid {Pid}；模型和 FG 状态仍待日志确认", target.Id);
-                    if (UseFpsUnlock) _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+                    InAppToast.MainWindow?.Error("SRMI 配套启动", pairedLaunch.Message, 10000);
+                    return;
                 }
-                else
+                try
                 {
-                    _extraInjectCts?.Cancel();
-                    InAppToast.MainWindow?.Warning("XXMI 启动未检测到游戏", "15秒内没有检测到原神进程；已停止本次 Hub 额外注入。请检查 XXMI 日志。", 10000);
+                    GameProcess = Process.GetProcessById(pairedPid);
                 }
+                catch (ArgumentException)
+                {
+                    // 进程秒崩：外层 catch 只记日志，用户什么都看不到，所以这里明确报一句
+                    InAppToast.MainWindow?.Error("SRMI 配套启动", $"游戏进程（pid {pairedPid}）启动后立刻退出了，没能接上。", 10000);
+                    return;
+                }
+                GameState = GameState.GameIsRunning;
+                GameSessionLogCollector.Begin(pairedGame, pairedPid, pairedExeName,
+                    exePath: pairedExe, commandLine: pairedArguments.Trim(), process: GameProcess);
+                WeakReferenceMessenger.Default.Send(new GameStartedMessage());
                 return;
             }
 
             // Keep early graphics loading for Genshin without XXMI. Manual XXMI
             // shares the ordinary injector-ready -> game-start path; don't race
             // its GIMI hook with a separate immediate batch LoadLibrary branch.
-            if (GenshinLaunchRouting.UseEarlyGraphicsLaunch(UseInjectMode, UseStarwardLauncher, UseXxmiInject)
+            // 例外：走有序注入链时 XXMI 已经设成 SKIP（它不再注入），这条早期批注入是本次
+            // 唯一的外部注入，必须放行。
+            if (GenshinLaunchRouting.UseEarlyGraphicsLaunch(UseInjectMode, UseStarwardLauncher, UseXxmiInject && !orderedInjectChain)
                 && CurrentGameId is { } earlyGenshin
                 && ModuleRegistry.IsGenshin(earlyGenshin)
                 && UseOptiScaler
@@ -2020,9 +2185,119 @@ public sealed partial class GameLauncherPage : PageBase
                         }
                     }
 
+                    // 有序注入链：把「谁先加载」写成数据。硬约束（用户实测 + 2026-10-08 复查）：
+                    //   ① 第一步只能是 wait dxgi.dll —— dxgi 是原神自己（mhypbase.dll）在 CreateProcess
+                    //      之后才带进来的，链上各层都要从它拿工厂/交换链；3DMigoto 的 DllMain 也要求它在场。
+                    //   ② GIMI（3DMigoto 的代理 d3d11.dll）必须排在 OptiScaler/ReShade 之前 ——
+                    //      反过来 3DMigoto 装载会返回 600（用户实测）。
+                    //   ③ ReShade 排最后：它要在 OptiScaler 接管 Present/交换链之后再挂进去。
+                    // 这里用 migoto 步让桥在游戏进程内加载 GIMI，所以上面必须把 XXMI 注入模式设成 SKIP，
+                    // 否则会出现两份 d3d11 抢顺序。
+                    bool chainOwnsStack = false;
+                    if (orderedInjectChain)
+                    {
+                        var chainSteps = new List<OptiScalerRuntime.FsrBridgeChainStep>
+                        {
+                            OptiScalerRuntime.FsrBridgeChainStep.Wait("dxgi.dll"),
+                        };
+
+                        // 早先这里刻意不放 migoto 步，理由是「桥加载的 GIMI 会被 [Loader] loader 拒载，
+                        // 并留下 CreateDXGIFactory1 钩子把游戏打崩（0xC0000005、at=<no-module>）」。
+                        // 2026-10-08 复查证明该归因是错的：真因是桥克隆 ID3D11DeviceContext 虚表时按
+                        // 128 项克隆（对象是 Context4，149 项），GIMI 作为第二层包装转发 Context4 方法时
+                        // 踩到克隆区之后的 0 ⇒ call [rax+0x430] ⇒ RIP=0。桥修掉后带 migoto 步实测能进游戏，
+                        // 详见 docs/XXMI-挂载顺序-调查-20261008.md 第 14 节。
+                        string? gimiLoader = CurrentGameId is { } chainGame
+                            ? XxmiInjector.FindLoader(chainGame, _currentGameEntry?.DisplayName)
+                            : null;
+                        if (!string.IsNullOrWhiteSpace(gimiLoader) && File.Exists(gimiLoader))
+                        {
+                            chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Migoto(gimiLoader));
+                        }
+                        else
+                        {
+                            _logger.LogWarning("有序注入链：找不到 GIMI 的 d3d11.dll，本次跳过模型替换层");
+                        }
+
+                        // OptiScaler/ReShade 必须等游戏真的把交换链建出来（= GIMI 已经包装完设备/
+                        // 交换链）再挂：否则它们落在内层，Present 链层叠会让 DLSSG 的每帧簿记错位
+                        // （Frame count jumped too much / slDLSSGSetOptions race condition with
+                        // Present，2026-10-08 实机日志实测）。桥的 `wait swapchain` 就是等这个
+                        // （上限 45 秒，超时照样继续；老版本桥会把它当模块名等 15 秒后继续，
+                        // 效果恰好也是「晚点再挂」，不会把链弄坏）。
+                        chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Wait("swapchain"));
+
+                        if (!string.IsNullOrWhiteSpace(ffx12Path) && File.Exists(ffx12Path))
+                        {
+                            // 与旧批量路线保持一致：OptiScaler 之前先把 FSR SDK 预载进去
+                            chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Load(ffx12Path));
+                        }
+
+                        chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Load(optiPath));
+                        chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Wait(Path.GetFileName(optiPath)));
+                        if (earlyShadeDll is not null)
+                        {
+                            // ReShade 排最后：它要在 OptiScaler 接管 Present/交换链之后再挂进去
+                            chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Load(earlyShadeDll));
+                        }
+
+                        // 覆写：数据目录根部有 bridge-chain.override.txt 就换掉内置顺序（排查/实验用，
+                        // 不用重编启动器）。解析不出步骤就退回内置顺序，绝不写一条空链。
+                        try
+                        {
+                            string overridePath = Path.Combine(
+                                AppConfig.UserDataFolder, OptiScalerRuntime.FsrBridgeChainOverrideName);
+                            if (File.Exists(overridePath))
+                            {
+                                List<OptiScalerRuntime.FsrBridgeChainStep>? overrideSteps =
+                                    OptiScalerRuntime.ParseFsrBridgeChain(File.ReadAllText(overridePath));
+                                if (overrideSteps is not null)
+                                {
+                                    chainSteps = overrideSteps;
+                                    _logger.LogInformation("使用覆写链清单 {Path}（{Count} 步）",
+                                        overridePath, overrideSteps.Count);
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("覆写链清单 {Path} 解析不出步骤；用内置顺序", overridePath);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "读覆写链清单失败；用内置顺序");
+                        }
+
+                        string[]? chainLines = OptiScalerRuntime.WriteFsrBridgeChain(bridgeDirectory, chainSteps);
+                        if (chainLines is not null)
+                        {
+                            chainOwnsStack = true;
+                            _logger.LogInformation("原神有序注入链已写入 {Count} 步：{Steps}",
+                                chainLines.Length, string.Join(" | ", chainLines));
+                        }
+                        else
+                        {
+                            _logger.LogWarning("原神有序注入链写入失败（{Directory}）；退回旧的批量注入路线", bridgeDirectory);
+                        }
+                    }
+                    else
+                    {
+                        // 非链式路径（含「关闭 XXMI」）：这一局由 Hub 按老路线自己批量注入 OptiScaler/ReShade，
+                        // 但**桥永远优先读链文件**。上一局走链时留在模块目录里的清单会被原样执行 ——
+                        // 实测：留下的 migoto 步骤照样把 GIMI 拉进进程，游戏 5 秒后 0xC0000005 退出，
+                        // 用户体感就是「关了 XXMI 也启动不了」。所以这里必须清掉，回落到 autoload。
+                        if (OptiScalerRuntime.RemoveFsrBridgeChain(bridgeDirectory, out string? staleChain))
+                        {
+                            _logger.LogInformation(
+                                "非有序注入链路径：已清除上一次留下的链清单 {Path}，桥回落到 autoload", staleChain);
+                        }
+                    }
+
+                    // 早期 CreateProcess 路线绕过 StartGameAsync，也必须在创建进程前配置两份 ini。
+                    _gameLauncherService.EnsureGameIniReady(earlyGenshin);
                     GenshinEarlyLaunch.Result early = await GenshinEarlyLaunch.StartAsync(
                         earlyExe, earlyArguments.Trim(), GameInstallPath!, bridgePath, ffx12Path, optiPath, earlyShadeDll,
-                        text => _logger.LogInformation("{Text}", text));
+                        text => _logger.LogInformation("{Text}", text), chainOwnsStack);
                     if (early.Process is null)
                     {
                         _logger.LogError("原神早期启动失败：{Error}", early.Error);
@@ -2046,14 +2321,18 @@ public sealed partial class GameLauncherPage : PageBase
                         _ = StartFpsUnlockAsync(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
                     }
 
-                    // Bridge、OptiScaler 与 ReShade 已全部在 CreateProcess 阶段由父进程句柄
-                    // 批量有序注入完成（免受反作弊 OpenProcess / VirtualAllocEx 拒绝访问拦截）。
+                    // 这里只报「外部注入这一步交出去了没有」，不报「整条栈都成功了」：
+                    // 链模式下外部只注桥一个，GIMI/OptiScaler/ReShade 是桥在游戏进程内按清单加载的，
+                    // 成没成要以游戏进程里的桥日志为准（注入调用返回非 0 也只代表 DLL 进了进程）。
                     if (earlyShadeDll is not null)
                     {
-                        _logger.LogInformation("原神早期图形栈：已在 CreateProcess 阶段由父进程句柄直接批量注入 {ShadeName}，避开反作弊拦截", earlyShadeName);
+                        string stackNote = chainOwnsStack
+                            ? $"已把桥注入 {earlyProcessName}（pid {early.Process.Id}）；{earlyShadeName}/OptiScaler 等各层由桥在游戏进程内按清单加载，加载结果以游戏日志为准"
+                            : $"已向 {earlyProcessName}（pid {early.Process.Id}）提交 {earlyShadeName} 的注入调用；初始化是否成功以游戏日志为准";
+                        _logger.LogInformation("原神早期图形栈：{Note}", stackNote);
                         DispatcherQueue?.TryEnqueue(() =>
                         {
-                            InAppToast.MainWindow?.Success(earlyShadeName, $"已把 {earlyShadeName} 注入 {earlyProcessName}（pid {early.Process.Id}）。", 8000);
+                            InAppToast.MainWindow?.Success(earlyShadeName, stackNote, 8000);
                         });
                     }
                     if (UseXxmiInject)
@@ -2568,6 +2847,7 @@ public sealed partial class GameLauncherPage : PageBase
             GameAddonPackService.Sync(CurrentGameId, _currentGameEntry, host);
 
             ShadePathAlignResult align = ShadePathAligner.Align(gameIni, host);
+            GameIniBootstrap.Ensure(_currentGameEntry, host, GameLauncherService.UsesGenshinFinalDx12(CurrentGameId), GameLauncherService.UsesStarRailFinalDx12(CurrentGameId));
             if (!align.Changed)
             {
                 return;

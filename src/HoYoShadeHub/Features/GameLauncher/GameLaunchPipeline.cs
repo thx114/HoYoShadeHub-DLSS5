@@ -67,6 +67,15 @@ public static class GameLaunchPipeline
             return null;
         }
 
+        if (AppConfig.GetUseRocketLaunchOption(gameId))
+        {
+            var prepared = await RocketLaunchPreparation.PrepareAsync(gameId, entry);
+            report?.Invoke(prepared.Message);
+            if (!prepared.Success) throw new InvalidOperationException(prepared.Message);
+            // A prepared external launch is not a started process.
+            return null;
+        }
+
         report?.Invoke("准备启动 " + gameId.GameBiz);
 
         ApplyForceHookOff(gameId, entry);
@@ -77,6 +86,9 @@ public static class GameLaunchPipeline
 
         bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(gameId);
         EnsureGameDlssgForMfg(gameId, entry, useOptiScaler);
+        // 原神 Bridge 必须在 ini 路线判定和任何进程创建之前准备好。
+        if (ModuleRegistry.IsGenshin(gameId))
+            _ = BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
 
         bool useHoYoShade = AppConfig.GetUseHoYoShadeLaunchOption(gameId);
         bool useOpenHoYoShade = AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
@@ -454,6 +466,7 @@ public static class GameLaunchPipeline
             GameAddonPackService.Sync(gameId, entry, host);
 
             ShadePathAlignResult align = ShadePathAligner.Align(gameIni, host);
+            GameIniBootstrap.Ensure(entry, host, GameLauncherService.UsesGenshinFinalDx12(gameId), GameLauncherService.UsesStarRailFinalDx12(gameId));
             if (align.Changed)
             {
                 _logger.LogInformation("ReShade.ini paths re-pointed from {Old} to {New}: {Keys}",

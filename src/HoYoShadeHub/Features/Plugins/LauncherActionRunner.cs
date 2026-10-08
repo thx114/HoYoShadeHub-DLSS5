@@ -98,8 +98,10 @@ public static class LauncherActionRunner
 
         string outcome = await DispatchStepAsync(step, context);
 
-        // 成功失败都记账：失败多半是包里缺文件这类持久状态，不该每启动重复报错刷屏
-        if (once && !string.IsNullOrWhiteSpace(context.PackRoot))
+        // Failed setup must not become a permanent once marker: missing ini,
+        // preset or dependency may become available on the next launch.
+        if (once && !string.IsNullOrWhiteSpace(context.PackRoot)
+            && HoYoShadeHub.Extensions.ReShade.PackActionOutcome.ShouldMarkOnce(outcome))
         {
             OnceMarker.Mark(context.PackRoot, step);
         }
@@ -546,6 +548,9 @@ public static class LauncherActionRunner
                 ok++;
             }
         }
+
+        if (ok != targets.Count)
+            return $"✗ {(enabled.Value ? "启用" : "禁用")}插件未全部完成 {ok}/{targets.Count}；下次启动重试";
 
         return $"{(enabled.Value ? "启用" : "禁用")}插件 {ok}/{targets.Count}"
                + (files.Count == 0 ? "（全部）" : string.Empty);

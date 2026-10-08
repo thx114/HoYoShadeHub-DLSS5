@@ -12,6 +12,7 @@ using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.Overlay;
 using HoYoShadeHub.Features.Screenshot;
 using HoYoShadeHub.Frameworks;
+using HoYoShadeHub.Helpers;
 using System;
 using System.ComponentModel;
 using System.IO;
@@ -58,6 +59,8 @@ public sealed partial class MainWindow : WindowEx
         _nextPresenter = NextContentPresenter;
         InitializeMainWindow();
         LoadContentView();
+        // 提权窗口收不到 OLE 拖放（UIPI），给窗口和它的 WinUI 子窗口挂上 shell 的 WM_DROPFILES 通道
+        ShellFileDrop.EnableTree(WindowHandle);
         WeakReferenceMessenger.Default.Register<AccentColorChangedMessage>(this, OnAccentColorChanged);
         WeakReferenceMessenger.Default.Register<WelcomePageFinishedMessage>(this, OnWelcomePageFinished);
         WeakReferenceMessenger.Default.Register<NavigateToQuickSetupPageMessage>(this, OnNavigateToQuickSetupPage);

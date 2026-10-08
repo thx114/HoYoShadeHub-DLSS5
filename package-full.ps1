@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   构建「完整包」：便携版启动器 + 自带 HoYoShade（框架本体 + 预置 + 精简滤镜/材质），插件目录留空。
 
@@ -12,20 +12,31 @@
       HoYoShade\
           ReShade64.dll  inject.exe  ReShade.ini  *.bat  LICENSE  ReShade_LICENSE
           InjectResource\  LauncherResource\  Presets\
-          reshade-shaders\Shaders\    ← 只带必要滤镜（源目录本来就是精简集）
-          reshade-shaders\Textures\   ← 只带必要材质
+          reshade-shaders\Shaders\    ← 只带必要滤镜（按预设算闭包，见下）
+          reshade-shaders\Textures\   ← 只带必要材质（同上）
           reshade-shaders\Addons\     ← **空**（插件由用户在启动器里装）
           ScreenShot\                 ← 空
 
   说明：
   * 只拷「框架 + 必要资源」，**不拷用户状态**（.hysx\installed.json、.hysx\backup、日志、插件文件、截图）。
   * ReShade.ini 里的绝对路径会改写成相对路径 —— 源机是 D:\...，别人机器上根本不存在那条路径。
-  * 滤镜/材质默认整目录照搬（HoYoShade 自带的就是精简集）；想再精简就传 -ShaderAllowList / -TextureAllowList
-    （一个文本文件，一行一个通配符，例如 Lilium*.fx / renodx*）。
+  * 滤镜/材质：框架源目录自带 766 个滤镜 + 161 个材质（约 100 MB，其中材质占 90 MB），全都不是必需的 ——
+    ReShade 会把 EffectSearchPaths 下的每个 .fx 都编译一遍，多余滤镜既占体积又拖慢启动。两种收窄方式：
+      -PresetIni '<游戏预设.ini>'        按预设算最小闭包（调 tools\make-shader-allowlist.ps1：`Techniques=` +
+                                        `[某文件.fx]` 配置节 + 递归 `#include` + 材质引用）。再加
+                                        -PresetIncludeFrameworkPresets 则连带框架自带 Presets\*.ini 用到的
+                                        特效一起带（推荐：仍是几十个文件的量级，但随包预置切过去都能用）
+      -ShaderAllowList / -TextureAllowList   直接给清单文件（一行一个，可写文件名或相对路径，`#` 是注释）
+    两者都不给 = 整目录照搬（历史行为）。
+  * 框架 ReShade.ini 里的 `[ADDON] DisabledAddons` 是**本机插件开关状态**，默认会被原样打进包；要出厂不预置
+    任何禁用就传 `-DisabledAddons ''`（插件开关本该由启动器按游戏写，见 ReShadeProfile.SetDisabledAddons）。
 
 .EXAMPLE
   .\package-full.ps1 -Version 1.3.9.1
   .\package-full.ps1 -Version 1.3.9.1 -ShadeSource 'D:\APPS\HoYoShadeHub\HoYoShade'
+  .\package-full.ps1 -Version 1.4.3.14 -ShadeSource 'D:\APPS\HoYoShadeHub\HoYoShade' `
+      -PresetIni 'D:\APPS\miHoYo Launcher\games\Genshin Impact Game\HoYoShade DX11 Before NR.ini' `
+      -PresetIncludeFrameworkPresets
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -43,9 +54,25 @@ param(
     # HoYoShade 框架来源目录（里面有 ReShade64.dll）。默认按顺序找：参数 → HYSHADE_SHADE_SOURCE → 仓库下 HoYoShade → D:\APPS\HoYoShadeHub\HoYoShade
     [string] $ShadeSource = "",
 
-    # 只保留匹配这些通配符的滤镜 / 材质（一行一个，支持 # 注释）；不传 = 整目录照搬
+    # 只保留匹配这些清单的滤镜 / 材质（一行一个，可写文件名或相对路径，支持 # 注释）；不传 = 整目录照搬
     [string] $ShaderAllowList = "",
     [string] $TextureAllowList = "",
+
+    # 按预设推导「必要滤镜/材质」白名单（自动调用 tools\make-shader-allowlist.ps1，清单写到 build\shader-allowlist\）
+    [string[]] $PresetIni = @(),
+
+    # 预设口径下，连带框架自带 Presets\*.ini 用到的特效一起带（推荐）
+    [switch] $PresetIncludeFrameworkPresets,
+
+    # 预设口径下额外要塞进闭包的特效文件名（例如插件自己带的 FSRBridgeDepthView.fx）
+    [string[]] $PresetExtraEffect = @(),
+
+    # 包内框架 ReShade.ini 的 [ADDON] DisabledAddons 覆盖值：不传 = 原样照抄源机那份；传空串 = 清空。
+    # 为什么要这个开关：完整包会带上整个 HoYoShade 框架目录，其中的 ReShade.ini 是 ReShade 运行时读的那份；
+    # 源机那份里的 DisabledAddons 是**本机插件开关状态**（比如本机把某个插件关着），会被出厂带给新用户，
+    # 还会经 GameIniBootstrap 同步到各游戏 ini。插件开关本该由启动器在安装/启用时按游戏写
+    # （src\HoYoShadeHub.Extensions\ReShade\ReShadeProfile.cs:497 SetDisabledAddons），不该在打包时照抄。
+    [string] $DisabledAddons = $null,
 
     # 跳过基础便携包构建（复用已有输出目录）
     [switch] $SkipBaseBuild,
@@ -85,11 +112,18 @@ function Read-AllowList {
     if (-not (Test-Path $Path)) { throw "白名单文件不存在：$Path" }
 
     return @(Get-Content $Path -Encoding UTF8 |
-        ForEach-Object { $_.Trim() } |
+        ForEach-Object { "$_".Trim() } |
         Where-Object { $_ -and -not $_.StartsWith("#") })
 }
 
 # 拷一个目录，可按白名单筛文件（白名单为空 = 全拷）
+#
+# 匹配规则：**相对路径优先**。每条规则先看能不能按相对路径命中（正/反斜杠等价）；
+# 整条规则一个相对路径都没命中时，- 若规则里没有路径分隔符，才退回按文件名匹配（历史清单写的是
+# Lilium*.fx 这种名字通配）；- 若规则带分隔符，说明是写死的相对路径，命中不了就告警（清单过期）。
+# 这样分工的原因：按文件名兜底会把别处的同名文件一起拖进来 —— 例如清单里一条 `ReShade.fxh`
+# 会把 `CorgiFX/StageDepthPlus.../ReShade.fxh` 也拷进来，那份是第三方同名滤镜，还 include 了没带的
+# 文件，ReShade 编译时会报错，甚至可能顶掉正确的 ReShade.fxh。
 function Copy-Filtered {
     param(
         [string] $From,
@@ -102,21 +136,52 @@ function Copy-Filtered {
 
     $files = Get-ChildItem -Path $From -Recurse -File
     $copied = 0
+    $prefix = $From.TrimEnd("\").Length
+
+    $relPatterns = @()
+    $namePatterns = @()
+    if ($AllowList.Count -gt 0) {
+        foreach ($pattern in $AllowList) {
+            $normalized = $pattern.Replace("/", "\")
+            $hit = $false
+            foreach ($file in $files) {
+                if ($file.FullName.Substring($prefix).TrimStart("\") -like $normalized) { $hit = $true; break }
+            }
+            if ($hit) {
+                $relPatterns += $normalized
+            } elseif ($pattern -match '[\\/]') {
+                Write-Warning "白名单规则按相对路径没命中任何文件（清单可能过期）：$pattern"
+            } else {
+                $namePatterns += $pattern
+            }
+        }
+    }
 
     foreach ($file in $files) {
+        $relative = $file.FullName.Substring($prefix).TrimStart("\")
+
         if ($AllowList.Count -gt 0) {
             $match = $false
-            foreach ($pattern in $AllowList) {
-                if ($file.Name -like $pattern) { $match = $true; break }
+            foreach ($pattern in $relPatterns) {
+                if ($relative -like $pattern) { $match = $true; break }
+            }
+            if (-not $match) {
+                foreach ($pattern in $namePatterns) {
+                    if ($file.Name -like $pattern) { $match = $true; break }
+                }
             }
             if (-not $match) { continue }
         }
 
-        $relative = $file.FullName.Substring($From.TrimEnd("\").Length).TrimStart("\")
         $target = Join-Path $To $relative
         New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $target -Force
         $copied++
+    }
+
+    # 白名单写了规则却一个都没命中，基本就是清单路径/来源目录不对 —— 宁可报错也别悄悄做出个缺滤镜的包
+    if ($AllowList.Count -gt 0 -and $copied -eq 0) {
+        throw "白名单里 $($AllowList.Count) 条规则一个都没匹配到：$From（清单第一行 = $($AllowList[0])）"
     }
 
     return $copied
@@ -137,6 +202,46 @@ function ConvertTo-PortableIni {
     $text = $text -replace [regex]::Escape("$prefix/"), ""
 
     Set-Content -Path $TargetIni -Value $text -Encoding UTF8
+}
+
+# 改 ini 里某个键的值（有就替换那一行，没有就在对应节里插一行；节不存在就补一个节）
+# 逐行处理而不是正则替换：值里可能带 $ 或 . 等字符，正则替换的替换串会把这些当引用/转义。
+function Set-IniKey {
+    param(
+        [string] $Path,
+        [string] $Section,
+        [string] $Key,
+        [string] $Value
+    )
+
+    $lines = @(Get-Content -Path $Path)
+    $out = New-Object System.Collections.Generic.List[string]
+    $sectionAt = -1
+    $keyAt = -1
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*\[$([regex]::Escape($Section))\]\s*$") { $sectionAt = $i }
+        elseif ($lines[$i] -match "^\s*$([regex]::Escape($Key))\s*=") { $keyAt = $i; break }
+    }
+
+    if ($keyAt -ge 0) {
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $out.Add($(if ($i -eq $keyAt) { "$Key=$Value" } else { $lines[$i] }))
+        }
+    } elseif ($sectionAt -ge 0) {
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $out.Add($lines[$i])
+            # 插在节的第一行（AddonPath 那种也一起往后排无所谓，ReShade 只按键名取值）
+            if ($i -eq $sectionAt) { $out.Add("$Key=$Value") }
+        }
+    } else {
+        foreach ($line in $lines) { $out.Add($line) }
+        if ($out.Count -gt 0 -and $out[$out.Count - 1] -ne "") { $out.Add("") }
+        $out.Add("[$Section]")
+        $out.Add("$Key=$Value")
+    }
+
+    Set-Content -Path $Path -Value ($out -join "`r`n") -Encoding UTF8
 }
 
 Push-Location $repoRoot
@@ -167,6 +272,22 @@ try {
     if (Test-Path $target) { Remove-Item $target -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
+    # 预设口径：自动推导滤镜/材质白名单（显式给了 -ShaderAllowList / -TextureAllowList 就以显式为准）
+    if ($PresetIni.Count -gt 0 -and -not $ShaderAllowList -and -not $TextureAllowList) {
+        $listDir = Join-Path $repoRoot "build\shader-allowlist"
+        $listTool = Join-Path $repoRoot "tools\make-shader-allowlist.ps1"
+        if (-not (Test-Path $listTool)) { throw "找不到白名单工具：$listTool" }
+
+        Write-Host "==> 按预设推导必要滤镜/材质：$($PresetIni -join ', ')" -ForegroundColor Cyan
+        $toolArgs = @{ PresetIni = @($PresetIni); ShadeRoot = $shadeRoot; OutDir = $listDir }
+        if ($PresetIncludeFrameworkPresets) { $toolArgs.IncludeFrameworkPresets = $true }
+        if ($PresetExtraEffect.Count -gt 0) { $toolArgs.ExtraEffect = $PresetExtraEffect }
+        & $listTool @toolArgs
+
+        $ShaderAllowList = Join-Path $listDir "shaders.txt"
+        $TextureAllowList = Join-Path $listDir "textures.txt"
+    }
+
     $shaderList = Read-AllowList -Path $ShaderAllowList
     $textureList = Read-AllowList -Path $TextureAllowList
 
@@ -196,11 +317,21 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "reshade-shaders\Addons") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $target "ScreenShot") | Out-Null
 
-    # 5) ReShade.ini：相对路径
+    # 5) ReShade.ini：相对路径（+ 可选：把本机插件开关状态从出厂包里摘掉）
     $sourceIni = Join-Path $shadeRoot "ReShade.ini"
     if (Test-Path $sourceIni) {
-        ConvertTo-PortableIni -SourceIni $sourceIni -ShadeRoot $shadeRoot -TargetIni (Join-Path $target "ReShade.ini")
+        $targetIni = Join-Path $target "ReShade.ini"
+        ConvertTo-PortableIni -SourceIni $sourceIni -ShadeRoot $shadeRoot -TargetIni $targetIni
         Write-Host "      ReShade.ini        已改写为相对路径" -ForegroundColor DarkGray
+
+        if ($PSBoundParameters.ContainsKey('DisabledAddons')) {
+            Set-IniKey -Path $targetIni -Section "ADDON" -Key "DisabledAddons" -Value $DisabledAddons
+            if ([string]::IsNullOrEmpty($DisabledAddons)) {
+                Write-Host "      ReShade.ini        DisabledAddons 已清空（不把本机插件开关带出厂）" -ForegroundColor DarkGray
+            } else {
+                Write-Host "      ReShade.ini        DisabledAddons => $DisabledAddons" -ForegroundColor DarkGray
+            }
+        }
     }
 
     # 6) 不打包：用户状态 / 日志 / 插件 / 截图（Addons 必须是空的）

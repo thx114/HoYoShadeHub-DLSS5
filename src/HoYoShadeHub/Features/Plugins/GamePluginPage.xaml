@@ -367,6 +367,19 @@
                               TextWrapping="Wrap"
                               Visibility="Collapsed" />
 
+                    <!--  插件列表空着（一个都没有 / 全被全局禁用）时：中间给一个直接跳过去的按钮  -->
+                    <Button x:Name="Button_GotoGlobalPlugins"
+                            HorizontalAlignment="Center"
+                            Click="Button_GotoGlobalPlugins_Click"
+                            Style="{ThemeResource AccentButtonStyle}"
+                            Visibility="Collapsed"
+                            ToolTipService.ToolTip="插件在全局只有一份：装 / 删 / 全局开关都在左下角「全局插件」里；装好、开好了这一页才管得着">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon FontFamily="Segoe Fluent Icons" FontSize="14" Glyph="&#xE72A;" />
+                            <TextBlock Text="去全局插件" />
+                        </StackPanel>
+                    </Button>
+
                     <!--  游戏 ini 缺失时：页面中央补一份模板（平时不显示；HoYoShade 注入时也会自动补）  -->
                     <Button x:Name="Button_CopyIni"
                             HorizontalAlignment="Center"

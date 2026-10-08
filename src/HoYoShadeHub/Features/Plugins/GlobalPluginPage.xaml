@@ -71,8 +71,10 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!--  标题 + 操作（搜索框放在「本地安装」左边）+ 顶部状态 -->
-        <StackPanel Grid.Row="0" Spacing="8">
+        <!--  标题 + 操作（搜索框放在「本地安装」左边）+ 顶部状态。
+              Spacing 用 0、间距交给 InfoBar 自己的 Margin：InfoBar 是收起的（IsOpen=False）时
+              再留一份 StackPanel 间距，标题和下面切换器之间就会白空一截。  -->
+        <StackPanel Grid.Row="0" Spacing="0">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -81,22 +83,37 @@
 
                 <!--  标题 + 目标路径同一行：路径不再单独占一行，
                       免得标题和下面单选框之间像隔了一层空行  -->
-                <Grid Grid.Column="0" ColumnSpacing="12" VerticalAlignment="Center">
+                <Grid Grid.Column="0" ColumnSpacing="12" RowSpacing="2" VerticalAlignment="Center">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0"
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Grid.Column="0"
                                VerticalAlignment="Center"
                                Style="{ThemeResource TitleTextBlockStyle}"
                                Text="全局插件" />
                     <TextBlock x:Name="TextBlock_TargetPath"
+                               Grid.Row="0"
                                Grid.Column="1"
                                VerticalAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                Style="{ThemeResource CaptionTextBlockStyle}"
                                Text="正在检测 HoYoShade…"
                                TextTrimming="CharacterEllipsis" />
+                    <!--  提权窗口收不到 OLE 拖放，走的是 shell 的 WM_DROPFILES：
+                          它只在松手那一刻来消息，没有拖动过程中的悬浮高亮，所以这句提示得常驻写出来  -->
+                    <TextBlock Grid.Row="1"
+                               Grid.Column="0"
+                               Grid.ColumnSpan="2"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Text="支持把 .zip 包 / .addon64 / .addon32 / .dll 直接拖进窗口安装（松手即装，拖动过程中不会有高亮提示）"
+                               TextWrapping="Wrap" />
                 </Grid>
 
                 <StackPanel Grid.Column="1"
@@ -117,32 +134,41 @@
                 </StackPanel>
             </Grid>
 
-            <!--  诊断  -->
+            <!--  诊断（间距挂在自己身上：收起时不占位）  -->
             <InfoBar x:Name="InfoBar_Status"
+                     Margin="0,8,0,0"
                      IsClosable="True"
                      IsOpen="False"
                      Severity="Informational" />
 
         </StackPanel>
 
-        <!--  一行：左边三个标签页，右边搜索框（靠右）  -->
-        <Grid Grid.Row="1" ColumnSpacing="16">
+        <!--  一行：左边视图切换，右边搜索框（靠右）。
+             切换器用 SelectorBar：WinUI 3 里就是给「一小组视图互切」用的控件 ——
+             选中指示条是控件自带的强调色胶囊（跟随主题 / 高对比 / 系统「动画效果」开关），
+             焦点框、左右方向键切换、无障碍语义也都是控件自带的；
+             RadioButtons 本来是选「值」的，拿来当标签页用这几样全得自己补（原来就是三个圆圈）。
+
+             Margin 收 -6、控件 Padding 收成 0,0、每项 Padding 顶部 10 收到 6：
+             SelectorBar 默认自带 SelectorBarPadding(0,4) + 项 Padding(12,10,12,7)，
+             文字上方一共白留 14px，叠上外层 RowSpacing(8) 就显得离标题太远；
+             底部 7 + 胶囊 3 保留，选中指示条不会被挤扁。  -->
+        <Grid Grid.Row="1" Margin="0,-6,0,0" ColumnSpacing="16">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <RadioButtons x:Name="RadioButtons_View"
-                          Grid.Column="0"
-                          VerticalAlignment="Top"
-                          MaxColumns="3"
-                          SelectedIndex="0"
-                          SelectionChanged="RadioButtons_View_SelectionChanged">
-                <!--  三个 MinWidth 一致：圆圈间隔相等，文字长短不影响排布  -->
-                <RadioButton MinWidth="120" Content="插件" Tag="plugins" />
-                <RadioButton MinWidth="120" Content="OptiScaler" Tag="optiscaler" />
-                <RadioButton MinWidth="120" Content="模块" Tag="modules" />
-            </RadioButtons>
+            <SelectorBar x:Name="SelectorBar_View"
+                         Grid.Column="0"
+                         Padding="0,0"
+                         VerticalAlignment="Center"
+                         SelectionChanged="SelectorBar_View_SelectionChanged">
+                <!--  Tag 就是 _tab 的值；首屏默认「插件」（构造里再兜一次底，见 GlobalPluginPage.xaml.cs）  -->
+                <SelectorBarItem Padding="12,6,12,7" IsSelected="True" Tag="plugins" Text="插件" />
+                <SelectorBarItem Padding="12,6,12,7" Tag="optiscaler" Text="OptiScaler" />
+                <SelectorBarItem Padding="12,6,12,7" Tag="modules" Text="模块" />
+            </SelectorBar>
 
             <TextBox x:Name="TextBox_Search"
                      Grid.Column="1"
@@ -153,7 +179,7 @@
                      TextChanged="TextBox_Search_TextChanged" />
         </Grid>
 
-        <Grid Grid.Row="2">
+        <Grid x:Name="Grid_ViewContent" Grid.Row="2">
             <!--  ===================== 插件 =====================  -->
             <Grid x:Name="Grid_Plugins">
                 <ScrollViewer Padding="0,0,6,0">
@@ -979,6 +1005,40 @@
                                                             Orientation="Horizontal"
                                                             Spacing="8"
                                                             VerticalAlignment="Center">
+                                                    <!--  FSR 桥的版本门：左边是本机当前游戏版本，右边是桥声明的支持版本。
+                                                         桥的发布包自带 Dx11FsrBridge.game-versions.txt；
+                                                         老包 / 别的模块没有这张文件，就不显示这两块。
+                                                         对不上标红提示，但不拦启动（拦不拦由桥自己决定）。  -->
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                            CornerRadius="3"
+                                                            ToolTipService.ToolTip="{x:Bind BridgeGameVersionTooltip, Mode=OneWay}"
+                                                            Visibility="{x:Bind BridgeGameVersionVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11"
+                                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                Text="{x:Bind BridgeGameVersionText, Mode=OneWay}" />
+                                                    </Border>
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                                            CornerRadius="3"
+                                                            ToolTipService.ToolTip="{x:Bind BridgeGameVersionTooltip, Mode=OneWay}"
+                                                            Visibility="{x:Bind BridgeSupportOkVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11"
+                                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                                Text="{x:Bind BridgeSupportText, Mode=OneWay}" />
+                                                    </Border>
+                                                    <Border Padding="6,1"
+                                                            VerticalAlignment="Center"
+                                                            Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
+                                                            CornerRadius="3"
+                                                            ToolTipService.ToolTip="{x:Bind BridgeGameVersionTooltip, Mode=OneWay}"
+                                                            Visibility="{x:Bind BridgeSupportBadVisibility, Mode=OneWay}">
+                                                        <TextBlock FontSize="11"
+                                                                Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                                                Text="{x:Bind BridgeSupportBadText, Mode=OneWay}" />
+                                                    </Border>
                                                     <ToggleSwitch MinWidth="0"
                                                                   VerticalAlignment="Center"
                                                                   IsOn="{x:Bind GloballyEnabled, Mode=TwoWay}"

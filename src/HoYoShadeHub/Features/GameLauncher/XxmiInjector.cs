@@ -112,8 +112,17 @@ internal sealed class XxmiInjector
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
     /// <summary>这次 XXMI 启动的结果（给界面显示用）</summary>
-    public sealed record XxmiLaunchResult(bool Started, bool Injected, string Message);
+    public sealed record XxmiLaunchResult(bool Started, bool Injected, string Message)
+    {
+        public int? ProcessId { get; init; }
+    }
 
     /// <summary>
     /// 3dmloader 的 loader 互斥体：XXMI 挂钩子（<c>HookLibrary</c>）时建，被注入的 DLL 靠它判断
@@ -260,6 +269,156 @@ internal sealed class XxmiInjector
         }
     }
 
+    /// <summary>
+    /// 把本游戏导入器的 XXMI DLL 注入模式写成 <c>SKIP</c>（= 不注入 XXMI 自己那份 d3d11.dll）。
+    ///
+    /// <para>
+    /// 有序注入链模式下必须这样：GIMI 的 d3d11.dll 改由桥在游戏进程内按清单加载，XXMI 再注一份
+    /// 会变成「Found a second copy of 3DMigoto」，而且两个注入者又回到抢顺序。XXMI 自己就把 SKIP
+    /// 当合法状态（<c>core/config_manager.py</c> 里模式不可用时写的就是 SKIP），此时它照样启动、
+    /// 照样管 mod，只是不注入、也不建 loader 互斥体 —— 互斥体由桥建。
+    /// </para>
+    ///
+    /// <para>
+    /// 该键**不在** XXMI 的签名保护名单里（受保护的只有 <c>unsafe_mode</c> / <c>run_pre_launch</c> /
+    /// <c>custom_launch</c> / <c>run_post_load</c> / <c>extra_libraries</c>），
+    /// 所以启动器改写它不会被判成配置被篡改。
+    /// </para>
+    ///
+    /// 空串 = 成功（含「本来就是 SKIP」），否则是失败原因。
+    /// </summary>
+    public static string PrepareInjectModeSkip(GameId gameId, string? gameName)
+    {
+        // XXMI 的 Loader 注入模式：DIRECT / HOOK / SKIP
+        const string injectModeKey = "xxmi_dll_inject_mode";
+        const string skipMode = "SKIP";
+
+        string? configPath = Xxmi.XxmiLocator.FindConfigPath(gameId.GameBiz, gameName, out string? importer);
+        if (!string.IsNullOrWhiteSpace(AppConfig.XxmiLauncherPath))
+        {
+            importer = Xxmi.XxmiLocator.ImporterForGame(gameId.GameBiz, gameName);
+            configPath = FindConfigForLauncher(AppConfig.XxmiLauncherPath);
+        }
+
+        if (configPath is null || importer is null)
+        {
+            return "找不到 XXMI 配置文件（到「模型替换」页确认 MI 目录）";
+        }
+
+        try
+        {
+            System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath));
+
+            if (root is null
+                || root["Importers"]?[importer]?["Importer"] is not System.Text.Json.Nodes.JsonObject block)
+            {
+                return "XXMI 配置里没有导入器 " + importer;
+            }
+
+            string oldMode = block[injectModeKey]?.GetValue<string>() ?? string.Empty;
+            if (string.Equals(oldMode, skipMode, StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            block[injectModeKey] = skipMode;
+
+            string backup = configPath + ".bak-before-inject-skip";
+            if (!File.Exists(backup))
+            {
+                File.Copy(configPath, backup);
+            }
+
+            File.WriteAllText(configPath,
+                root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
+                new UTF8Encoding(false));
+
+            Logger.LogInformation(
+                "XXMI {Importer} 注入模式 {Old}→{New}：GIMI 改由桥在游戏进程内按清单加载（备份 {Backup}）",
+                importer, string.IsNullOrWhiteSpace(oldMode) ? "(未设置)" : oldMode, skipMode, backup);
+
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "XXMI 写注入模式失败");
+            return "写 XXMI 注入模式失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 把注入模式还原成「有序注入链之前」的样子（原值从 <c>.bak-before-inject-skip</c> 备份里读）。
+    ///
+    /// <para>
+    /// 用在没走链的分支上：那条分支靠 XXMI 自己注入 GIMI，如果还留着上次链写下的 SKIP，
+    /// 就会静默地完全没有模型替换（不报错、不提示，只是 mod 不生效）。
+    /// 备份里没记过这个键时宁可不猜（返回空串、什么都不写）。
+    /// </para>
+    ///
+    /// 空串 = 成功或本来就没动过，否则是失败原因。
+    /// </summary>
+    public static string RestoreInjectMode(GameId gameId, string? gameName)
+    {
+        const string injectModeKey = "xxmi_dll_inject_mode";
+
+        string? configPath = Xxmi.XxmiLocator.FindConfigPath(gameId.GameBiz, gameName, out string? importer);
+        if (!string.IsNullOrWhiteSpace(AppConfig.XxmiLauncherPath))
+        {
+            importer = Xxmi.XxmiLocator.ImporterForGame(gameId.GameBiz, gameName);
+            configPath = FindConfigForLauncher(AppConfig.XxmiLauncherPath);
+        }
+
+        if (configPath is null || importer is null)
+        {
+            return string.Empty;
+        }
+
+        string backup = configPath + ".bak-before-inject-skip";
+        if (!File.Exists(backup))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            string? oldMode = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(backup))
+                ?["Importers"]?[importer]?["Importer"]?[injectModeKey]?.GetValue<string>();
+
+            if (string.IsNullOrWhiteSpace(oldMode))
+            {
+                return string.Empty;
+            }
+
+            System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath));
+            if (root?["Importers"]?[importer]?["Importer"] is not System.Text.Json.Nodes.JsonObject block)
+            {
+                return "XXMI 配置里没有导入器 " + importer;
+            }
+
+            string current = block[injectModeKey]?.GetValue<string>() ?? string.Empty;
+            if (string.Equals(current, oldMode, StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            block[injectModeKey] = oldMode;
+
+            File.WriteAllText(configPath,
+                root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
+                new UTF8Encoding(false));
+
+            Logger.LogInformation("XXMI {Importer} 注入模式 {Cur}→{Old} 还原：本次不走有序注入链，GIMI 交回 XXMI 自己注入",
+                importer, string.IsNullOrWhiteSpace(current) ? "(未设置)" : current, oldMode);
+
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "XXMI 还原注入模式失败");
+            return "还原 XXMI 注入模式失败：" + ex.Message;
+        }
+    }
+
     /// <summary>成功唤起且经过1秒交接；不代表已经检测到游戏或完成模型注入。</summary>
     public sealed record XxmiArmResult(bool Armed, string Message);
 
@@ -356,7 +515,7 @@ internal sealed class XxmiInjector
     /// DllMain 在游戏进程里跑，所以不会有 <c>HookLibrary</c> 那个 1114（DLL_INIT_FAILED）问题；
     /// 而且进程是挂起的，注入发生在 D3D 初始化之前。
     /// </summary>
-    public static XxmiLaunchResult Launch(GameId gameId, string gameExePath, string? gameName, string? extraArguments, IReadOnlyList<string>? extraDlls = null)
+    public static XxmiLaunchResult Launch(GameId gameId, string gameExePath, string? gameName, string? extraArguments, IReadOnlyList<string>? extraDlls = null, bool pairedGraphicsStack = false)
     {
         string? injector = FindInjector(gameId, gameName);
         string? loader = FindLoader(gameId, gameName);
@@ -364,6 +523,11 @@ internal sealed class XxmiInjector
         if (injector is null || loader is null)
         {
             return new XxmiLaunchResult(false, false, "找不到 XXMI 的注入器或 d3d11.dll（检查「模型替换」页里的实例目录）");
+        }
+
+        if (pairedGraphicsStack && !HoYoShadeHub.Extensions.Games.StarRailXxmiLaunchRouting.HasPairedLoaderExports(loader))
+        {
+            return new XxmiLaunchResult(false, false, "SRMI d3d11.dll 缺少配套 DX12 输出导出；尚未创建游戏进程，请检查配套 SRMI 版本。");
         }
 
         string arguments = string.IsNullOrWhiteSpace(extraArguments) ? string.Empty : " " + extraArguments.Trim();
@@ -383,11 +547,26 @@ internal sealed class XxmiInjector
         bool injected = false;
         int injectCode = -1;
 
+        // 生命周期失败：null = 恢复/清理都正常。存「为什么失败」而不是一个 bool ——
+        // 界面报「已启动」而进程其实没跑起来，是这条路线最容易骗人的地方。
+        string? lifecycleFailure = null;
+        string lifecycleNote = string.Empty;
+
         // 3DMigoto 的 loader（3dmloader/XXMI Launcher）会创建 "Local\3DMigotoLoader" 这个互斥体，
         // 被注入的 DLL 靠它判断"loader 在不在" —— 我们注入时也建一个，等价于告诉它 loader 在场。
         // （XXMI 的 d3d11.dll 是受控版：能加载、但缺这个上下文就完全不动。）
         IntPtr loaderMutex = CreateMutexA(IntPtr.Zero, false, "Local\\3DMigotoLoader");
         Logger.LogInformation("XXMI loader mutex: {Handle} (err={Error})", loaderMutex, Marshal.GetLastWin32Error());
+        if (loaderMutex == IntPtr.Zero)
+        {
+            int mutexError = Marshal.GetLastWin32Error();
+            uint terminateWait = TerminateAndConfirm(processInformation.hProcess, out bool terminated);
+            string note = HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.DescribeTerminate(terminated, terminateWait);
+            CloseHandle(processInformation.hThread);
+            CloseHandle(processInformation.hProcess);
+            return new XxmiLaunchResult(false, false, $"无法建立 XXMI loader 上下文（错误码 {mutexError}）；{note}。");
+        }
+
 
         try
         {
@@ -398,6 +577,13 @@ internal sealed class XxmiInjector
                 InjectDelegate inject = Marshal.GetDelegateForFunctionPointer<InjectDelegate>(
                     NativeLibrary.GetExport(library, "Inject"));
 
+                if (pairedGraphicsStack)
+                {
+                    // Paired 3DMigoto needs DXGI available before its DllMain.
+                    string dxgi = Path.Combine(Environment.SystemDirectory, "dxgi.dll");
+                    int dxgiCode = inject((uint)processInformation.dwProcessId, dxgi, 30);
+                    if (dxgiCode != 0) throw new InvalidOperationException($"DXGI 预加载失败（{dxgiCode}）");
+                }
                 injectCode = inject((uint)processInformation.dwProcessId, loader, 30);
                 injected = injectCode == 0;
                 Logger.LogInformation("XXMI Inject(pid={Pid}, dll={Dll}) -> {Code}", processInformation.dwProcessId, loader, injectCode);
@@ -407,7 +593,8 @@ internal sealed class XxmiInjector
                 // LoadLibraryW 会失败（Inject 返回 600，用户实测过）。
                 List<string> extras = [];
 
-                foreach (string extra in Xxmi.XxmiLocator.ExtraLibraries(gameId.GameBiz, gameName))
+                IEnumerable<string> configuredExtras = pairedGraphicsStack ? Array.Empty<string>() : Xxmi.XxmiLocator.ExtraLibraries(gameId.GameBiz, gameName);
+                foreach (string extra in configuredExtras)
                 {
                     extras.Add(extra);
                 }
@@ -425,8 +612,15 @@ internal sealed class XxmiInjector
 
                 foreach (string extra in extras)
                 {
+                    if (pairedGraphicsStack && !injected) break;
                     int extraCode = inject((uint)processInformation.dwProcessId, extra, 30);
                     Logger.LogInformation("XXMI Inject extra(pid={Pid}, dll={Dll}) -> {Code}", processInformation.dwProcessId, extra, extraCode);
+                    if (pairedGraphicsStack && extraCode != 0)
+                    {
+                        injected = false;
+                        injectCode = extraCode;
+                        break;
+                    }
                 }
             }
             finally
@@ -436,12 +630,47 @@ internal sealed class XxmiInjector
         }
         catch (Exception ex)
         {
+            if (pairedGraphicsStack) injected = false;
             Logger.LogWarning(ex, "XXMI 注入失败");
         }
         finally
         {
-            // 不管注入成没成都要恢复，不然游戏就卡在挂起状态
-            ResumeThread(processInformation.hThread);
+            // A failed dedicated stack must not resume a partially configured child.
+            // This handle is only the new suspended process created by this call.
+            if (pairedGraphicsStack && !injected)
+            {
+                // 等它真的退出：不等的话，下一次启动的"游戏已经在运行"判断可能把这个
+                // 正在退出的进程当成还在跑。结果要进日志/提示 —— 终止失败时不许假称已清理。
+                uint terminateWait = TerminateAndConfirm(processInformation.hProcess, out bool terminated);
+                lifecycleNote = HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy
+                    .DescribeTerminate(terminated, terminateWait);
+                Logger.LogWarning("配套图形栈注入失败：挂起进程（pid={Pid}）{Note}（err={Error}）",
+                    processInformation.dwProcessId, lifecycleNote, Marshal.GetLastWin32Error());
+            }
+            else
+            {
+                // ResumeThread 返回的是**之前的挂起计数**，不是成败标记：
+                //   0 = 本来就没挂起；1 = 正常从挂起恢复；>1 = 还剩别的挂起计数（进程仍然没跑）；
+                //   0xFFFFFFFF = 调用失败。
+                // 只判 0xFFFFFFFF 会把 ">1" 当成成功：界面报"已启动"，游戏却永远挂在初始状态。
+                uint previousSuspendCount = ResumeThread(processInformation.hThread);
+                // Only release the one suspension owned by our CreateProcess call.
+                // Additional counts belong to other components; do not consume them.
+
+                HoYoShadeHub.Extensions.Games.ResumeThreadOutcome resumeOutcome =
+                    HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.ClassifyResume(previousSuspendCount);
+                if (resumeOutcome != HoYoShadeHub.Extensions.Games.ResumeThreadOutcome.Running)
+                {
+                    lifecycleFailure = resumeOutcome == HoYoShadeHub.Extensions.Games.ResumeThreadOutcome.StillSuspended
+                        ? $"ResumeThread 报告进程仍在挂起（剩余计数 {previousSuspendCount - 1}）"
+                        : "ResumeThread 调用失败";
+                    uint terminateWait = TerminateAndConfirm(processInformation.hProcess, out bool terminated);
+                    lifecycleNote = HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy
+                        .DescribeTerminate(terminated, terminateWait);
+                    Logger.LogWarning("恢复游戏进程失败（pid={Pid}，{Reason}）：{Note}（err={Error}）",
+                        processInformation.dwProcessId, lifecycleFailure, lifecycleNote, Marshal.GetLastWin32Error());
+                }
+            }
 
             if (loaderMutex != IntPtr.Zero)
             {
@@ -451,14 +680,37 @@ internal sealed class XxmiInjector
             CloseHandle(processInformation.hProcess);
         }
 
+        if (lifecycleFailure is not null)
+        {
+            return new XxmiLaunchResult(false, false,
+                $"图形栈已就绪但恢复游戏进程失败（{lifecycleFailure}）：{lifecycleNote}（pid {processInformation.dwProcessId}）；请重试");
+        }
+
         if (injected)
         {
-            return new XxmiLaunchResult(true, true, $"已按 XXMI 方式启动：注入 {Path.GetFileName(loader)} 成功（进程 {processInformation.dwProcessId}）");
+            return new XxmiLaunchResult(true, true, $"已按 XXMI 方式启动：注入 {Path.GetFileName(loader)} 成功（进程 {processInformation.dwProcessId}）")
+                { ProcessId = processInformation.dwProcessId };
         }
+
+        if (pairedGraphicsStack)
+            return new XxmiLaunchResult(false, false,
+                $"配套图形栈注入失败（Inject 返回 {injectCode}）；新建的挂起进程未恢复：{lifecycleNote}");
 
         // Inject 的返回码（源码里的定义）：100 进程打不开 / 110 dll 路径不对 / 120·130 找不到 kernel32·LoadLibraryW
         // / 200 远程内存分配失败 / 300 写 dll 路径失败 / 400 建远程线程失败 / 500 超时 / 600 dll 加载失败 / 700 未知
         return new XxmiLaunchResult(true, false, $"游戏已启动，但 XXMI 注入失败（Inject 返回 {injectCode}）");
+    }
+
+    /// <summary>
+    /// 终止进程并**确认**它退出（返回 WaitForSingleObject 的结果；终止调用本身失败时返回 WaitFailed）。
+    /// 不能只调 TerminateProcess 就当已清理：日志/提示里写"已终止"必须是真退了。
+    /// </summary>
+    private static uint TerminateAndConfirm(IntPtr processHandle, out bool terminated)
+    {
+        terminated = TerminateProcess(processHandle, 1);
+        return terminated
+            ? WaitForSingleObject(processHandle, 2000)
+            : HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.WaitFailed;
     }
 
     /// <summary>这个游戏的 XXMI 加载器（3DMigoto 的 d3d11.dll）；找不到返回 null</summary>

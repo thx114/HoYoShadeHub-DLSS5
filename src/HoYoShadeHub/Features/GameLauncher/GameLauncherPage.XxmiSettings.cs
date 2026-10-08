@@ -12,7 +12,7 @@ public sealed partial class GameLauncherPage
 {
     private async void Button_XxmiLaunchSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (CurrentGameId is not { } game) return;
+        if (UseRocket || CurrentGameId is not { } game) return;
         try
         {
             var mode = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };

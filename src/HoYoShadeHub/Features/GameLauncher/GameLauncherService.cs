@@ -394,6 +394,13 @@ internal partial class GameLauncherService
             {
                 throw new Exception($"Game is running: {existingProcess.ProcessName}.exe ({existingProcess.Id}).");
             }
+            if (AppConfig.GetUseRocketLaunchOption(gameId))
+            {
+                var prepared = await RocketLaunchPreparation.PrepareAsync(gameId, null);
+                if (!prepared.Success) throw new InvalidOperationException(prepared.Message);
+                _logger.LogInformation("{Status}", prepared.Message);
+                return null;
+            }
             EnsureGameIniReady(gameId);
             string? exe = null, arg = null, verb = null;
             if (Directory.Exists(installPath))
@@ -497,7 +504,19 @@ internal partial class GameLauncherService
     /// 预生成第二个 runtime 的 ReShade2.ini 并把教程标记成已完成，免得每次启动弹欢迎窗口）。
     /// 失败只记日志，不挡启动。
     /// </summary>
-    private void EnsureGameIniReady(GameId gameId)
+    internal static bool UsesGenshinFinalDx12(GameId? gameId) => gameId is not null
+        && Modules.ModuleRegistry.IsGenshin(gameId)
+        && GameIniBootstrap.IsGenshinFinalDx12Route(gameId.GameBiz.Value,
+            AppConfig.GetEnableDX12(gameId.GameBiz), AppConfig.GetUseModulesLaunchOption(gameId),
+            AppConfig.GetUseModulesLaunchOption(gameId) && Modules.ModuleRegistry.ResolveInjectionDlls(gameId)
+                .Any(spec => File.Exists(spec.DllPath) && Modules.ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath)));
+
+    internal static bool UsesStarRailFinalDx12(GameId? gameId) => gameId is not null
+        && gameId.GameBiz.Value.StartsWith("hkrpg_", StringComparison.OrdinalIgnoreCase)
+        && !AppConfig.GetEnableDX12(gameId.GameBiz)
+        && AppConfig.GetUseOptiScalerLaunchOption(gameId);
+
+    internal void EnsureGameIniReady(GameId gameId)
     {
         try
         {
@@ -524,11 +543,18 @@ internal partial class GameLauncherService
                 _logger.LogWarning(ex, "Sync game AddonPath package before bootstrap for {Game}", gameId);
             }
 
-            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, host);
+            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, host, UsesGenshinFinalDx12(gameId), UsesStarRailFinalDx12(gameId));
 
             try
             {
                 GameAddonPackService.Sync(gameId, entry, host);
+                // 最后一次包同步可能改变 AddonPath，最终 runtime 在此收尾。
+                if (UsesGenshinFinalDx12(gameId) || UsesStarRailFinalDx12(gameId))
+                {
+                    var finalResult = GameIniBootstrap.Ensure(entry, host, UsesGenshinFinalDx12(gameId), UsesStarRailFinalDx12(gameId));
+                    if (finalResult.Failed)
+                        _logger.LogWarning("Final DX12 ini bootstrap failed for {Game}", gameId);
+                }
             }
             catch (Exception ex)
             {

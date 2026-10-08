@@ -53,8 +53,21 @@ public static class MotionAnimations
     /// <summary>按下时长。</summary>
     private const int PressedDurationMs = 100;
 
+    /// <summary>
+    /// 换一屏内容（切视图 / 切标签页）的时长：175ms。
+    /// 位移是一整个内容区宽度（整屏推走），所以时长要短才不发飘；175ms ≈ 半屏宽度的一点几毫秒一像素，
+    /// 看着是「唰」一下换过去、最后一小段明显收住。
+    /// </summary>
+    public const int ViewSwitchDurationMs = 175;
+
     private static readonly Vector2 DecelerateControl1 = new(0f, 0f);
     private static readonly Vector2 DecelerateControl2 = new(0f, 1f);
+
+    /// <summary>
+    /// 换视图时内容左右平移的「兜底」位移（px）：正常取元素自己的实际宽度（整屏推走，滑到看不见为止），
+    /// 只有元素还没排过版（宽度读成 0）时才用这个值顶上。
+    /// </summary>
+    private const float ViewSlideFallbackOffset = 800f;
 
     /// <summary>
     /// 让一组元素「一个接一个」淡入 + 由下往上滑 + 轻微放大。
@@ -155,6 +168,127 @@ public static class MotionAnimations
         scale.Duration = duration;
         scale.DelayTime = delay;
         visual.StartAnimation("Scale", scale);
+    }
+
+    /// <summary>
+    /// 换一屏内容时的淡入（只动透明度）。
+    /// </summary>
+    /// <remarks>
+    /// 不用 <see cref="PlayEntrance"/>：那个会把缩放中心设在元素中心，而刚 <c>Visible</c> 的元素还没排过版
+    /// （<c>ActualSize</c> 还是 0），中心会落到左上角，看着像从左上方「长出来」；换视图又是高频操作，
+    /// 时长也取快一档的 <see cref="ViewSwitchDurationMs"/> 而不是整页入场那 500ms。
+    /// </remarks>
+    public static void PlayViewFadeIn(UIElement element)
+    {
+        Visual visual = ElementCompositionPreview.GetElementVisual(element);
+        Compositor compositor = visual.Compositor;
+        CubicBezierEasingFunction ease = compositor.CreateCubicBezierEasingFunction(DecelerateControl1, DecelerateControl2);
+
+        // 先落到「起始态」再起动画：不然第一帧会先闪一下终点态
+        visual.Opacity = 0f;
+
+        var opacity = compositor.CreateScalarKeyFrameAnimation();
+        opacity.InsertKeyFrame(0f, 0f);
+        opacity.InsertKeyFrame(1f, 1f, ease);
+        opacity.Duration = TimeSpan.FromMilliseconds(ViewSwitchDurationMs);
+        visual.StartAnimation("Opacity", opacity);
+    }
+
+    /// <summary>
+    /// 换一屏内容的「整屏左右平移」：新的一屏从行进方向的反侧**屏外**滑到正中，
+    /// 旧的一屏朝行进方向滑到**屏外**（位移取各自的实际宽度，所以是滑到看不见为止，不是挪一小段），
+    /// 两边同一条缓出曲线、同一个时长，看过去就是一整块内容被推走。
+    /// </summary>
+    /// <param name="incoming">要露出来的那一屏（调用方得先把它设成 <c>Visible</c>）。</param>
+    /// <param name="outgoing">
+    /// 正在退场的那一屏。它动画结束后会停在 <c>Visible</c> 且透明度 0 上，<b>由调用方负责收掉</b> ——
+    /// 这里不塌它：塌了就播不出场，而且切视图的代次只有调用方清楚。
+    /// </param>
+    /// <param name="forward">
+    /// true = 标签栏里「往右点」（1 → 2）：旧的一屏往左走、新的一屏从右边进来；false 反过来。
+    /// </param>
+    /// <remarks>
+    /// 调用方得把两屏共用的父容器裁一下（<c>UIElement.Clip</c>）：WinUI 默认不按边界裁剪子元素，
+    /// 整屏位移会把滑到一半的内容画到旁边的导航栏 / 窗口边上。
+    /// </remarks>
+    public static void PlayViewSlide(UIElement incoming, UIElement? outgoing, bool forward)
+    {
+        Visual incomingVisual = ElementCompositionPreview.GetElementVisual(incoming);
+        Compositor compositor = incomingVisual.Compositor;
+
+        // 缓出（decelerate），没有缓入：起步就是全速、结尾明显收住。
+        // 用仓库里入场动画一直用的那条 cubic-bezier(0, 0, 0, 1)，换视图和整页入场手感一致。
+        CubicBezierEasingFunction ease = compositor.CreateCubicBezierEasingFunction(DecelerateControl1, DecelerateControl2);
+        TimeSpan duration = TimeSpan.FromMilliseconds(ViewSwitchDurationMs);
+
+        // 位移 = 各自的实际宽度：新的一屏从「屏外」滑进来，旧的一屏滑到「屏外」为止
+        float incomingTravel = TravelDistance(incoming);
+        float outgoingTravel = outgoing is null ? incomingTravel : TravelDistance(outgoing);
+        float enterFrom = forward ? incomingTravel : -incomingTravel;
+        float exitTo = forward ? -outgoingTravel : outgoingTravel;
+
+        // 三屏在同一个 Grid 格里叠着，谁后写在 XAML 里谁在上面。显式定序：
+        // 入场的那屏压在最上面，退场那屏垫底。
+        Canvas.SetZIndex(incoming, 1);
+
+        // 想动 Translation 必须先打开（同 PlayEntrance）：WinUI 默认不把这个属性接到渲染上，
+        // 不开的话写进去的值 / 起的动画只是躺在属性集里，画面一动不动 ——
+        // 表现就是「只有淡入、没有平移」，Opacity 不受影响所以很容易看漏。
+        ElementCompositionPreview.SetIsTranslationEnabled(incoming, true);
+
+        // 不做淡入淡出，只动位置：整屏位移时两屏始终首尾相接（像推一格胶片），
+        // 一起淡的话中段两屏同时半透明，看着是「两层幽灵」而不是「一整块内容被推走」。
+        // 进出本来就藏在裁剪框外 —— 起点时新的一屏整块在框外，终点时旧的一屏整块在框外。
+        incomingVisual.Opacity = 1f;
+
+        // 先落到起始态再起动画：不然第一帧会先闪一下终点态
+        incomingVisual.Properties.InsertVector3("Translation", new Vector3(enterFrom, 0f, 0f));
+
+        var translation = compositor.CreateVector3KeyFrameAnimation();
+        translation.InsertKeyFrame(0f, new Vector3(enterFrom, 0f, 0f));
+        translation.InsertKeyFrame(1f, Vector3.Zero, ease);
+        translation.Duration = duration;
+        incomingVisual.StartAnimation("Translation", translation);
+
+        if (outgoing is null || ReferenceEquals(outgoing, incoming))
+        {
+            return;
+        }
+
+        Visual outgoingVisual = ElementCompositionPreview.GetElementVisual(outgoing);
+        Canvas.SetZIndex(outgoing, 0);
+        ElementCompositionPreview.SetIsTranslationEnabled(outgoing, true);
+        outgoingVisual.Opacity = 1f;
+        outgoingVisual.Properties.InsertVector3("Translation", Vector3.Zero);
+
+        var outgoingTranslation = compositor.CreateVector3KeyFrameAnimation();
+        outgoingTranslation.InsertKeyFrame(0f, Vector3.Zero);
+        outgoingTranslation.InsertKeyFrame(1f, new Vector3(exitTo, 0f, 0f), ease);
+        outgoingTranslation.Duration = duration;
+        outgoingVisual.StartAnimation("Translation", outgoingTranslation);
+    }
+
+    /// <summary>
+    /// 一屏要滑出去（滑进来）的位移量：等于它自己的实际宽度，也就是「滑到看不见为止」。
+    /// 还没排过版（宽度读成 0）时用 <see cref="ViewSlideFallbackOffset"/> 顶上 —— 宁可滑得远一点，也别几乎没动。
+    /// </summary>
+    private static float TravelDistance(UIElement element)
+        => element is FrameworkElement { ActualWidth: > 0 } framework
+            ? (float)framework.ActualWidth
+            : ViewSlideFallbackOffset;
+
+    /// <summary>
+    /// 把 <see cref="PlayViewSlide"/> 在元素上留下的合成态（透明度 0 / 位移）清干净。
+    /// 退场那一屏被收掉（<c>Collapsed</c>）时调用：下次它再当入场方时虽然会重设起始态，
+    /// 但中间这段时间它是个「藏着却全透明」的元素，视觉树上看不出差别、排查时很误导。
+    /// </summary>
+    public static void ResetViewAnimation(UIElement element)
+    {
+        Visual visual = ElementCompositionPreview.GetElementVisual(element);
+        visual.StopAnimation("Opacity");
+        visual.StopAnimation("Translation");
+        visual.Opacity = 1f;
+        visual.Properties.InsertVector3("Translation", Vector3.Zero);
     }
 
     /// <summary>给元素挂上「悬停放大、按下缩小」的手感（纯装饰，不改任何状态）。</summary>

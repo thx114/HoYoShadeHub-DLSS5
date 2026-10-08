@@ -57,6 +57,11 @@ public sealed partial class StartGameButton : UserControl
     /// <summary>注入模式但没勾 HoYoShade / OpenHoYoShade：只等游戏进程注额外 DLL / OptiScaler</summary>
     public bool IsWaitProcessMode { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
 
+    /// <summary>Rocket 准备模式：Hub 只写配置并等待用户手动启动 Rocket。</summary>
+    public bool IsRocketMode { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
+
+    public bool IsRocketLaunchSelected { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
+
     /// <summary>静态提示：这次配置只会等进程起来注入，不会自己启动游戏（看勾选项，不看运行状态）</summary>
     public bool IsWaitProcessOnlyMode { get; set { if (SetProperty(ref field, value)) UpdateActionButtonState(); } }
 
@@ -92,7 +97,11 @@ public sealed partial class StartGameButton : UserControl
     public string StartGameButtonText => GameState switch
     {
         // 注入模式下不启动游戏，按钮就说实话
-        GameState.StartGame => IsWaitProcessMode
+        GameState.StartGame => IsRocketMode
+            ? "等待 Rocket 启动游戏"
+            : IsRocketLaunchSelected
+                ? Lang.LauncherPage_StartGame
+                : IsWaitProcessMode
             ? "等游戏进程"
             : IsInjectMode
                 ? "启动注入器"

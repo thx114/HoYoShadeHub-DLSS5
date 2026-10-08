@@ -37,7 +37,15 @@ internal static partial class DllInjector
     private const uint PageReadWrite = 0x04;
 
     /// <summary>把 <paramref name="dllPath"/> 注入进程 <paramref name="processId"/></summary>
+    private static readonly object PrivilegeGate = new();
+
     public static bool Inject(int processId, string dllPath, out string error)
+    {
+        // SeDebugPrivilege is process-wide: serialize scoped adjustments.
+        lock (PrivilegeGate) return InjectCore(processId, dllPath, out error);
+    }
+
+    private static bool InjectCore(int processId, string dllPath, out string error)
     {
         error = string.Empty;
 
@@ -56,13 +64,15 @@ internal static partial class DllInjector
         IntPtr process = IntPtr.Zero;
         IntPtr remote = IntPtr.Zero;
         IntPtr thread = IntPtr.Zero;
+        // 远端线程没确认结束之前，这块参数缓冲区不能释放（见下面 WaitForSingleObject 处的说明）
+        bool releaseRemote = true;
+        bool privilegeAdjusted = false;
+        bool previousPrivilege = false;
 
         try
         {
-            // unlockfps_nc enables SeDebugPrivilege before VirtualAllocEx/
-            // CreateRemoteThread. Genshin's anti-cheat otherwise rejects the
-            // second DLL even though the Bridge itself was injected successfully.
-            _ = RtlAdjustPrivilege(20, true, false, out _);
+            // Preserve the caller's token state on every return path.
+            privilegeAdjusted = RtlAdjustPrivilege(20, true, false, out previousPrivilege) == 0;
             process = OpenProcess(
                 ProcessCreateThread | ProcessQueryInformation | ProcessVmOperation | ProcessVmWrite | ProcessVmRead,
                 false,
@@ -83,7 +93,7 @@ internal static partial class DllInjector
                 return false;
             }
 
-            if (!WriteProcessMemory(process, remote, pathBytes, (nuint)pathBytes.Length, out _))
+            if (!WriteProcessMemory(process, remote, pathBytes, (nuint)pathBytes.Length, out nuint written) || written != (nuint)pathBytes.Length)
             {
                 error = "写入目标进程失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
                 return false;
@@ -104,12 +114,20 @@ internal static partial class DllInjector
                 return false;
             }
 
-            if (WaitForSingleObject(thread, 30_000) != 0)
+            releaseRemote = false; // The remote thread owns the argument until confirmed finished.
+            uint threadWait = WaitForSingleObject(thread, 30_000);
+            if (!HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.CanReleaseRemoteParameter(threadWait))
             {
-                error = "等远端 LoadLibraryW 超时。";
+                // 超时：远端线程可能还在 LoadLibraryW 里读这块路径。这时候释放它就是往目标进程里
+                // 投一个 use-after-free（线程读到已归还的内存）。宁可漏掉这几 KB 也不动它。
+                releaseRemote = false;
+                error = threadWait == HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.WaitTimeout
+                    ? "等远端 LoadLibraryW 超时（远端线程仍在跑，已放弃释放远端参数，避免它读到已释放的内存）。"
+                    : $"等远端 LoadLibraryW 失败（WaitForSingleObject=0x{threadWait:X8}）。";
                 return false;
             }
 
+            releaseRemote = true;
             if (!GetExitCodeThread(thread, out uint exitCode))
             {
                 error = "拿不到远端线程的返回值。";
@@ -131,7 +149,7 @@ internal static partial class DllInjector
         }
         finally
         {
-            if (remote != IntPtr.Zero && process != IntPtr.Zero)
+            if (remote != IntPtr.Zero && process != IntPtr.Zero && releaseRemote)
             {
                 VirtualFreeEx(process, remote, 0, MemRelease);
             }
@@ -145,6 +163,7 @@ internal static partial class DllInjector
             {
                 CloseHandle(process);
             }
+            if (privilegeAdjusted) RtlAdjustPrivilege(20, previousPrivilege, false, out _);
         }
     }
 
@@ -159,8 +178,8 @@ internal static partial class DllInjector
         if (process == IntPtr.Zero || dllPaths.Count == 0)
             return dllPaths.Count == 0;
 
-        _ = RtlAdjustPrivilege(20, true, false, out _);
         IntPtr remote = IntPtr.Zero;
+        bool releaseRemote = true;
         IntPtr kernel32 = GetModuleHandle("kernel32.dll");
         IntPtr loadLibrary = GetProcAddress(kernel32, "LoadLibraryW");
         if (loadLibrary == IntPtr.Zero)
@@ -171,7 +190,9 @@ internal static partial class DllInjector
 
         try
         {
-            remote = VirtualAllocEx(process, IntPtr.Zero, 0x1000, MemCommit | MemReserve, PageReadWrite);
+            // A legal Windows path may exceed 2047 UTF-16 characters.
+            int bufferBytes = dllPaths.Max(dll => Encoding.Unicode.GetByteCount(dll + "\0"));
+            remote = VirtualAllocEx(process, IntPtr.Zero, (nuint)bufferBytes, MemCommit | MemReserve, PageReadWrite);
             if (remote == IntPtr.Zero)
             {
                 error = "在目标进程里申请内存失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
@@ -187,7 +208,7 @@ internal static partial class DllInjector
                 }
 
                 byte[] pathBytes = Encoding.Unicode.GetBytes(dllPath + "\0");
-                if (!WriteProcessMemory(process, remote, pathBytes, (nuint)pathBytes.Length, out _))
+                if (!WriteProcessMemory(process, remote, pathBytes, (nuint)pathBytes.Length, out nuint written) || written != (nuint)pathBytes.Length)
                 {
                     error = "写入目标进程失败：" + new Win32Exception(Marshal.GetLastWin32Error()).Message;
                     return false;
@@ -200,20 +221,25 @@ internal static partial class DllInjector
                     return false;
                 }
 
+                releaseRemote = false;
                 try
                 {
-                    if (WaitForSingleObject(thread, 30_000) != 0
-                        || !GetExitCodeThread(thread, out uint exitCode)
-                        || exitCode == 0)
+                    uint threadWait = WaitForSingleObject(thread, 30_000);
+                    releaseRemote = HoYoShadeHub.Extensions.Games.InjectionLifecyclePolicy.CanReleaseRemoteParameter(threadWait);
+                    if (!releaseRemote)
                     {
-                        error = "远端 LoadLibraryW 失败或超时。";
+                        error = $"等待远端 LoadLibraryW 未确认结束，保留远端参数（WaitForSingleObject=0x{threadWait:X8}）。";
+                        return false;
+                    }
+                    if (!GetExitCodeThread(thread, out uint exitCode) || exitCode == 0)
+                    {
+                        error = "远端 LoadLibraryW 返回 0 或无法读取结果：DLL 未确认加载。";
                         return false;
                     }
                 }
                 finally
                 {
                     CloseHandle(thread);
-                    WriteProcessMemory(process, remote, new byte[pathBytes.Length], (nuint)pathBytes.Length, out _);
                 }
             }
 
@@ -221,7 +247,7 @@ internal static partial class DllInjector
         }
         finally
         {
-            if (remote != IntPtr.Zero)
+            if (remote != IntPtr.Zero && releaseRemote)
                 VirtualFreeEx(process, remote, 0, MemRelease);
         }
     }
@@ -360,9 +386,9 @@ internal static partial class DllInjector
 
     [LibraryImport("ntdll.dll")]
     private static partial int RtlAdjustPrivilege(uint privilege,
-        [MarshalAs(UnmanagedType.Bool)] bool enable,
-        [MarshalAs(UnmanagedType.Bool)] bool currentThread,
-        [MarshalAs(UnmanagedType.Bool)] out bool enabled);
+        [MarshalAs(UnmanagedType.U1)] bool enable,
+        [MarshalAs(UnmanagedType.U1)] bool currentThread,
+        [MarshalAs(UnmanagedType.U1)] out bool enabled);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);

@@ -83,8 +83,12 @@ D:\APPS\HoYoShadeHub\HoYoShadeHub.exe collectlogs --pid 43980
   `<启动器目录>\log\sessions\<时间>_<进程名>_<pid>\`：启动瞬间记状态 + 抄配置、启动后 45 秒、
   之后每 5 分钟、进程退出各抄一次（进程被强杀 / 卡死也留得下 5 分钟内的现场）。
 - `collectlogs` 是给「游戏由官方启动器启动、Hub 没参与」的情况兜底：一条命令拿到当前一局。
-- 每个文件夹里有 `session.txt`（源路径、大小、修改时间、Bridge/OptiScaler 版本）+ 抄来的
-  `bridge-*.log` / `opti-*.log` / `shade-ReShade.log` / 各 ini / Hub 当天日志。
+- 每个文件夹里有 `session.txt`（**紧凑 v2**：路径基 + 文件目录 + 只记变化项的快照行，同数据比旧格式小约 84%）、
+  `digest.txt`（**给 AI 读的日志摘要**：几 MB 日志压成十几 KB，只留错误/警告的形状 + 计数 + 末尾原文）、
+  `config-compact.txt`（配置去注释/空行/连续重复，键值全留，省约七成），
+  以及抄来的 `bridge-*.log` / `opti-*.log` / `shade-ReShade.log` / 各 ini / Hub 当天日志。
+- 交给 AI / 贴工单时**只发这三个小文件就够**（一局约 45 KB），完整日志与配置留在本机核对。
+  格式说明、判级规则与实测数据见 [docs/session-log-compact-20261008.md](docs/session-log-compact-20261008.md)。
 - 为什么必须这样：**Bridge、ReShade、OptiScaler 都是每次启动重写自己的日志**
   （OptiScaler 是 basic_file_sink truncate，Bridge 是 ini `truncate_on_start=1`），
   让客户手动挑文件必然把不同几次运行混在一起 —— 实测两起工单都发来了上一次运行的 OptiScaler.log。

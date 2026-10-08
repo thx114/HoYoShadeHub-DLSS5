@@ -518,6 +518,8 @@
                                    EnableGameLaunch="{x:Bind ShouldEnableStartButton}"
                                    IsInjectMode="{x:Bind IsShadeInjectMode, Mode=OneWay}"
                                    IsWaitProcessMode="{x:Bind IsWaitProcessMode, Mode=OneWay}"
+                                   IsRocketMode="{x:Bind IsRocketMode, Mode=OneWay}"
+                                   IsRocketLaunchSelected="{x:Bind UseRocket, Mode=OneWay}"
                                      IsWaitProcessOnlyMode="{x:Bind IsWaitProcessOnlyMode, Mode=OneWay}"
                                    IsShaderOnlyLaunchMode="{x:Bind IsShaderOnlyLaunchMode}"
                                    GameCommand="{x:Bind ClickStartGameButtonCommand}"
@@ -735,12 +737,30 @@
                           IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
                           IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
                           Margin="0,1"
-                          ToolTipService.ToolTip="按右侧设置选择 XXMI 启动模式及启动器位置。" />
+                          ToolTipService.ToolTip="按右侧设置选择 XXMI 启动模式及启动器位置；Rocket 模式由 Rocket 独占 GIMI，此选项禁用。" />
                 <Button Click="Button_XxmiLaunchSettings_Click" Padding="8,4" VerticalAlignment="Center"
-                        ToolTipService.ToolTip="XXMI 启动设置">
+                        IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
+                        ToolTipService.ToolTip="XXMI 启动设置（Rocket 模式下禁用）">
                     <FontIcon Glyph="&#xE713;" FontSize="14" />
                 </Button>
             </StackPanel>
+
+            <!-- Rocket owns GIMI and process creation; Hub only prepares files. -->
+            <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind RocketVisibility, Mode=OneWay}">
+                <CheckBox x:Name="CheckBox_UseRocket" Content="启用Rocket"
+                          IsChecked="{x:Bind UseRocket, Mode=TwoWay}"
+                          IsEnabled="{x:Bind CanUseRocket, Mode=OneWay}" Margin="0,1"
+                          ToolTipService.ToolTip="点击启动游戏只配置 Rocket 和桥加载链，不启动游戏、不调用 Hub 注入器。" />
+                <Button Click="Button_RocketSettings_Click" Padding="8,4" VerticalAlignment="Center"
+                        IsEnabled="{x:Bind CanUseRocket, Mode=OneWay}"
+                        ToolTipService.ToolTip="Rocket 安装位置（启用 XXMI 时禁用）">
+                    <FontIcon Glyph="&#xE713;" FontSize="14" />
+                </Button>
+            </StackPanel>
+            <TextBlock Text="点击启动游戏完成准备后，请手动从 Rocket 启动原神。Rocket 已打开时请重新确认额外 DLL 设置。"
+                       Visibility="{x:Bind RocketInstructionVisibility, Mode=OneWay}"
+                       TextWrapping="Wrap" MaxWidth="300" FontSize="12" Margin="0,2,0,6"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
             <!--  模块：把左侧「模块」页里这个游戏勾上的那些（DLSS-NR on AMD 之类）注进游戏进程  -->
             <CheckBox x:Name="CheckBox_UseModules"

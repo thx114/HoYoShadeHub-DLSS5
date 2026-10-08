@@ -2,6 +2,7 @@
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Conditions;
+using HoYoShadeHub.Extensions.Diagnostics;
 using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Games;
@@ -10,6 +11,14 @@ using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+
+// Focused bootstrap regressions: no game or launcher process is started.
+if (args.Length == 1 && args[0] == "bootstrap-tests")
+    return HoYoShadeHub.Extensions.Tests.GameIniBootstrapTests.Run();
+
+if (args.Length == 1 && args[0] == "rocket-tests")
+    return HoYoShadeHub.Extensions.Tests.RocketIntegrationTests.Run().Failed == 0 ? 0 : 1;
 
 // Controlled worker for lifecycle regression; no real XXMI/game is touched.
 if (args.Length > 0 && args[0] == "owned-process-test-worker")
@@ -799,6 +808,20 @@ var disabled = profile.GetDisabledAddons();
 Check(disabled.Count == 2, $"DisabledAddons 解析出 2 条（实际 {disabled.Count}）");
 Check(disabled[0].DisplayName == "RenoDX DLSS_A" && disabled[0].FileName == "renodx-dlss5-super-anus(1.0.8.18).addon64", "第一条 Name@File 正确");
 Check(profile.IsDisabled("renodx-dlss(9.17.12).addon64"), "IsDisabled 按文件名判断");
+
+Check(!PackActionOutcome.ShouldMarkOnce("✗ 包里找不到预设"), "失败的覆盖包一次性动作不记账，下次可重试");
+Check(!PackActionOutcome.ShouldMarkOnce("  ✗ 插件未全部完成 1/2"), "部分插件开关失败不记账");
+Check(!PackActionOutcome.ShouldMarkOnce(null) && !PackActionOutcome.ShouldMarkOnce(""), "空动作结果不记账");
+Check(PackActionOutcome.ShouldMarkOnce("禁用插件 2/2（全部）"), "成功覆盖包动作可记账");
+var wildcardDisabled = DisabledAddonEntry.Parse("@renodx-dlss5.addon64");
+Check(wildcardDisabled.DisplayName == "" && wildcardDisabled.FileName == "renodx-dlss5.addon64", "文件名通配禁用项正确拆分开头 @");
+Check(wildcardDisabled.ToString() == "@renodx-dlss5.addon64", "文件名通配禁用项原样往返");
+var wildcardProfile = ReShadeProfile.Load(profilePath);
+wildcardProfile.SetDisabledAddons([wildcardDisabled, new DisabledAddonEntry("Other", "Other.addon64")]);
+Check(wildcardProfile.IsDisabled("renodx-dlss5.addon64"), "UI 可识别文件名通配禁用态");
+wildcardProfile.EnableAddon("RENODX-DLSS5.ADDON64");
+Check(!wildcardProfile.IsDisabled("renodx-dlss5.addon64") && wildcardProfile.IsDisabled("Other.addon64"), "启用插件移除文件名通配禁用并保留其它禁用项");
+Check(DisabledAddonEntry.Parse("RenoDX@renodx-dlss5.addon64").DisplayName == "RenoDX", "普通 Name@File 禁用项保持兼容");
 
 var dllMain = profile.GetLoadFromDllMain();
 Check(dllMain is { Count: 3 }, $"LoadFromDllMain 解析出 3 个槽（实际 {dllMain?.Count}）");
@@ -1934,6 +1957,74 @@ Check(OptiScalerRuntime.WriteFsrBridgeAutoload(autoloadBridge, autoloadDll) is n
 Check(OptiScalerRuntime.WriteFsrBridgeAutoload(Path.Combine(root, "no-such-dir-xyz"), autoloadDll) is null,
     "目录不存在时返回 null（不炸，启动器会走外部注入兜底）");
 Check(!OptiScalerRuntime.RemoveFsrBridgeAutoload(null, out _), "目录传空也不炸");
+
+// 桥的「有序注入链」清单：把「谁先加载」写成数据。
+// 顺序有硬约束：GIMI(d3d11) 必须在 OptiScaler/ReShade 之前（用户实测反过来 3DMigoto 装载返回 600），
+// 而 GIMI 自己的 DllMain 又要求 dxgi.dll 已在进程里 → 第一步只能是 wait dxgi.dll。
+string chainGimi = Path.Combine(autoloadRoot, "payload", "GIMI", "d3d11.dll");
+Directory.CreateDirectory(Path.GetDirectoryName(chainGimi)!);
+File.WriteAllText(chainGimi, "fake");
+string chainShade = Path.Combine(autoloadRoot, "payload", "Shade", "ReShade64.dll");
+Directory.CreateDirectory(Path.GetDirectoryName(chainShade)!);
+File.WriteAllText(chainShade, "fake");
+
+Check(OptiScalerRuntime.ReadFsrBridgeChain(autoloadBridge) is null, "一开始桥目录里没有链清单");
+
+string[]? chainLines = OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge,
+[
+    OptiScalerRuntime.FsrBridgeChainStep.Wait("dxgi.dll"),
+    OptiScalerRuntime.FsrBridgeChainStep.Migoto(chainGimi),
+    OptiScalerRuntime.FsrBridgeChainStep.Load(autoloadDll),
+    OptiScalerRuntime.FsrBridgeChainStep.Wait("OptiScaler.dll"),
+    OptiScalerRuntime.FsrBridgeChainStep.Load(chainShade),
+]);
+Check(chainLines is { Length: 5 }, $"链清单写了 5 步（实际 {chainLines?.Length}）");
+Check(chainLines![0] == "wait dxgi.dll", "第 1 步是 wait dxgi.dll —— 3DMigoto DllMain 的硬门槛");
+Check(chainLines[1] == "migoto " + Path.Combine("..", "GIMI", "d3d11.dll"),
+    $"第 2 步是 migoto 且按相对桥目录写（实际 {chainLines[1]}）");
+Check(chainLines[2] == "load " + Path.Combine("..", "OptiScaler", "OptiScaler.dll"), "第 3 步 load OptiScaler");
+Check(chainLines[3] == "wait OptiScaler.dll", "第 4 步等 OptiScaler 进模块表，之后才注 ReShade");
+Check(chainLines[4] == "load " + Path.Combine("..", "Shade", "ReShade64.dll"), "ReShade 排最后（先注它会 600）");
+
+byte[] chainBytes = File.ReadAllBytes(Path.Combine(autoloadBridge, OptiScalerRuntime.FsrBridgeChainName));
+Check(!(chainBytes.Length >= 3 && chainBytes[0] == 0xEF && chainBytes[1] == 0xBB && chainBytes[2] == 0xBF),
+    "链清单不带 BOM");
+Check(OptiScalerRuntime.ReadFsrBridgeChain(autoloadBridge)?.Contains("wait dxgi.dll", StringComparison.Ordinal) == true,
+    "能读回自己写的链清单");
+
+string[]? chainFar = OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge,
+    [OptiScalerRuntime.FsrBridgeChainStep.Migoto(Path.Combine(root, "far-away", "d3d11.dll"))]);
+Check(chainFar is { Length: 1 } && chainFar[0].Contains(Path.Combine("far-away", "d3d11.dll"), StringComparison.Ordinal),
+    "爬到两层以上照样写得进去（退回绝对路径，那种布局本来也搬不走）");
+
+Check(OptiScalerRuntime.RemoveFsrBridgeChain(autoloadBridge, out string? chainBackup)
+      && chainBackup is not null && File.Exists(chainBackup)
+      && !File.Exists(Path.Combine(autoloadBridge, OptiScalerRuntime.FsrBridgeChainName)),
+    "关掉有序注入链时撤走清单并留备份");
+Check(!OptiScalerRuntime.RemoveFsrBridgeChain(autoloadBridge, out _), "再撤一次没东西可撤");
+Check(OptiScalerRuntime.WriteFsrBridgeChain(Path.Combine(root, "no-such-dir-xyz"),
+    [OptiScalerRuntime.FsrBridgeChainStep.Load(autoloadDll)]) is null, "目录不存在时返回 null（启动器退回批量注入）");
+Check(OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge, []) is null, "空步骤返回 null（不写空清单去骗桥）");
+Check(OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge, null) is null, "步骤传 null 也不炸");
+Check(OptiScalerRuntime.ReadFsrBridgeChain(null) is null, "目录传空读链清单也不炸");
+
+// 覆写链清单（数据目录根部 bridge-chain.override.txt）：排查共存/顺序问题时改文本就能换链，不用重编启动器
+List<OptiScalerRuntime.FsrBridgeChainStep>? overrideParsed = OptiScalerRuntime.ParseFsrBridgeChain(
+    "\uFEFF# 注释\r\n; 也算注释\r\n\r\nwait dxgi.dll\r\n" +
+    @"migoto D:\GIMI\d3d11.dll" + "\r\n" +
+    @"load D:\Shade\ReShade64.dll" + "\r\n" +
+    @"D:\Opti\OptiScaler.dll" + "\r\n" +
+    @"whatever D:\Other.dll");
+Check(overrideParsed is { Count: 5 }, $"覆写清单解析出 5 步（实际 {overrideParsed?.Count}）");
+Check(overrideParsed![0].Verb == "wait" && overrideParsed[0].Argument == "dxgi.dll", "首步 wait dxgi.dll");
+Check(overrideParsed[1].Verb == "migoto", "migoto 动词保留（留给 3DMigoto 共存排查）");
+Check(overrideParsed[3].Verb == "load" && overrideParsed[3].Argument == @"D:\Opti\OptiScaler.dll", "裸路径按 load");
+Check(overrideParsed[4].Verb == "load" && overrideParsed[4].Argument == @"D:\Other.dll",
+    "认不出的动词也当 load —— 宁可多注一个 DLL，也不要静默丢一步");
+Check(OptiScalerRuntime.ParseFsrBridgeChain(null) is null
+      && OptiScalerRuntime.ParseFsrBridgeChain("  \r\n#只有注释\r\n") is null,
+    "空文本 / 只有注释 → null（启动器退回内置顺序，绝不写空链）");
+Check(OptiScalerRuntime.ParseFsrBridgeChain("wait   \r\nload x.dll") is { Count: 1 }, "缺参数的步骤被跳过");
 
 Console.WriteLine("-- 插件汉化（整条覆盖式原地替换 + 备份 / 还原）--");
 AddonI18nDocument builtinTable = AddonLocalizer.LoadBuiltin();
@@ -3148,6 +3239,7 @@ Check(fixedSecondary.GetValue("OVERLAY", "WindowX") == "123", "第二 runtime �
 Check(fixedSecondary.GetValue("OVERLAY", "TutorialProgress") == "4", "教程标记仍然 = 4");
 GameIniBootstrapResult boot7 = GameIniBootstrap.Ensure(bootEntry, bootHost);
 Check(!boot7.SyncedSecondary && !boot7.ChangedAnything, "同步幂等：再跑一遍什么都不写");
+Check(HoYoShadeHub.Extensions.Tests.GameIniBootstrapTests.Run() == 0, "最终 DX12 bootstrap 回归通过");
 
 Console.WriteLine("== DLSS5 预设切换器：分享码编解码 + 预设库 ==");
 // 跨实现测试向量：Python 独立实现（zlib.crc32 + 自定义字母表 base64）算的 flags=0 裸路径
@@ -3519,6 +3611,34 @@ Check(GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, false, false), "Without
 Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(true, false, false), "Injection-only mode not changed into direct start");
 Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, true, false), "Starward launch remains separate");
 
+Console.WriteLine("== Genshin ordered inject chain gate ==");
+Check(GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, true, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "Manual XXMI + Genshin + bridge: chain allowed");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(false, false, false, true, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "Official mode has no parent handle to inject the bridge: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, true, false, true, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "Injection-only mode does not use the early batch: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, true, true, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "Starward launch keeps its own start path: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, false, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "OptiScaler off means no bridge/opti chain at all: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, true, true, null, @"C:\b\Dx11FsrBridge.dll"),
+    "No game install path means nothing to create: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, true, true, @"C:\g", null),
+    "No bridge means no in-process loader: chain denied");
+Check(!GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, true, false, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
+    "Order measured on Genshin is not applied to other games: chain denied");
+
+Console.WriteLine("== StarRail paired SRMI capability and route gates ==");
+var srmiRouteTests = HoYoShadeHub.Extensions.Tests.StarRailXxmiLaunchRoutingTests.Run();
+_passed += srmiRouteTests.Passed;
+_failed += srmiRouteTests.Failed;
+
+Console.WriteLine("== Injection lifecycle failure paths (resume count / remote parameter release) ==");
+var lifecycleTests = HoYoShadeHub.Extensions.Tests.InjectionLifecyclePolicyTests.Run();
+_passed += lifecycleTests.Passed;
+_failed += lifecycleTests.Failed;
+
 Console.WriteLine("== XXMI new launch enum does not corrupt old start-method enum ==");
 Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("Direct") == "OPTION_REMOVED", "Invalid Direct trial value repaired");
 Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("DIRECT") == "OPTION_REMOVED", "Invalid uppercase DIRECT repaired");
@@ -3550,6 +3670,274 @@ Check(XxmiLaunchModes.Parse("OFFICIAL") == XxmiLaunchMode.Official, "Official la
 Check(XxmiLaunchModes.Parse(null) == XxmiLaunchMode.Official, "Existing users keep current official default");
 Check(XxmiLaunchModes.Parse("unknown") == XxmiLaunchMode.Official, "Invalid saved mode safely uses current default");
 
+// ===== 会话清单 v2 + 日志摘要：给 AI 读的那份必须小到不烧 token =====
+{
+    string mroot = Path.Combine(root, "session-compact");
+    string gameDir = Path.Combine(mroot, "games", "Genshin Impact Game");
+    string hubDir = Path.Combine(mroot, "hub");
+    Directory.CreateDirectory(gameDir);
+    Directory.CreateDirectory(hubDir);
+
+    string[] logNames = ["ReShade.log", "ReShade2.log", "RenoDX-DLSS5-crash.log", "bridge-Dx11FsrBridge.log"];
+    string[] cfgNames = ["ReShade.ini", "ReShade2.ini", "OptiScaler.ini"];
+    var entries = new List<SessionLogManifest.Entry>();
+    int nextId = 1;
+    foreach (string n in logNames)
+    {
+        string p = Path.Combine(gameDir, n);
+        File.WriteAllText(p, new string('x', 12000));
+        entries.Add(new SessionLogManifest.Entry(nextId++.ToString("D2"), "shade-" + n, p, 'L'));
+    }
+
+    foreach (string n in cfgNames)
+    {
+        string p = Path.Combine(gameDir, n);
+        File.WriteAllText(p, "[A]\nB=1\n");
+        entries.Add(new SessionLogManifest.Entry(nextId++.ToString("D2"), "cfg-" + n, p, 'C'));
+    }
+
+    var t0 = new DateTimeOffset(2026, 10, 8, 10, 14, 20, TimeSpan.FromHours(8));
+    var modules = new List<SessionLogManifest.Module>
+    {
+        new("Bridge", "2.3.4.0", Path.Combine(hubDir, "cache", "modules", "genshin-fsr-bridge", "v2.3.4-fg-20261006", "Dx11FsrBridge.dll")),
+        new("OptiScaler", "0.2.1.0", Path.Combine(hubDir, "OptiScaler", "mfg-ada", "mfg-ada-0.1.9", "OptiScaler.dll")),
+    };
+
+    string v2Dir = Path.Combine(mroot, "v2");
+    Directory.CreateDirectory(v2Dir);
+    var sessManifest = new SessionLogManifest(v2Dir);
+    sessManifest.WriteHeader(
+        new SessionLogManifest.Header(t0, 62080, "YuanShen.exe", "-popupwindow", "hk4e_cn", "1.4.3.9", true, hubDir, Path.Combine(hubDir, "log"), v2Dir),
+        modules,
+        entries);
+
+    long SizeOf(SessionLogManifest.Entry e, int snap) =>
+        new FileInfo(e.SourcePath).Length + (snap >= 3 && e.Kind == 'L' ? snap * 4000L : 0);
+
+    for (int snap = 0; snap < 5; snap++)
+    {
+        var obs = new List<SessionLogManifest.Observation>();
+        foreach (SessionLogManifest.Entry e in entries)
+        {
+            obs.Add(new SessionLogManifest.Observation(e.Id, true, SizeOf(e, snap)));
+        }
+
+        sessManifest.AppendSnapshot(
+            snap == 0 ? "启动" : snap == 4 ? "收尾：游戏进程退出（退出码 0）" : "定时快照",
+            TimeSpan.FromSeconds(snap == 0 ? 0 : snap * 300 + 0.031),
+            obs);
+    }
+
+    string v2Text = File.ReadAllText(sessManifest.FilePath);
+    int v2Bytes = System.Text.Encoding.UTF8.GetByteCount(v2Text);
+    Check(sessManifest.Snapshots == 5, "v2 清单记满 5 次快照");
+    Check(v2Text.Contains("@0="), "v2 把公共路径抽成路径基");
+    Check(sessManifest.Shorten(Path.Combine(gameDir, "ReShade.log")).StartsWith('@'), "Shorten 命中路径基");
+    Check(sessManifest.Shorten(@"Z:\nope\x.log") == @"Z:\nope\x.log", "Shorten 不命中就原样返回");
+    Check(v2Text.Split('\n').Count(l => l.StartsWith("s ")) == 5, "v2 每次快照只写一行");
+
+    // v1 基线：完全照旧格式拼一遍同样的数据（照抄改造前的 GameSessionLogCollector）
+    var v1 = new System.Text.StringBuilder();
+    v1.AppendLine("HoYoShadeHub 会话日志快照");
+    v1.AppendLine(new string('=', 78));
+    v1.AppendLine($"开始时间   : {t0:yyyy-MM-dd HH:mm:ss.fff}（{TimeZoneInfo.Local.DisplayName}）");
+    v1.AppendLine("进程       : YuanShen.exe (pid 62080)");
+    v1.AppendLine($"进程路径   : {Path.Combine(gameDir, "YuanShen.exe")}");
+    v1.AppendLine("启动参数   : -popupwindow");
+    v1.AppendLine("游戏标识   : hk4e_cn");
+    v1.AppendLine("启动器版本 : 1.4.3.9");
+    v1.AppendLine("便携模式   : True");
+    v1.AppendLine($"数据目录   : {hubDir}");
+    v1.AppendLine($"日志目录   : {Path.Combine(hubDir, "log")}");
+    v1.AppendLine($"本局目录   : {v2Dir}");
+    v1.AppendLine();
+    v1.AppendLine("模块版本");
+    v1.AppendLine(new string('-', 78));
+    foreach (SessionLogManifest.Module m in modules)
+    {
+        v1.AppendLine($"  {m.Label,-10} : {m.Version}  {m.Path}");
+    }
+
+    v1.AppendLine();
+    v1.AppendLine("要抄的文件（源 → 本局目录）");
+    v1.AppendLine(new string('-', 78));
+    foreach (SessionLogManifest.Entry e in entries)
+    {
+        v1.AppendLine($"  [{(e.Kind == 'L' ? "log" : "cfg")}] {e.Name,-46} <- {e.SourcePath}");
+    }
+
+    v1.AppendLine();
+    v1.AppendLine("快照记录");
+    v1.AppendLine(new string('-', 78));
+    for (int snap = 0; snap < 5; snap++)
+    {
+        DateTime ts = t0.LocalDateTime.AddSeconds(snap * 300);
+        v1.AppendLine($"[{ts:yyyy-MM-dd HH:mm:ss.fff}] {(snap == 0 ? "启动" : snap == 4 ? "收尾：游戏进程退出（退出码 0）" : "定时快照")}");
+        foreach (SessionLogManifest.Entry e in entries)
+        {
+            v1.AppendLine($"  ✓ {e.Name,-44} {SizeOf(e, snap),12:N0} B  {ts:yyyy-MM-dd HH:mm:ss}  <- {e.SourcePath}");
+        }
+    }
+
+    int v1Bytes = System.Text.Encoding.UTF8.GetByteCount(v1.ToString());
+    Console.WriteLine($"   清单：v1 {v1Bytes} 字节 → v2 {v2Bytes} 字节（省 {100.0 * (1 - (double)v2Bytes / v1Bytes):F1}%）");
+    Check(v2Bytes * 3 <= v1Bytes, "v2 清单至少省掉 2/3");
+
+    // ===== 日志摘要 =====
+    var log = new System.Text.StringBuilder();
+    for (int i = 0; i < 6000; i++)
+    {
+        log.Append($"[2026-10-08 10:{(i / 60) % 60:D2}:{i % 60:D2}.123] [info] frame {i} present ok\n");
+    }
+
+    for (int i = 0; i < 3; i++)
+    {
+        log.Append($"[2026-10-08 10:20:1{i}.500] [error] D3D11CreateDevice failed hr=0x887A000{i}\n");
+    }
+
+    for (int i = 0; i < 20; i++)
+    {
+        log.Append($"[2026-10-08 10:21:{i:D2}.000] [warn] addon missing {1000 + i}\n");
+    }
+
+    log.Append("[2026-10-08 10:30:00.000] [error] hook detach hr=0x80070005\n");
+
+    string bigLog = Path.Combine(mroot, "bridge-Dx11FsrBridge.log");
+    File.WriteAllText(bigLog, log.ToString());
+
+    LogDigest.FileResult dig = LogDigest.BuildFile(bigLog, "bridge-Dx11FsrBridge.log");
+    int digBytes = System.Text.Encoding.UTF8.GetByteCount(dig.Text);
+    Console.WriteLine($"   摘要：{dig.InputBytes} 字节 / {dig.InputLines} 行 → {digBytes} 字节（E={dig.Errors} W={dig.Warnings}）");
+    Check(dig.Errors == 4, "错误行计数准确");
+    Check(dig.Warnings == 20, "警告行计数准确");
+    Check(dig.Text.Contains("E(error) 3x"), "同形状错误合并成一条并计数，并标出判级依据");
+    Check(dig.Text.Contains("W(warn) 20x"), "同形状警告合并成一条并计数");
+    Check(dig.Text.Contains("hr=0x#"), "句柄地址被折叠");
+    Check(dig.Text.Contains("TAIL"), "附上末尾原文");
+    Check(digBytes * 50 <= dig.InputBytes, "日志至少压到 1/50");
+
+    LogDigest.FileResult tiny = LogDigest.BuildText(
+        string.Join("\n", Enumerable.Range(0, 200).Select(i => $"error needle{i} at step{i}")),
+        "t.log",
+        new LogDigest.Options { MaxPatternsPerFile = 5, TailLines = 4 });
+    Check(tiny.PatternsDropped > 0 && tiny.Text.Contains("省略"), "形状超上限时显式说明省略");
+
+    // 末尾原文不能像以前那样被几百条警告挤掉（实测过：TAIL 只剩 51 字节）
+    LogDigest.FileResult warnFlood = LogDigest.BuildText(
+        string.Join("\n", Enumerable.Range(0, 400).Select(i => $"[W] noisy warning number{i} missing"))
+        + "\n"
+        + string.Join("\n", Enumerable.Range(0, 12).Select(i => $"[INFO] tail line {i}")),
+        "flood.log",
+        new LogDigest.Options { TailLines = 10 });
+    Check(warnFlood.Text.Contains("TAIL") && warnFlood.Text.Contains("tail line 9"),
+          "警告刷屏时末尾原文仍然保留");
+    Check(!warnFlood.Text.Contains("末尾另有") , "警告刷屏不会把末尾原文挤掉");
+
+    // ===== 配置紧凑视图：注释占七成，AI 只要键值 =====
+    string cfgProbe = Path.Combine(Path.GetTempPath(), "hsh-cfg-" + Guid.NewGuid().ToString("N") + ".ini");
+    string cfgComments = string.Join("\n", Enumerable.Range(0, 30).Select(i => $"; 第{i}段说明文字，配置里这种注释能占七成"));
+    File.WriteAllText(cfgProbe,
+        cfgComments + "\n[Upscalers]\nDx11Upscaler = fsr2\n\n" +
+        "Dx12Upscaler=dlss          ; 行内注释\nPath=C:\\a;b\nPath=C:\\a;b\n// 分隔\nInitFlags = 0\n",
+        new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    LogDigest.ConfigDocumentResult cfgDoc = LogDigest.BuildConfigs(
+        "sess=t", [new LogDigest.Source("cfg-test.ini", cfgProbe)]);
+    Check(cfgDoc.Text.Contains("[Upscalers]"), "配置：段落头保留");
+    Check(cfgDoc.Text.Contains("Dx11Upscaler=fsr2"), "配置：key = value 归一成 key=value");
+    Check(cfgDoc.Text.Contains("Dx12Upscaler=dlss\n"), "配置：行内注释被去掉");
+    Check(!cfgDoc.Text.Contains("第0段说明文字") && !cfgDoc.Text.Contains("// 分隔"), "配置：注释行整行去掉");
+    Check(cfgDoc.Text.Contains("Path=C:\\a;b"), "配置：值里的分号不当注释切");
+    Check(cfgDoc.Text.Split('\n').Count(l => l.Trim() == "Path=C:\\a;b") == 1, "配置：连续重复行折叠");
+    Check(cfgDoc.OutputBytes * 2 < cfgDoc.InputBytes, "配置：去注释后至少小一半");
+    File.Delete(cfgProbe);
+
+    // ===== 真机会话：有就拿现成的 session.txt 做一次真实前后对比 =====
+    string realSessions = @"D:\APPS\HoYoShadeHub\log\sessions";
+    if (Directory.Exists(realSessions))
+    {
+        DirectoryInfo? newest = new DirectoryInfo(realSessions).GetDirectories()
+            .OrderByDescending(d => d.LastWriteTime)
+            .FirstOrDefault();
+
+        FileInfo? probeBridge = newest?.GetFiles("bridge-*.log").OrderByDescending(f => f.Length).FirstOrDefault();
+        if (probeBridge is { Length: > 0 })
+        {
+            LogDigest.FileResult real = LogDigest.BuildFile(probeBridge.FullName, probeBridge.Name);
+            int realBytes = System.Text.Encoding.UTF8.GetByteCount(real.Text);
+            Console.WriteLine($"   实测 {probeBridge.Name}：{real.InputBytes} 字节 → {realBytes} 字节（E={real.Errors} W={real.Warnings}）");
+            Check(realBytes < 64 * 1024, "真日志摘要 < 64 KB");
+        }
+
+        FileInfo? realSession = newest?.GetFiles("session.txt").FirstOrDefault();
+        if (realSession is not null)
+        {
+            string[] lines = File.ReadAllLines(realSession.FullName);
+            var rEntries = new List<SessionLogManifest.Entry>();
+            var idByName = new Dictionary<string, string>(StringComparer.Ordinal);
+            var snaps = new List<(string Reason, DateTime When, List<SessionLogManifest.Observation> Obs)>();
+            int rid = 1;
+            foreach (string line in lines)
+            {
+                Match cat = Regex.Match(line, @"^\s*\[(log|cfg)\]\s+(\S+)\s+<-\s+(.+)$");
+                if (cat.Success)
+                {
+                    string id = (rid++).ToString("D2");
+                    idByName[cat.Groups[2].Value] = id;
+                    rEntries.Add(new SessionLogManifest.Entry(
+                        id, cat.Groups[2].Value, cat.Groups[3].Value.Trim(), cat.Groups[1].Value == "log" ? 'L' : 'C'));
+                    continue;
+                }
+
+                Match head = Regex.Match(line, @"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)$");
+                if (head.Success)
+                {
+                    snaps.Add((head.Groups[2].Value.Trim(), DateTime.Parse(head.Groups[1].Value), []));
+                    continue;
+                }
+
+                if (snaps.Count == 0)
+                {
+                    continue;
+                }
+
+                Match obs = Regex.Match(line, @"^\s*[✓·]\s+(\S+)\s+([\d,]+)\s*B");
+                Match miss = Regex.Match(line, @"^\s*✗\s+(\S+)\s");
+                if (obs.Success && idByName.TryGetValue(obs.Groups[1].Value, out string? oid))
+                {
+                    snaps[^1].Obs.Add(new SessionLogManifest.Observation(oid, true, long.Parse(obs.Groups[2].Value.Replace(",", ""))));
+                }
+                else if (miss.Success && idByName.TryGetValue(miss.Groups[1].Value, out string? mid))
+                {
+                    snaps[^1].Obs.Add(new SessionLogManifest.Observation(mid, false, 0));
+                }
+            }
+
+            if (rEntries.Count > 0 && snaps.Count > 0)
+            {
+                string rDir = Path.Combine(mroot, "v2-real");
+                Directory.CreateDirectory(rDir);
+                var rm = new SessionLogManifest(rDir);
+                rm.WriteHeader(
+                    new SessionLogManifest.Header(
+                        new DateTimeOffset(snaps[0].When, TimeSpan.FromHours(8)), 0, "real", null, "real", "1.4.3.9", true, rDir, rDir, rDir),
+                    [],
+                    rEntries);
+                foreach ((string reason, DateTime when, List<SessionLogManifest.Observation> o) in snaps)
+                {
+                    rm.AppendSnapshot(reason, when - snaps[0].When, o);
+                }
+
+                long rv1 = realSession.Length;
+                long rv2 = new FileInfo(rm.FilePath).Length;
+                Console.WriteLine($"   实测 {newest!.Name}\\session.txt：v1 {rv1} 字节（{lines.Length} 行/{snaps.Count} 次快照）→ v2 {rv2} 字节（省 {100.0 * (1 - (double)rv2 / rv1):F1}%）");
+                Check(rv2 * 2 <= rv1, "真会话清单 v2 至少省一半");
+            }
+        }
+    }
+}
+
+var rocketTests = HoYoShadeHub.Extensions.Tests.RocketIntegrationTests.Run();
+_passed += rocketTests.Passed; _failed += rocketTests.Failed;
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
 static void WriteZipText(ZipArchive zip, string entryName, string text)

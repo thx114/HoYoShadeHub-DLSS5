@@ -203,8 +203,8 @@ public sealed partial class GameSettingPage : PageBase
     }
 
 
-    /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记，开关在启动页启动选项里</summary>
-    private double _fpsUnlockTargetValue = 120;
+    /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记，开关在启动页启动选项里（默认 119 = 安全上限）</summary>
+    private double _fpsUnlockTargetValue = AppConfig.FpsUnlockWarnThreshold;
     public double FpsUnlockTargetValue
     {
         get => _fpsUnlockTargetValue;
@@ -543,7 +543,7 @@ public sealed partial class GameSettingPage : PageBase
 
 
     [RelayCommand]
-    private void ApplySetting()
+    private async Task ApplySetting()
     {
         try
         {
@@ -579,6 +579,10 @@ public sealed partial class GameSettingPage : PageBase
                     AppConfig.EnableGenshinHDR = EnableGenshinHDR;
                     GameSettingService.SetGenshinEnableHDR(CurrentGameBiz, EnableGenshinHDR);
                     AppConfig.SetFpsUnlockTarget(CurrentGameId, (int)FpsUnlockTargetValue);
+
+                    // 超过安全上限（119）每次保存都提示一次封号风险 —— 用户要的是「每次都提」，
+                    // 不做「提示过一次就不再提」的记忆；只提示，不阻止保存。
+                    await WarnFpsUnlockTooHighAsync();
                 }
             }
             // 游戏运行时应用的设置无法生效
@@ -589,6 +593,37 @@ public sealed partial class GameSettingPage : PageBase
         {
             ErrorMessage = ex.Message;
             _logger.LogError(ex, "Apply Setting");
+        }
+    }
+
+
+    /// <summary>
+    /// 解锁帧率超过安全上限（<see cref="AppConfig.FpsUnlockWarnThreshold"/> = 119）时提示封号风险。
+    /// 只提示、不拦保存；异常自查自吞 —— 一个提示框不该让「应用」整体失败。
+    /// </summary>
+    private async Task WarnFpsUnlockTooHighAsync()
+    {
+        int target = (int)FpsUnlockTargetValue;
+        if (target <= AppConfig.FpsUnlockWarnThreshold)
+        {
+            return;
+        }
+
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "解锁帧率偏高",
+                Content = $"目标帧率 {target} fps 超过了 {AppConfig.FpsUnlockWarnThreshold} fps。\n过高的解锁帧率可能导致封号。",
+                CloseButtonText = "知道了",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Fps unlock high value warning");
         }
     }
 

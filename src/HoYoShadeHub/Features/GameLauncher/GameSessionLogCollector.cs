@@ -1,5 +1,6 @@
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Diagnostics;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Modules;
 using Microsoft.Extensions.Logging;
@@ -55,6 +56,12 @@ internal sealed class GameSessionLogCollector
 
     private const string ManifestName = "session.txt";
 
+    /// <summary>AI 摘要文件名：把本局几 MB 的日志压成几 KB，专门给人/模型快速读。</summary>
+    private const string DigestName = "digest.txt";
+
+    /// <summary>配置的紧凑视图（去注释/空行/连续重复），原文仍在同目录 <c>cfg-*</c>。</summary>
+    private const string ConfigCompactName = "config-compact.txt";
+
     private static readonly TimeSpan FirstSnapshotDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan SnapshotInterval = TimeSpan.FromMinutes(5);
 
@@ -63,6 +70,15 @@ internal sealed class GameSessionLogCollector
     private readonly List<SnapshotSource> _configs;
     private readonly List<string> _bridgeDirectories;
     private readonly List<string> _optiScalerDirectories;
+
+    /// <summary>本局开始时刻，快照行里的相对秒数以它为原点。</summary>
+    private readonly DateTimeOffset _startedAt = DateTimeOffset.Now;
+
+    /// <summary>紧凑清单写入器（v2，见 SessionLogManifest）。</summary>
+    private readonly SessionLogManifest _manifest;
+
+    /// <summary>清单里的文件目录（id 稳定，后续快照只写变化项）。</summary>
+    private readonly List<SessionLogManifest.Entry> _entries;
 
     private readonly int _pid;
     private readonly string _processName;
@@ -122,8 +138,11 @@ internal sealed class GameSessionLogCollector
 
         (_logs, _configs, _bridgeDirectories, _optiScalerDirectories) = Discover(gameId, gameDirectory);
 
+        _manifest = new SessionLogManifest(SessionDirectory, ManifestName);
+        _entries = BuildEntries();
+
         WriteHeader();
-        TakeSnapshot(manual ? "手动导出（记状态 + 抄配置）" : "启动瞬间（只记状态 + 抄配置）", includeLogs: false);
+        TakeSnapshot(manual ? "手动导出" : "启动", includeLogs: false);
 
         if (!manual)
         {
@@ -219,6 +238,7 @@ internal sealed class GameSessionLogCollector
         {
             string suffix = exitCode is null ? string.Empty : $"（退出码 {exitCode}）";
             TakeSnapshot($"收尾：{reason}{suffix}", includeLogs: true);
+            WriteDigest(exitCode);
             _logger.LogInformation("本局日志快照已完成：{Directory}（{Reason}）", SessionDirectory, reason);
         }
         catch (Exception ex)
@@ -232,6 +252,87 @@ internal sealed class GameSessionLogCollector
     }
 
     public void Dispose() => Finish("释放");
+
+    /// <summary>
+    /// 收尾时把本局的日志压成一份给 AI 读的摘要（<c>digest.txt</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 一局游戏四个日志合计约 7.5 MB（≈200 万 token），里面 99.9% 是逐帧重复行；
+    /// 摘要只保留错误/警告的形状 + 计数 + 末尾原文，实测 3.6 MB 的桥日志压到 1～4 KB。
+    /// 任何失败都只记 Hub 日志，绝不影响游戏退出。
+    /// </remarks>
+    private void WriteDigest(int? exitCode)
+    {
+        try
+        {
+            string banner = $"sess={Path.GetFileName(SessionDirectory)} game={(_gameKey is { Length: > 0 } ? _gameKey : "?")} " +
+                            $"hub={AppConfig.AppVersion} pid={_pid} exit={(exitCode?.ToString() ?? "?")}";
+
+            var sources = new List<LogDigest.Source>(_logs.Count);
+            foreach (SnapshotSource source in _logs)
+            {
+                string copied = Path.Combine(SessionDirectory, source.Name);
+                sources.Add(new LogDigest.Source(source.Name, File.Exists(copied) ? copied : source.Path));
+            }
+
+            var summary = new System.Text.StringBuilder(160);
+            if (sources.Count > 0)
+            {
+                LogDigest.DocumentResult doc = LogDigest.BuildDocument(banner, sources);
+                File.WriteAllText(
+                    Path.Combine(SessionDirectory, DigestName),
+                    doc.Text,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+                summary.Append($"digest={DigestName} in={doc.InputBytes} out={doc.OutputBytes} E={doc.Errors} W={doc.Warnings}");
+                _logger.LogInformation(
+                    "本局日志已压成摘要：{File}（{Input} → {Output} 字节，E={Errors} W={Warnings}）",
+                    Path.Combine(SessionDirectory, DigestName), doc.InputBytes, doc.OutputBytes, doc.Errors, doc.Warnings);
+            }
+
+            // 配置原文里注释能占七成（OptiScaler.ini 60 KB → 14 KB），但 AI 要的是键值，
+            // 所以另给一份去注释的紧凑视图；原文照旧留着给人工核对。
+            var configs = new List<LogDigest.Source>(_configs.Count);
+            foreach (SnapshotSource source in _configs)
+            {
+                string copied = Path.Combine(SessionDirectory, source.Name);
+                configs.Add(new LogDigest.Source(source.Name, File.Exists(copied) ? copied : source.Path));
+            }
+
+            if (configs.Count > 0)
+            {
+                LogDigest.ConfigDocumentResult cfg = LogDigest.BuildConfigs(banner, configs);
+                File.WriteAllText(
+                    Path.Combine(SessionDirectory, ConfigCompactName),
+                    cfg.Text,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+                if (summary.Length > 0)
+                {
+                    summary.Append(' ');
+                }
+
+                summary.Append($"cfgcompact={ConfigCompactName} in={cfg.InputBytes} out={cfg.OutputBytes}");
+                _logger.LogInformation(
+                    "本局配置已压成紧凑视图：{File}（{Input} → {Output} 字节）",
+                    Path.Combine(SessionDirectory, ConfigCompactName), cfg.InputBytes, cfg.OutputBytes);
+            }
+
+            if (summary.Length == 0)
+            {
+                return;
+            }
+
+            lock (_writeGate)
+            {
+                _manifest.AppendSection("AI 摘要", summary.ToString());
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "写本局日志摘要失败");
+        }
+    }
 
     /// <summary>立刻抄一次（定时器 / 退出 / 手动导出都用它）。</summary>
     public void SnapshotNow(string reason) => TakeSnapshot(reason, includeLogs: true);
@@ -252,27 +353,11 @@ internal sealed class GameSessionLogCollector
                 return;
             }
 
-            TakeSnapshot($"定时快照（进程存活 {DescribeUptime()}）", includeLogs: true);
+            TakeSnapshot("定时快照", includeLogs: true);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "会话定时快照失败");
-        }
-    }
-
-    private string DescribeUptime()
-    {
-        try
-        {
-            using Process process = Process.GetProcessById(_pid);
-            TimeSpan uptime = DateTime.Now - process.StartTime;
-            return uptime.TotalHours >= 1
-                ? $"{(int)uptime.TotalHours}h{uptime.Minutes:D2}m"
-                : $"{uptime.Minutes}m{uptime.Seconds:D2}s";
-        }
-        catch
-        {
-            return "unknown";
         }
     }
 
@@ -308,68 +393,63 @@ internal sealed class GameSessionLogCollector
 
     private void TakeSnapshot(string reason, bool includeLogs)
     {
-        var sb = new StringBuilder();
-        sb.Append('[').Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")).Append("] ").Append(reason).AppendLine();
-
-        if (includeLogs)
+        try
         {
-            foreach (SnapshotSource source in _logs)
+            if (includeLogs)
             {
-                sb.AppendLine("  " + CopyOne(source));
+                foreach (SnapshotSource source in _logs)
+                {
+                    TryCopyOne(source);
+                }
+            }
+
+            foreach (SnapshotSource source in _configs)
+            {
+                TryCopyOne(source);
+            }
+
+            var observations = new List<SessionLogManifest.Observation>(_entries.Count);
+            foreach (SessionLogManifest.Entry entry in _entries)
+            {
+                try
+                {
+                    var info = new FileInfo(entry.SourcePath);
+                    observations.Add(new SessionLogManifest.Observation(entry.Id, info.Exists, info.Exists ? info.Length : 0));
+                }
+                catch
+                {
+                    observations.Add(new SessionLogManifest.Observation(entry.Id, false, 0));
+                }
+            }
+
+            lock (_writeGate)
+            {
+                _manifest.AppendSnapshot(reason, DateTimeOffset.Now - _startedAt, observations);
             }
         }
-        else
+        catch (Exception ex)
         {
-            foreach (SnapshotSource source in _logs)
-            {
-                sb.AppendLine("  " + Describe(source));
-            }
-        }
-
-        foreach (SnapshotSource source in _configs)
-        {
-            sb.AppendLine("  " + CopyOne(source));
-        }
-
-        lock (_writeGate)
-        {
-            AppendManifestUnlocked(sb.ToString());
+            _logger.LogDebug(ex, "写会话快照失败：{Directory}", SessionDirectory);
         }
     }
 
-    /// <summary>把一个文件抄进本局目录；返回给人看的一行结果。永远不抛。</summary>
-    private string CopyOne(SnapshotSource source)
+    /// <summary>把一个文件抄进本局目录；只记 Hub 日志，永远不抛。</summary>
+    private void TryCopyOne(SnapshotSource source)
     {
         try
         {
             var info = new FileInfo(source.Path);
             if (!info.Exists)
             {
-                return $"✗ {source.Name,-44} 缺失            <- {source.Path}";
+                // 缺失会由清单里的 miss 标记体现，这里不用重复写一行
+                return;
             }
 
-            (long written, bool tail) = CopyWithRetry(info, Path.Combine(SessionDirectory, source.Name));
-            string note = tail ? $"  [只抄末尾 {MaxCopyBytes / (1024 * 1024)} MiB]" : string.Empty;
-            return $"✓ {source.Name,-44} {written,12:N0} B  {info.LastWriteTime:yyyy-MM-dd HH:mm:ss}{note}  <- {source.Path}";
+            CopyWithRetry(info, Path.Combine(SessionDirectory, source.Name));
         }
         catch (Exception ex)
         {
-            return $"✗ {source.Name,-44} 读取失败：{ex.Message}  <- {source.Path}";
-        }
-    }
-
-    private static string Describe(SnapshotSource source)
-    {
-        try
-        {
-            var info = new FileInfo(source.Path);
-            return info.Exists
-                ? $"· {source.Name,-44} {info.Length,12:N0} B  {info.LastWriteTime:yyyy-MM-dd HH:mm:ss}  <- {source.Path}"
-                : $"✗ {source.Name,-44} 缺失            <- {source.Path}";
-        }
-        catch (Exception ex)
-        {
-            return $"✗ {source.Name,-44} 状态读取失败：{ex.Message}";
+            _logger.LogDebug(ex, "抄日志失败：{Path}", source.Path);
         }
     }
 
@@ -415,19 +495,61 @@ internal sealed class GameSessionLogCollector
         }
     }
 
-    private void AppendManifestUnlocked(string text)
+    /// <summary>文件目录：id 一旦定下就不变，后面的快照只按 id 写变化。</summary>
+    private List<SessionLogManifest.Entry> BuildEntries()
+    {
+        var entries = new List<SessionLogManifest.Entry>(_logs.Count + _configs.Count);
+        int index = 1;
+        foreach (SnapshotSource source in _logs)
+        {
+            entries.Add(new SessionLogManifest.Entry(index.ToString("D2"), source.Name, source.Path, 'L'));
+            index++;
+        }
+
+        foreach (SnapshotSource source in _configs)
+        {
+            entries.Add(new SessionLogManifest.Entry(index.ToString("D2"), source.Name, source.Path, 'C'));
+            index++;
+        }
+
+        return entries;
+    }
+
+    private List<SessionLogManifest.Module> CollectModules()
+    {
+        var modules = new List<SessionLogManifest.Module>(_bridgeDirectories.Count + _optiScalerDirectories.Count);
+        foreach (string directory in _bridgeDirectories)
+        {
+            // 1.4.3.1 的下载器可能把桥改名成了 OptiScaler.dll：按名字硬找会把装了的那份报成「缺失」
+            modules.Add(ReadModule("Bridge",
+                ModuleRegistry.FindGenshinFsrBridgeDll(directory)
+                ?? Path.Combine(directory, OptiScalerRuntime.FsrBridgeDllName)));
+        }
+
+        foreach (string directory in _optiScalerDirectories)
+        {
+            modules.Add(ReadModule("OptiScaler", Path.Combine(directory, "OptiScaler.dll")));
+        }
+
+        return modules;
+    }
+
+    private static SessionLogManifest.Module ReadModule(string label, string dllPath)
     {
         try
         {
-            using var stream = new FileStream(
-                Path.Combine(SessionDirectory, ManifestName),
-                FileMode.Append, FileAccess.Write, FileShare.Read);
-            byte[] bytes = Encoding.UTF8.GetBytes(text);
-            stream.Write(bytes, 0, bytes.Length);
+            if (!File.Exists(dllPath))
+            {
+                return new SessionLogManifest.Module(label, null, dllPath);
+            }
+
+            var info = FileVersionInfo.GetVersionInfo(dllPath);
+            string version = string.IsNullOrWhiteSpace(info.FileVersion) ? info.ProductVersion ?? "?" : info.FileVersion;
+            return new SessionLogManifest.Module(label, version, dllPath);
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogDebug(ex, "写会话清单失败：{Directory}", SessionDirectory);
+            return new SessionLogManifest.Module(label, "?", dllPath);
         }
     }
 
@@ -435,75 +557,19 @@ internal sealed class GameSessionLogCollector
 
     private void WriteHeader()
     {
-        var sb = new StringBuilder();
-        sb.AppendLine("HoYoShadeHub 会话日志快照");
-        sb.AppendLine(new string('=', 78));
-        sb.AppendLine($"开始时间   : {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}（{TimeZoneInfo.Local.DisplayName}）");
-        sb.AppendLine($"进程       : {_processName} (pid {_pid})");
-        sb.AppendLine($"进程路径   : {_exePath}");
-        sb.AppendLine($"启动参数   : {(string.IsNullOrWhiteSpace(_commandLine) ? "(未记录)" : _commandLine)}");
-        sb.AppendLine($"游戏标识   : {(_gameKey is { Length: > 0 } ? _gameKey : "(未知)")}");
-        sb.AppendLine($"启动器版本 : {AppConfig.AppVersion}");
-        sb.AppendLine($"便携模式   : {AppConfig.IsPortable}");
-        sb.AppendLine($"数据目录   : {AppConfig.UserDataFolder ?? "(null)"}");
-        sb.AppendLine($"日志目录   : {AppConfig.LogFolder}");
-        sb.AppendLine($"本局目录   : {SessionDirectory}");
-        sb.AppendLine();
+        var header = new SessionLogManifest.Header(
+            _startedAt,
+            _pid,
+            _processName,
+            _commandLine,
+            _gameKey,
+            AppConfig.AppVersion,
+            AppConfig.IsPortable,
+            AppConfig.UserDataFolder,
+            AppConfig.LogFolder,
+            SessionDirectory);
 
-        sb.AppendLine("模块版本");
-        sb.AppendLine(new string('-', 78));
-        foreach (string directory in _bridgeDirectories)
-        {
-            // 1.4.3.1 的下载器可能把桥改名成了 OptiScaler.dll：按名字硬找会把装了的那份报成「缺失」
-            AppendDllVersion(sb, "Bridge    ",
-                ModuleRegistry.FindGenshinFsrBridgeDll(directory)
-                ?? Path.Combine(directory, OptiScalerRuntime.FsrBridgeDllName));
-        }
-        foreach (string directory in _optiScalerDirectories)
-        {
-            AppendDllVersion(sb, "OptiScaler", Path.Combine(directory, "OptiScaler.dll"));
-        }
-        sb.AppendLine();
-
-        sb.AppendLine("要抄的文件（源 → 本局目录）");
-        sb.AppendLine(new string('-', 78));
-        foreach (SnapshotSource source in _logs)
-        {
-            sb.AppendLine($"  [log] {source.Name,-46} <- {source.Path}");
-        }
-        foreach (SnapshotSource source in _configs)
-        {
-            sb.AppendLine($"  [cfg] {source.Name,-46} <- {source.Path}");
-        }
-        sb.AppendLine();
-
-        sb.AppendLine("快照记录");
-        sb.AppendLine(new string('-', 78));
-
-        lock (_writeGate)
-        {
-            AppendManifestUnlocked(sb.ToString());
-        }
-    }
-
-    private static void AppendDllVersion(StringBuilder sb, string label, string dllPath)
-    {
-        try
-        {
-            if (!File.Exists(dllPath))
-            {
-                sb.AppendLine($"  {label} : (无) {dllPath}");
-                return;
-            }
-
-            var info = FileVersionInfo.GetVersionInfo(dllPath);
-            string version = string.IsNullOrWhiteSpace(info.FileVersion) ? info.ProductVersion ?? "?" : info.FileVersion;
-            sb.AppendLine($"  {label} : {version}  {dllPath}");
-        }
-        catch (Exception ex)
-        {
-            sb.AppendLine($"  {label} : 版本读取失败（{ex.Message}）{dllPath}");
-        }
+        _manifest.WriteHeader(header, CollectModules(), _entries);
     }
 
     // ==================== 目录 / 文件发现 ====================

@@ -722,6 +722,177 @@ Fsr2TranslationMode=2
     public const string FsrBridgeAutoloadName = "Dx11FsrBridge.autoload.txt";
 
     /// <summary>
+    /// 桥「支持的原神版本」标记文件：与桥 DLL 同目录的 <c>Dx11FsrBridge.game-versions.txt</c>。
+    ///
+    /// <para>
+    /// 桥是按游戏版本的 RVA / 模式改出来的，跨版本不保证能用，所以**发布桥的时候要带上这张文件**，
+    /// 启动器只负责读它（模块卡片上把「当前游戏版本 / 桥支持的版本」摆出来，启动时不匹配就提醒一句，
+    /// 拦不拦由桥自己决定）。格式是一行一条，<c>#</c> 或 <c>;</c> 开头是注释、空行忽略：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>5.8.0</c> —— 精确到写了几段：<c>5.8</c> 覆盖 <c>5.8.x</c>，<c>5.8.1</c> 只认 <c>5.8.1</c>；</item>
+    /// <item><c>&gt;=5.6.0</c> —— 下限（另有 <c>&gt;</c> / <c>&lt;=</c> / <c>&lt;</c>）；</item>
+    /// <item><c>5.6.0~5.8.0</c> —— 区间，含两端。</item>
+    /// </list>
+    /// <para>
+    /// 文件不在 / 读不出来 = 桥没声明，调用方按「未知」处理，<b>不要</b>当成不支持（老版本的包没有这张文件）。
+    /// </para>
+    /// </summary>
+    public const string FsrBridgeGameVersionsName = "Dx11FsrBridge.game-versions.txt";
+
+    /// <summary>桥声明支持的游戏版本条目（原始写法，未解析）。目录为空 / 没有文件 / 读失败都返回空表。</summary>
+    public static IReadOnlyList<string> ReadFsrBridgeGameVersions(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return [];
+        }
+
+        try
+        {
+            string path = Path.Combine(directory, FsrBridgeGameVersionsName);
+            return File.Exists(path) ? ParseFsrBridgeGameVersions(File.ReadAllText(path)) : [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    /// <summary>解析标记文件正文（测试直接喂字符串用）。允许 CRLF，行首 <c>#</c> / <c>;</c> 是注释。</summary>
+    public static IReadOnlyList<string> ParseFsrBridgeGameVersions(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        List<string> entries = [];
+        foreach (string rawLine in text.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line[0] is '#' or ';')
+            {
+                continue;
+            }
+            entries.Add(line);
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// 游戏版本在不在桥声明的支持范围内。
+    /// 返回 <c>null</c> = 没声明（文件不在 / 没解析出条目 / 版本读不出来），调用方不该拿它当「不支持」。
+    /// </summary>
+    public static bool? IsFsrBridgeGameVersionSupported(string? directory, Version? gameVersion)
+        => MatchFsrBridgeGameVersion(ReadFsrBridgeGameVersions(directory), gameVersion);
+
+    /// <summary>同上，但喂已经读好的条目（界面 / 启动流程里避免重复读盘）。</summary>
+    public static bool? MatchFsrBridgeGameVersion(IReadOnlyList<string>? entries, Version? gameVersion)
+    {
+        if (entries is not { Count: > 0 } || gameVersion is null)
+        {
+            return null;
+        }
+
+        foreach (string entry in entries)
+        {
+            if (MatchesFsrBridgeEntry(entry, gameVersion))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>一条声明的匹配规则：纯版本号按「写了几段」前缀匹配，其余按运算符 / 区间比较。</summary>
+    private static bool MatchesFsrBridgeEntry(string entry, Version gameVersion)
+    {
+        string text = entry.Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        int tilde = text.IndexOf('~');
+        if (tilde > 0)
+        {
+            return TryParseVersion(text[..tilde], out Version? lower)
+                   && TryParseVersion(text[(tilde + 1)..], out Version? upper)
+                   && gameVersion >= lower!
+                   && gameVersion <= upper!;
+        }
+
+        if (TryStripOperator(text, ">=", out string? rest))
+        {
+            return TryParseVersion(rest, out Version? bound) && gameVersion >= bound!;
+        }
+        if (TryStripOperator(text, "<=", out rest))
+        {
+            return TryParseVersion(rest, out Version? bound) && gameVersion <= bound!;
+        }
+        if (TryStripOperator(text, ">", out rest))
+        {
+            return TryParseVersion(rest, out Version? bound) && gameVersion > bound!;
+        }
+        if (TryStripOperator(text, "<", out rest))
+        {
+            return TryParseVersion(rest, out Version? bound) && gameVersion < bound!;
+        }
+
+        return TryParseVersion(text, out Version? exact) && IsVersionPrefixOf(exact!, gameVersion);
+    }
+
+    private static bool TryStripOperator(string text, string op, out string? rest)
+    {
+        if (text.StartsWith(op, StringComparison.Ordinal))
+        {
+            rest = text[op.Length..].Trim();
+            return rest.Length > 0;
+        }
+
+        rest = null;
+        return false;
+    }
+
+    private static bool TryParseVersion(string? text, out Version? version)
+        => Version.TryParse((text ?? string.Empty).Trim(), out version) && version is not null;
+
+    /// <summary><c>written</c> 的每一段都和游戏版本对得上（<c>5.8</c> 覆盖 <c>5.8.0</c>）。</summary>
+    private static bool IsVersionPrefixOf(Version written, Version gameVersion)
+    {
+        int[] writtenParts = [written.Major, written.Minor, written.Build, written.Revision];
+        int[] gameParts = [gameVersion.Major, gameVersion.Minor, gameVersion.Build, gameVersion.Revision];
+
+        int count = 0;
+        foreach (int part in writtenParts)
+        {
+            if (part < 0)
+            {
+                break;
+            }
+            count++;
+        }
+
+        if (count == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            if (gameParts[i] < 0 || writtenParts[i] != gameParts[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// v2.3.1 Bridge 的包布局把 OptiScaler.ini 放在 Bridge 的父目录下的
     /// <c>OptiScaler\</c> 旁边，而不是和 Bridge DLL 放在同一目录。
     /// 启动器的模块目录是扁平的，因此每次准备 Genshin + OptiScaler 启动时
@@ -879,6 +1050,13 @@ Fsr2TranslationMode=2
     /// </summary>
     /// <returns>true 表示这次真的移走了一份</returns>
     public static bool RemoveFsrBridgeAutoload(string? directory, out string? backupPath)
+        => RemoveSidecarFile(directory, FsrBridgeAutoloadName, out backupPath);
+
+    /// <summary>
+    /// 撤走 sidecar：原文件先备份成 <c>&lt;名字&gt;.hysx-backup</c>（已经有备份就不动它），
+    /// 再删掉本体。这样桥下次启动不会还把那一层拉回来。
+    /// </summary>
+    private static bool RemoveSidecarFile(string? directory, string fileName, out string? backupPath)
     {
         backupPath = null;
 
@@ -887,7 +1065,7 @@ Fsr2TranslationMode=2
             return false;
         }
 
-        string path = Path.Combine(directory, FsrBridgeAutoloadName);
+        string path = Path.Combine(directory, fileName);
         if (!File.Exists(path))
         {
             return false;
@@ -909,6 +1087,221 @@ Fsr2TranslationMode=2
         {
             return false;
         }
+    }
+
+    // 桥的「有序注入链」 ------------------------------------------------------
+
+    /// <summary>
+    /// 桥的「有序注入链」清单：与桥 DLL 同目录的 <c>Dx11FsrBridge.chain.txt</c>。
+    ///
+    /// <para>
+    /// 原神链路上有多个注入者时，谁先装钩子只能靠抢时间（历史上六轮注入时序实验全部证伪）。
+    /// 这张清单把顺序变成**数据**：外部只在 CreateProcess 那一刻注一个桥 DLL，桥在游戏进程内
+    /// 按行序 <c>LoadLibraryW</c> 后续各层 —— 进程内加载不受 mhyprot 对
+    /// <c>VirtualAllocEx</c>/<c>CreateRemoteThread</c> 的拦截，也不受「反作弊生效前不到 1 秒」
+    /// 那个外部注入窗口的约束。
+    /// </para>
+    ///
+    /// <para>
+    /// 行序 = 加载顺序，**不要重排**：3DMigoto 的 <c>d3d11.dll</c> 必须在 OptiScaler/ReShade
+    /// 之前（用户实测反过来 3DMigoto 装载返回 600），而它自己的 DllMain 又要求 <c>dxgi.dll</c>
+    /// 已在进程里（原神是 <c>mhypbase.dll</c> 把 dxgi 带进来的，CreateProcess 那一刻还没有）
+    /// —— 所以第一步一定是 <c>wait dxgi.dll</c>。
+    /// </para>
+    ///
+    /// <para>
+    /// 桥那边没有这张文件时会退回老的 <see cref="FsrBridgeAutoloadName"/> 单行，
+    /// 所以「只换桥 DLL 不换启动器」或回退启动器都不会把已验证链路弄坏。
+    /// </para>
+    /// </summary>
+    public const string FsrBridgeChainName = "Dx11FsrBridge.chain.txt";
+
+    /// <summary>链里的一步。<c>wait</c> 的参数是模块名（如 <c>dxgi.dll</c>），其余是 DLL 路径。</summary>
+    public readonly record struct FsrBridgeChainStep(string Verb, string Argument)
+    {
+        /// <summary>等某个模块进目标进程模块表（桥侧上限 15 秒，超时继续下一步）</summary>
+        public static FsrBridgeChainStep Wait(string moduleName) => new("wait", moduleName);
+
+        /// <summary>
+        /// 加载 3DMigoto：桥会先在游戏进程里建 <c>Local\3DMigotoLoader</c> 互斥体（XXMI 的
+        /// <c>3dmloader.dll</c> 就是靠它在场判断「已有 loader」），再 LoadLibraryW。
+        ///
+        /// <para>
+        /// **这一步现在进内置链，而且是第 2 步**（<c>wait dxgi.dll</c> 之后、OptiScaler 之前）：
+        /// 3DMigoto 的代理 <c>d3d11.dll</c> 必须是先占位的那一层（反过来它装载会返回 600），
+        /// 而它自己的 DllMain 又要求 <c>dxgi.dll</c> 已经在模块表里。
+        /// </para>
+        ///
+        /// <para>
+        /// **更正（2026-10-08 傍晚）**：早先「桥加载的 GIMI 会被 <c>[Loader] loader</c> 拒载、
+        /// 并留下 <c>CreateDXGIFactory1</c> 钩子把游戏打崩（<c>0xC0000005</c>、<c>at=&lt;no-module&gt;</c>）」
+        /// 的归因是错的。真正原因是桥克隆 <c>ID3D11DeviceContext</c> 虚表时按 128 项克隆
+        /// （实际对象是 Context4，共 149 项），GIMI 作为第二层包装转发 Context4 方法时踩到
+        /// 克隆区之后的 0，于是 <c>call [rax+0x430]</c> → <c>RIP=0</c>。桥修掉该缺陷后，
+        /// 链里带 migoto 步的游戏内实测已能正常进游戏。排查全过程见
+        /// <c>docs/XXMI-挂载顺序-调查-20261008.md</c> 第 14 节。
+        /// </para>
+        /// </summary>
+        public static FsrBridgeChainStep Migoto(string dllPath) => new("migoto", dllPath);
+
+        /// <summary>普通 LoadLibraryW</summary>
+        public static FsrBridgeChainStep Load(string dllPath) => new("load", dllPath);
+
+        /// <summary>这一步的参数是不是「可以按相对路径写」的 DLL 路径</summary>
+        public bool IsPath => Verb is "migoto" or "load";
+    }
+
+    /// <summary>读链清单（没有 / 读不到就返回 null）</summary>
+    public static string? ReadFsrBridgeChain(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string path = Path.Combine(directory, FsrBridgeChainName);
+            return File.Exists(path) ? File.ReadAllText(path) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 写链清单，返回真正写进去的行（失败 / 没有有效步骤返回 null）。
+    /// 与 autoload 清单同一套路径策略：能写成「相对桥 DLL 目录」的就写相对，
+    /// 整包搬到别的机器还能用；跨盘、或者要爬两层以上才退回绝对路径。
+    /// 文件故意不写 BOM，免得读的人把第一个字符吃成 <c>﻿</c>。
+    /// </summary>
+    public static string[]? WriteFsrBridgeChain(string? directory, IReadOnlyList<FsrBridgeChainStep>? steps)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || steps is null || steps.Count == 0
+            || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        var lines = new List<string>(steps.Count);
+        foreach (FsrBridgeChainStep step in steps)
+        {
+            if (string.IsNullOrWhiteSpace(step.Argument))
+            {
+                continue;
+            }
+
+            string argument = step.Argument;
+            if (step.IsPath)
+            {
+                try
+                {
+                    string relative = Path.GetRelativePath(directory, step.Argument);
+                    if (!Path.IsPathRooted(relative)
+                        && !relative.StartsWith(@"..\..\", StringComparison.Ordinal))
+                    {
+                        argument = relative;
+                    }
+                }
+                catch
+                {
+                    argument = step.Argument;
+                }
+            }
+
+            lines.Add(step.Verb + " " + argument);
+        }
+
+        if (lines.Count == 0)
+        {
+            return null;
+        }
+
+        var text = new System.Text.StringBuilder();
+        text.Append("# 由 HoYoShade 启动器写入：行序 = 桥在游戏进程里的加载顺序，勿重排。")
+            .Append(Environment.NewLine);
+        foreach (string line in lines)
+        {
+            text.Append(line).Append(Environment.NewLine);
+        }
+
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, FsrBridgeChainName),
+                text.ToString(),
+                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            return lines.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>撤走链清单（没勾「有序注入链」时用），语义同 <see cref="RemoveFsrBridgeAutoload"/></summary>
+    public static bool RemoveFsrBridgeChain(string? directory, out string? backupPath)
+        => RemoveSidecarFile(directory, FsrBridgeChainName, out backupPath);
+
+    /// <summary>
+    /// 覆写用的链清单文件名，放在数据目录根部（与 <c>config.ini</c> 同级）。
+    /// 存在且能解析出至少一步时，启动器改用它去写 <c>Dx11FsrBridge.chain.txt</c>：
+    /// 排查共存/顺序问题时改一次文本就能换一次链，不用重编启动器。
+    /// </summary>
+    public const string FsrBridgeChainOverrideName = "bridge-chain.override.txt";
+
+    /// <summary>
+    /// 把链清单文本解析成步骤：<c>#</c>/<c>;</c> 注释与空行忽略，没写动词的裸路径按 <c>load</c> 处理，
+    /// 认不出的动词也当 <c>load</c>（宁可多注一个 DLL，也不要静默丢一步）。解析不出步骤返回 null。
+    /// 规则与桥侧 <c>Dx11FsrBridge.cpp</c> 的解析保持一致。
+    /// </summary>
+    public static List<FsrBridgeChainStep>? ParseFsrBridgeChain(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var steps = new List<FsrBridgeChainStep>();
+        foreach (string raw in text.Split('\n'))
+        {
+            string line = raw.Trim().TrimStart('\uFEFF').Trim();
+            if (line.Length == 0 || line[0] is '#' or ';')
+            {
+                continue;
+            }
+
+            int space = line.IndexOfAny([' ', '\t']);
+            if (space <= 0)
+            {
+                // 只有一个词：是动词就是「漏了参数」，跳过；否则按裸路径 load（旧格式兼容）
+                string only = line.ToLowerInvariant();
+                if (only is "wait" or "migoto" or "load")
+                {
+                    continue;
+                }
+
+                steps.Add(FsrBridgeChainStep.Load(line));
+                continue;
+            }
+
+            string verb = line[..space].Trim().ToLowerInvariant();
+            string argument = line[(space + 1)..].Trim().Trim('"');
+            if (argument.Length == 0)
+            {
+                continue;
+            }
+
+            steps.Add(verb switch
+            {
+                "wait" => FsrBridgeChainStep.Wait(argument),
+                "migoto" => FsrBridgeChainStep.Migoto(argument),
+                _ => FsrBridgeChainStep.Load(argument),
+            });
+        }
+
+        return steps.Count == 0 ? null : steps;
     }
 
     // ───────────────────────── Streamline ─────────────────────────

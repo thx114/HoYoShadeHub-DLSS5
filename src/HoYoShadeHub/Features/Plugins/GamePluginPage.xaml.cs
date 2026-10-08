@@ -238,7 +238,7 @@ public sealed partial class GamePluginPage : PageBase
     {
         try
         {
-            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, _host);
+            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, _host, GameLauncher.GameLauncherService.UsesGenshinFinalDx12(CurrentGameId));
             if (result.Failed)
             {
                 _logger.LogWarning("Auto-fix game ReShade.ini failed for {Game}", entry.DisplayName);
@@ -296,8 +296,7 @@ public sealed partial class GamePluginPage : PageBase
         if (_plugins.ProfileError is { } profileError)
         {
             ShowInfo("读不了这个游戏的 ReShade.ini", profileError, InfoBarSeverity.Error);
-            TextBlock_AddonsEmpty.Text = "ReShade.ini 读取失败：" + profileError;
-            TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
+            SetAddonsEmptyState("ReShade.ini 读取失败：" + profileError, true);
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -310,8 +309,7 @@ public sealed partial class GamePluginPage : PageBase
                 "插件开关写在这个游戏的 ReShade.ini 里，现在还没有这份文件，所以暂时管不了插件。\n" +
                 "点页面中间的「复制模板到游戏目录」可以先补一份（HoYoShade 自己也会在注入时复制过去），或者直接开「注入模式」启动游戏。",
                 InfoBarSeverity.Warning);
-            TextBlock_AddonsEmpty.Text = "该游戏没有 ReShade.ini —— 插件开关暂时不可用。";
-            TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
+            SetAddonsEmptyState("该游戏没有 ReShade.ini —— 插件开关暂时不可用。", true);
             UpdatePathHint(null);
             UpdateHookPointUi();
             return;
@@ -329,8 +327,18 @@ public sealed partial class GamePluginPage : PageBase
         // 所有卡片读同一份（只有 Feed 那张卡片会显示这两个输入框）
         Dlss5FeedConfig? feedConfig = Dlss5FeedConfig.Load(_plugins.AddonDirectory);
 
+        // 全局插件里被关掉的 addon（文件被改名成 .addon64x）不在这一页列出来（用户要求）：
+        // 这一页的开关只写本游戏的 ReShade.ini，改不动全局禁用，列出来只会让人以为这里能开。
+        int globallyDisabled = 0;
+
         foreach (GameAddonState state in _plugins.GetAddons())
         {
+            if (state.GloballyDisabled)
+            {
+                globallyDisabled++;
+                continue;
+            }
+
             var item = new AddonItemViewModel(state, OnAddonEnabledChanged, OnLoadFromDllMainChanged)
             {
                 VersionDispatchQueue = DispatcherQueue,
@@ -352,8 +360,11 @@ public sealed partial class GamePluginPage : PageBase
             Addons.Add(item);
         }
 
-        TextBlock_AddonsEmpty.Text = "插件目录里还没有 addon。到左下角「全局插件」里装一个。";
-        TextBlock_AddonsEmpty.Visibility = Addons.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        SetAddonsEmptyState(
+            globallyDisabled > 0 && Addons.Count == 0
+                ? $"插件目录里 {globallyDisabled} 个 addon 都在「全局插件」里关着，所以这里空着。"
+                : "插件目录里还没有 addon。到左下角「全局插件」里装一个。",
+            Addons.Count == 0);
         UpdatePathHint(_plugins.AddonDirectory);
         UpdateDriverWarning();
         HideInfo();
@@ -361,11 +372,12 @@ public sealed partial class GamePluginPage : PageBase
 
         int brokenCount = Addons.Count(a => a.Enabled && a.CanToggle && a.HasMissingDll);
         TextBlock_Status.Text = $"{entry.DisplayName}：{Addons.Count} 个插件，启用 {Addons.Count(a => a.Enabled)} 个。" +
+                                (globallyDisabled > 0 ? $"　（{globallyDisabled} 个全局已禁用，没列出来）" : string.Empty) +
                                 (brokenCount > 0 ? $"　⚠ {brokenCount} 个缺运行时 dll" : string.Empty) +
                                 (entry.ReShadeIniPath is null ? string.Empty : $"　ini：{entry.ReShadeIniPath}");
 
-        _logger.LogInformation("Game plugin page: {Game} -> {Count} addons (enabled {Enabled}), addon dir = {Dir}, ini = {Ini}",
-            entry.DisplayName, Addons.Count, Addons.Count(a => a.Enabled),
+        _logger.LogInformation("Game plugin page: {Game} -> {Count} addons (enabled {Enabled}, globally disabled {GloballyDisabled} hidden), addon dir = {Dir}, ini = {Ini}",
+            entry.DisplayName, Addons.Count, Addons.Count(a => a.Enabled), globallyDisabled,
             _plugins.AddonDirectory ?? "(none)", entry.ReShadeIniPath ?? "(none)");
     }
 
@@ -423,10 +435,27 @@ public sealed partial class GamePluginPage : PageBase
         Presets.Clear();
         TextBlock_PresetsEmpty.Visibility = Visibility.Collapsed;
         Button_CopyIni.Visibility = Visibility.Collapsed;
-        TextBlock_AddonsEmpty.Text = message;
-        TextBlock_AddonsEmpty.Visibility = Visibility.Visible;
+        SetAddonsEmptyState(message, true);
         UpdatePathHint(null);
         UpdateHookPointUi();
+    }
+
+
+
+    /// <summary>
+    /// 插件列表的空状态：中间那句话和「去全局插件」按钮一起显示 / 隐藏。
+    ///
+    /// <para>
+    /// 空要么是还没装 addon，要么是装了但全被「全局插件」关了 —— 两种都得去全局插件页，
+    /// 所以按钮跟着文字一起出现（用户要求：列表空的时候中间要有入口）。
+    /// </para>
+    /// </summary>
+    private void SetAddonsEmptyState(string text, bool visible)
+    {
+        TextBlock_AddonsEmpty.Text = text;
+        Visibility visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        TextBlock_AddonsEmpty.Visibility = visibility;
+        Button_GotoGlobalPlugins.Visibility = visibility;
     }
 
     /// <summary>
@@ -1127,6 +1156,21 @@ public sealed partial class GamePluginPage : PageBase
     #endregion
 
     #region ReShade.ini 工具
+
+    /// <summary>空状态里那个按钮：跳到左下角的「全局插件」页（装 / 删 / 全局开关都在那儿）</summary>
+    private void Button_GotoGlobalPlugins_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            WeakReferenceMessenger.Default.Send(new MainViewNavigateMessage(typeof(GlobalPluginPage)));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Navigate to global plugin page from empty state failed");
+        }
+    }
+
+
 
     private async void Button_CopyIni_Click(object sender, RoutedEventArgs e)
     {

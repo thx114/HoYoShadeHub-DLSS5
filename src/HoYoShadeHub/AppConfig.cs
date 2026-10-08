@@ -2229,11 +2229,20 @@ public static class AppConfig
         SetValue(value, BuildLaunchOptionKey(gameId, "use_fps_unlock"));
     }
 
-    /// <summary>帧率解锁目标值（fps），默认 120，按游戏记</summary>
+    /// <summary>
+    /// 帧率解锁目标值（fps），默认 119，按游戏记。
+    /// 默认取 119 而不是 120：超过 119 的解锁值有封号风险（历史默认 120 一开就踩线），
+    /// 设置页在超过 <see cref="FpsUnlockWarnThreshold"/> 时每次保存都会提示一次。
+    /// </summary>
     public static int GetFpsUnlockTarget(GameId gameId)
     {
-        return GetValue(120, BuildLaunchOptionKey(gameId, "fps_unlock_target"));
+        return GetValue(FpsUnlockWarnThreshold, BuildLaunchOptionKey(gameId, "fps_unlock_target"));
     }
+
+    /// <summary>
+    /// 解锁帧率的「安全上限」：119 fps。超过它的目标值不阻止保存，但设置页每次保存都会提示一次封号风险。
+    /// </summary>
+    public const int FpsUnlockWarnThreshold = 119;
 
     public static void SetFpsUnlockTarget(GameId gameId, int value)
     {
@@ -2261,6 +2270,19 @@ public static class AppConfig
     public static void SetUseXxmiInjectLaunchOption(GameId gameId, bool value)
     {
         SetValue(value, BuildLaunchOptionKey(gameId, "use_xxmi_inject"));
+    }
+
+    /// <summary>仅准备 Rocket 外部启动：Hub 不创建游戏进程。</summary>
+    public static bool GetUseRocketLaunchOption(GameId gameId) =>
+        GetValue(false, BuildLaunchOptionKey(gameId, "use_rocket"));
+
+    public static void SetUseRocketLaunchOption(GameId gameId, bool value) =>
+        SetValue(value, BuildLaunchOptionKey(gameId, "use_rocket"));
+
+    public static string? RocketConfigPath
+    {
+        get => GetValue<string>(null, "hysx_rocket_config_path");
+        set => SetValue(value, "hysx_rocket_config_path");
     }
 
     public static HoYoShadeHub.Extensions.Games.XxmiLaunchMode GetXxmiLaunchMode(GameId gameId) =>

@@ -270,7 +270,7 @@ public sealed record DisabledAddonEntry(string? DisplayName, string FileName)
     {
         string text = raw.Trim();
         int at = text.LastIndexOf('@');
-        return at > 0
+        return at >= 0
             ? new DisabledAddonEntry(text[..at], text[(at + 1)..])
             : new DisabledAddonEntry(null, text);
     }

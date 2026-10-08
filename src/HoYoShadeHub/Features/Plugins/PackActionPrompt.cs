@@ -291,7 +291,7 @@ public static class OverlayPackActionPrompter
                     // （once 记账一立，状态就定格在「全开」——崩铁 mfgunlock 事故）
                     try
                     {
-                        GameIniBootstrap.Ensure(entry, host);
+                        GameIniBootstrap.Ensure(entry, host, GameLauncher.GameLauncherService.UsesGenshinFinalDx12(id));
                     }
                     catch (Exception ex)
                     {

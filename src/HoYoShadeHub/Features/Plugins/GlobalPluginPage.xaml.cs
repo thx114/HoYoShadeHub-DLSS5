@@ -7,6 +7,7 @@ using HoYoShadeHub.Extensions.I18n;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.Modules;
 using HoYoShadeHub.Features.ViewHost;
 using HoYoShadeHub.Frameworks;
@@ -14,6 +15,8 @@ using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -48,9 +51,12 @@ namespace HoYoShadeHub.Features.Plugins;
 /// 以后加新插件 / 模块 / OptiScaler 来源只改仓库里的 catalog/*.json，不用改这个页面、不用发版。
 /// 按游戏的开关在左侧「插件」/「模块」/「OptiScaler」页里。
 /// </summary>
-public sealed partial class GlobalPluginPage : PageBase
+public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
 {
     private readonly ILogger<GlobalPluginPage> _logger = AppConfig.GetLogger<GlobalPluginPage>();
+
+    /// <summary>模块卡片要显示「当前游戏版本」时读本地游戏目录用（和设置页同一套读法）</summary>
+    private readonly GameLauncherService _gameLauncherService = AppConfig.GetService<GameLauncherService>();
 
     /// <summary>用户给插件 / 模块 / OptiScaler 构建起的显示名与版本号（只改显示，不动磁盘）</summary>
     private readonly CatalogNameStore _names = CatalogNameStore.Load();
@@ -83,6 +89,12 @@ public sealed partial class GlobalPluginPage : PageBase
     /// <summary>当前标签页：plugins / optiscaler / modules</summary>
     private string _tab = "plugins";
 
+    /// <summary>
+    /// 换视图动画的代次：切走的那一屏要在平移结束后才收掉，这中间用户又切了就别收错屏
+    /// （见 <see cref="CollapseViewAfterSlideAsync"/>）。
+    /// </summary>
+    private int _viewSwitchGeneration;
+
 
     /// <summary>OptiScaler 来源的重叠层（打开页面时读一次，RefreshOptiScaler 复用）</summary>
     private List<OptiScalerSource>? _optiScalerOverlay;
@@ -91,8 +103,54 @@ public sealed partial class GlobalPluginPage : PageBase
     {
         InitializeComponent();
 
+        // SelectorBar 没有 SelectedIndex，也不会自己选第一项（XAML 里给「插件」标了 IsSelected）。
+        // 万一那一下没落到 SelectedItem 上，页面就停在「一项都没选」的状态：这里兜底。
+        // 走的是同一个 SelectionChanged，所以 _tab / 可见性都不会和选中项脱节。
+        if (SelectorBar_View.SelectedItem is null && SelectorBar_View.Items.Count > 0)
+        {
+            SelectorBar_View.SelectedItem = SelectorBar_View.Items[0];
+        }
+
         // 列表错峰入场（500ms + 45ms 一档，和顶部游戏栏同一套；只在每次进页面时播一次）
         Loaded += (_, _) => DispatcherQueue.TryEnqueue(() => MotionAnimations.PlayListEntrance(InstalledPluginList));
+
+        // 换视图是「整屏推走」：旧屏要滑到左边看不见、新屏从右边看不见处滑进来，
+        // 所以三屏共用的这块内容区必须裁剪，否则滑到一半的内容会画到左边的导航栏上
+        // （WinUI 默认不按边界裁剪子元素）。见 UpdateViewContentClip。
+        Grid_ViewContent.SizeChanged += (_, _) => UpdateViewContentClip();
+        Loaded += (_, _) => UpdateViewContentClip();
+    }
+
+    /// <summary>
+    /// 给「插件 / OptiScaler / 模块」三屏共用的内容区套一层裁剪，边界就是内容区本身。
+    ///
+    /// <para>
+    /// 边界取得恰好（不留余量）是有意的：整屏平移时两屏首尾相接，新的一屏起点整块在框外、
+    /// 旧的一屏终点整块在框外，所以必须裁到边上，否则会有几十像素的「残影」留在边上。
+    /// 这一页的卡片是纯 Border（圆角 + 描边，没有投影），列表也没挂悬停放大，
+    /// 所以没有需要画到框外的东西会被误裁。
+    /// </para>
+    /// </summary>
+    private void UpdateViewContentClip()
+    {
+        if (Grid_ViewContent is null)
+        {
+            return;
+        }
+
+        double width = Grid_ViewContent.ActualWidth;
+        double height = Grid_ViewContent.ActualHeight;
+        if (width <= 0 || height <= 0)
+        {
+            // 尺寸还没量出来就别裁：宁可漏一点，也别把内容整个裁没
+            Grid_ViewContent.Clip = null;
+            return;
+        }
+
+        Grid_ViewContent.Clip = new RectangleGeometry
+        {
+            Rect = new Rect(0, 0, width, height),
+        };
     }
 
     /// <summary>全部扩展条目（过滤前的）</summary>
@@ -126,8 +184,15 @@ public sealed partial class GlobalPluginPage : PageBase
     private List<ModuleItemViewModel> _allModules = [];
     private List<ModuleDownloadItemViewModel> _allModuleDownloads = [];
 
+    /// <summary>拖入用的窗口句柄（OnLoaded 时记下来，OnUnloaded 注销时要原样还回去）</summary>
+    private nint _dropWindowHandle;
+
     protected override void OnLoaded()
     {
+        // 提权窗口的 OLE 拖放被 UIPI 挡死，走 shell 的 WM_DROPFILES 通道（见 ShellFileDrop）
+        _dropWindowHandle = XamlRoot.GetWindowHandle();
+        ShellFileDrop.Register(_dropWindowHandle, this);
+
         InstalledPluginList.ItemsSource = InstalledItems;
         OrphanAddonFileList.ItemsSource = OrphanAddonFiles;
         PluginList.ItemsSource = VisibleItems;
@@ -352,6 +417,9 @@ public sealed partial class GlobalPluginPage : PageBase
 
     protected override void OnUnloaded()
     {
+        ShellFileDrop.Unregister(_dropWindowHandle, this);
+        _dropWindowHandle = 0;
+
         Items.Clear();
         InstalledItems.Clear();
         VisibleItems.Clear();
@@ -968,7 +1036,7 @@ public sealed partial class GlobalPluginPage : PageBase
 
     #region 视图切换 / 过滤
 
-    private void RadioButtons_View_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void SelectorBar_View_SelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
         // 事件可能在 InitializeComponent 解析到一半就触发，这时后面的控件还是 null
         if (Grid_Plugins is null || Grid_OptiScaler is null || Grid_Modules is null)
@@ -976,11 +1044,21 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
-        if (RadioButtons_View.SelectedItem is not RadioButton { Tag: string tag })
+        if (sender.SelectedItem?.Tag is not string tag)
         {
             return;
         }
 
+        SwitchView(tag);
+    }
+
+    /// <summary>
+    /// 切视图的公共收口：把这一页的本地数据重读一遍（都是读本地目录，不打网络）、重算过滤 / 可见性，
+    /// 最后让新露出来的那一屏「滑进来」、旧的那一屏「滑出去」（整屏平移、缓出，见 MotionAnimations.PlayViewSlide）。
+    /// </summary>
+    private void SwitchView(string tag)
+    {
+        string previous = _tab;
         _tab = tag;
 
         // 切到哪一页就把哪一页的本地数据重读一遍（都是读本地目录，不打网络）
@@ -998,6 +1076,73 @@ public sealed partial class GlobalPluginPage : PageBase
         }
 
         ApplyFilter();
+
+        // 必须等 ApplyFilter 把 Visibility 落定之后再播，否则动的是个还看不见的元素。
+        UIElement? shown = ViewElement(tag);
+
+        if (shown is null)
+        {
+            return;
+        }
+
+        // 那个「当前游戏版本」要读本地游戏目录，异步取回来再回填模块卡片
+        if (tag == "modules")
+        {
+            _ = RefreshModuleGameVersionAsync();
+        }
+
+        UIElement? hidden = ViewElement(previous);
+        if (ReferenceEquals(hidden, shown))
+        {
+            hidden = null;
+        }
+
+        // ApplyFilter 已经把切走的那一屏塌了；先把它立回来，动画期间两屏同时在画面上，
+        // 才能看到「一整块内容被推走」。等它滑完（透明度 0）再由下面这步收掉。
+        if (hidden is not null)
+        {
+            hidden.Visibility = Visibility.Visible;
+        }
+
+        MotionAnimations.PlayViewSlide(shown, hidden, forward: ViewOrder(tag) > ViewOrder(previous));
+
+        if (hidden is not null)
+        {
+            _ = CollapseViewAfterSlideAsync(hidden, ++_viewSwitchGeneration);
+        }
+    }
+
+    /// <summary>标签 → 那一屏的根元素（顺序和标签栏里的顺序一致）。</summary>
+    private UIElement? ViewElement(string tag) => tag switch
+    {
+        "optiscaler" => Grid_OptiScaler,
+        "modules" => Grid_Modules,
+        _ => Grid_Plugins,
+    };
+
+    /// <summary>标签的顺序号，只用来决定平移方向（往右点 → 内容往左推）。</summary>
+    private static int ViewOrder(string tag) => tag switch
+    {
+        "optiscaler" => 1,
+        "modules" => 2,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// 平移退场结束（<see cref="MotionAnimations.ViewSwitchDurationMs"/> + 一点余量）后把旧的那一屏收掉。
+    /// 带代次判断：这中间用户要是又切了一屏，这一屏该由新的一轮负责，不然会把当前这一屏塌掉。
+    /// </summary>
+    private async Task CollapseViewAfterSlideAsync(UIElement element, int generation)
+    {
+        await Task.Delay(MotionAnimations.ViewSwitchDurationMs + 40);
+
+        if (generation != _viewSwitchGeneration || ReferenceEquals(element, ViewElement(_tab)))
+        {
+            return;
+        }
+
+        MotionAnimations.ResetViewAnimation(element);
+        element.Visibility = Visibility.Collapsed;
     }
 
     private void TextBox_Search_TextChanged(object sender, TextChangedEventArgs e)
@@ -2157,6 +2302,13 @@ public sealed partial class GlobalPluginPage : PageBase
 
             ApplySavedNames(moduleVm);
 
+            // FSR 桥的「版本门」：桥的发布包把支持的原神版本写在桥 DLL 同目录的标记文件里，
+            // 这里读出来摆到卡片右侧（当前游戏版本是异步读的，见 RefreshModuleGameVersionAsync），
+            // 别的模块没有这张文件 —— 那一块就不显示。
+            moduleVm.SetBridgeGameVersions(entry.DllPath is { Length: > 0 } dllPath
+                ? OptiScalerRuntime.ReadFsrBridgeGameVersions(Path.GetDirectoryName(dllPath))
+                : null);
+
             // 注入时机（按模块）：每张卡片一个下拉，和左侧「模块」页共用同一个值
             moduleVm.ConfigureInjectDelay(
                 AppConfig.GetModuleInjectDelaySeconds(entry.Key),
@@ -2216,6 +2368,33 @@ public sealed partial class GlobalPluginPage : PageBase
         }
 
         ApplyFilter();
+    }
+
+    /// <summary>
+    /// 模块卡片右侧的「当前游戏版本」：本地游戏版本得读游戏目录（异步），取回来回填给所有模块卡片
+    /// （只有带了版本标记文件的 FSR 桥会显示那一块）。读不到就保持「未知」—— 不拿它当「不支持」。
+    /// </summary>
+    private async Task RefreshModuleGameVersionAsync()
+    {
+        if (CurrentGameId is not { } gameId || _allModules.Count == 0)
+        {
+            return;
+        }
+
+        Version? gameVersion = null;
+        try
+        {
+            gameVersion = await _gameLauncherService.GetLocalGameVersionAsync(gameId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Read local game version for module cards");
+        }
+
+        foreach (ModuleItemViewModel module in _allModules)
+        {
+            module.SetBridgeGameVersion(gameVersion);
+        }
     }
 
     private void OnModuleToggleRequested(ModuleItemViewModel item, bool enabled)
@@ -2903,6 +3082,12 @@ public sealed partial class GlobalPluginPage : PageBase
         {
             case LocalPackageKind.Addon:
                 await ReloadPluginDataAsync();
+
+                // 单个 addon 装完只有列表多一行、状态栏一句，很容易看不出装没装上：
+                // 明确说清装的是哪个文件、落到哪个目录
+                ShowInfo("本地安装完成",
+                    $"{result.DisplayName}{(string.IsNullOrWhiteSpace(result.Version) ? string.Empty : " " + result.Version)} → {result.TargetPath}",
+                    InfoBarSeverity.Success);
                 break;
             case LocalPackageKind.OptiScaler:
                 RefreshOptiScaler();
@@ -3381,11 +3566,40 @@ public sealed partial class GlobalPluginPage : PageBase
             return;
         }
 
+        await InstallDroppedFileAsync((await e.DataView.GetStorageItemsAsync()).FirstOrDefault()?.Path);
+    }
+
+    /// <summary>
+    /// shell 通道（WM_DROPFILES）拖进来的文件 —— 提权模式下 OLE 那条路不通，见 <see cref="ShellFileDrop"/>。
+    /// </summary>
+    public async Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0)
+        {
+            ShowInfo("收到拖入", "没解析出文件路径，换个文件再试。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        string file = paths[0];
+
+        if (_isWorking)
+        {
+            ShowInfo("正忙", "当前有操作在进行，等它结束再拖一次。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        // 这条通道没有拖动过程中的提示，松手后先把"收到了"写出来，免得以为没反应
+        TextBlock_Status.Text = $"正在安装拖入的 {Path.GetFileName(file)}…";
+        ShowInfo("收到拖入的文件", Path.GetFileName(file), InfoBarSeverity.Informational);
+
+        await InstallDroppedFileAsync(file);
+    }
+
+    /// <summary>本地安装一个拖进来的文件（OLE 拖入和 shell 拖入共用这一条）</summary>
+    private async Task InstallDroppedFileAsync(string? file)
+    {
         await RunAsync(async () =>
         {
-            var items = await e.DataView.GetStorageItemsAsync();
-            string? file = items.FirstOrDefault()?.Path;
-
             if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
             {
                 return;
@@ -4008,25 +4222,61 @@ public sealed partial class GlobalPluginPage : PageBase
         });
     }
 
+    /// <summary>
+    /// 从包里读扩展清单；不是 zip 就返回 null，交给 <see cref="LocalPackageInstaller"/> 按单文件装。
+    /// （裸 .addon64 / .addon32 / .dll 本来就在支持列表里，直接 ZipFile.OpenRead 会炸成
+    /// "End of Central Directory record could not be found"。）
+    /// </summary>
     private static ExtensionManifest? ReadManifestFromPackage(string file)
     {
-        using var archive = ZipFile.OpenRead(file);
-        var entry = archive.Entries.FirstOrDefault(
-            e => string.Equals(Path.GetFileName(e.FullName), "manifest.json", StringComparison.OrdinalIgnoreCase)
-                 || string.Equals(Path.GetFileName(e.FullName), "hysx.json", StringComparison.OrdinalIgnoreCase));
-
-        if (entry is null)
+        if (!LooksLikeZip(file))
         {
             return null;
         }
 
-        using Stream stream = entry.Open();
-        return JsonSerializer.Deserialize<ExtensionManifest>(stream, new JsonSerializerOptions
+        try
         {
-            PropertyNameCaseInsensitive = true,
-            ReadCommentHandling = JsonCommentHandling.Skip,
-            AllowTrailingCommas = true,
-        });
+            using var archive = ZipFile.OpenRead(file);
+            var entry = archive.Entries.FirstOrDefault(
+                e => string.Equals(Path.GetFileName(e.FullName), "manifest.json", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(Path.GetFileName(e.FullName), "hysx.json", StringComparison.OrdinalIgnoreCase));
+
+            if (entry is null)
+            {
+                return null;
+            }
+
+            using Stream stream = entry.Open();
+            return JsonSerializer.Deserialize<ExtensionManifest>(stream, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                ReadCommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true,
+            });
+        }
+        catch (InvalidDataException)
+        {
+            // 半截 / 损坏的 zip：也当"没有清单"，让安装器去报它自己的错（信息更具体）
+            return null;
+        }
+    }
+
+
+
+    /// <summary>看头 4 个字节是不是 zip 的本地文件头（避免拿 .addon64 去当 zip 解）</summary>
+    private static bool LooksLikeZip(string file)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(file);
+            Span<byte> header = stackalloc byte[4];
+            int read = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+            return read == header.Length && header[0] == (byte)'P' && header[1] == (byte)'K';
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -5479,6 +5729,80 @@ public sealed partial class ModuleItemViewModel : ObservableObject
     public bool CanSwitchVersion => Definition is { IsDirect: false };
 
     public Visibility VersionPickerVisibility => CanSwitchVersion ? Visibility.Visible : Visibility.Collapsed;
+
+    // ==================== FSR 桥的「版本门」（当前游戏版本 / 桥支持的版本） ====================
+
+    /// <summary>
+    /// 桥发布包自带的 <c>Dx11FsrBridge.game-versions.txt</c> 里的条目（原始写法）。
+    /// 只有 FSR 桥带这张文件 —— 空表表示「不是桥 / 桥没声明」，卡片右侧那一块不显示。
+    /// </summary>
+    private IReadOnlyList<string> _bridgeGameVersions = [];
+
+    /// <summary>本机当前游戏版本，页面异步读回来回填（null = 读不出来，按「未知」显示）</summary>
+    private Version? _bridgeGameVersion;
+
+    /// <summary>页面读本地游戏目录拿到了版本，回填给卡片（读不到也要回填，好让卡片说「未知」而不是一直空着）</summary>
+    public void SetBridgeGameVersion(Version? gameVersion)
+    {
+        _bridgeGameVersion = gameVersion;
+        RaiseBridgeGameVersionChanged();
+    }
+
+    /// <summary>桥目录里读到的支持版本清单（读不到就是空表）</summary>
+    public void SetBridgeGameVersions(IReadOnlyList<string>? entries)
+    {
+        _bridgeGameVersions = entries ?? [];
+        RaiseBridgeGameVersionChanged();
+    }
+
+    private void RaiseBridgeGameVersionChanged()
+    {
+        OnPropertyChanged(nameof(BridgeGameVersionVisibility));
+        OnPropertyChanged(nameof(BridgeGameVersionText));
+        OnPropertyChanged(nameof(BridgeGameVersionTooltip));
+        OnPropertyChanged(nameof(BridgeSupportText));
+        OnPropertyChanged(nameof(BridgeSupportBadText));
+        OnPropertyChanged(nameof(BridgeSupportOkVisibility));
+        OnPropertyChanged(nameof(BridgeSupportBadVisibility));
+    }
+
+    /// <summary>桥声明了支持版本才显示（也就是只有 FSR 桥会看到这几块）</summary>
+    public Visibility BridgeGameVersionVisibility
+        => _bridgeGameVersions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>当前游戏版本；没读出来就说未知（老包没标记文件时这块根本不显示）</summary>
+    public string BridgeGameVersionText
+        => _bridgeGameVersion is { } version ? $"游戏 {version}" : "游戏版本未知";
+
+    /// <summary>最多列 3 条，其余折成「等 N 条」；完整清单在 tooltip 里</summary>
+    private string SupportSummary => _bridgeGameVersions.Count <= 3
+        ? string.Join("、", _bridgeGameVersions)
+        : string.Join("、", _bridgeGameVersions.Take(3)) + $" 等 {_bridgeGameVersions.Count} 条";
+
+    public string BridgeSupportText => $"桥支持 {SupportSummary}";
+
+    public string BridgeSupportBadText
+        => $"⚠ 桥支持 {SupportSummary}，当前 {_bridgeGameVersion} 不在其中";
+
+    public string BridgeGameVersionTooltip
+        => $"桥声明的支持版本（来自桥 DLL 同目录的 {OptiScalerRuntime.FsrBridgeGameVersionsName}）：\n"
+           + string.Join("\n", _bridgeGameVersions);
+
+    /// <summary>null = 桥没声明 / 版本读不出来，这时不下「不支持」的判断</summary>
+    private bool? BridgeGameVersionSupported
+        => OptiScalerRuntime.MatchFsrBridgeGameVersion(_bridgeGameVersions, _bridgeGameVersion);
+
+    /// <summary>支持 / 未知 —— 用中性样式显示</summary>
+    public Visibility BridgeSupportOkVisibility
+        => _bridgeGameVersions.Count > 0 && BridgeGameVersionSupported != false
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    /// <summary>明确不支持 —— 用警示样式显示（只提示，不拦启动）</summary>
+    public Visibility BridgeSupportBadVisibility
+        => _bridgeGameVersions.Count > 0 && BridgeGameVersionSupported == false
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     /// <summary>版本下拉里的显示文本（tag · 发布日期；当前装着的那个带「(当前)」）</summary>
     public ObservableCollection<string> Versions { get; } = [];
