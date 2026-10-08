@@ -61,6 +61,8 @@ internal static class RocketLaunchPreparation
                 string build = Path.GetDirectoryName(opt)!;
                 if (!OptiScalerRuntime.PrepareGenshinEarlyConfiguration(build, gameId.GameBiz.Value))
                     return new(false, "准备 OptiScaler profile/依赖路径失败。");
+                if (!OptiScalerRuntime.SetRocketMode(build, true))
+                    return new(false, "写入 OptiScaler RocketMode=true 失败。");
                 OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
                 OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory);
                 if (OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, opt) is null

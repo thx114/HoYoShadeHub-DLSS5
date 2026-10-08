@@ -1596,6 +1596,39 @@ Fsr2TranslationMode=2
         return EnsureConfigDllPath(buildDirectory);
     }
 
+    /// <summary>写入 Hub 路线标记，供 OptiScaler 在启动时区分 Rocket/GIMI 与普通 Hub 路径。</summary>
+    public static bool SetRocketMode(string buildDirectory, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(buildDirectory)) return false;
+        string iniPath = Path.Combine(buildDirectory, ConfigFileName);
+        if (!File.Exists(iniPath)) return false;
+        string text = File.ReadAllText(iniPath);
+        string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        string value = enabled ? "true" : "false";
+        var section = new System.Text.RegularExpressions.Regex(
+            @"(?ms)(^\[HoYoShade\][ \t]*\r?\n)(.*?)(?=^\[|\z)");
+        string updated;
+        if (section.IsMatch(text))
+        {
+            updated = section.Replace(text, match =>
+            {
+                string body = match.Groups[2].Value;
+                var key = new System.Text.RegularExpressions.Regex(@"(?mi)^[ \t]*RocketMode[ \t]*=[^\r\n]*(?:\r?\n|$)");
+                body = key.IsMatch(body)
+                    ? key.Replace(body, $"RocketMode = {value}{newline}", 1)
+                    : body.TrimEnd('\r', '\n') + newline + $"RocketMode = {value}" + newline;
+                return match.Groups[1].Value + body;
+            }, 1);
+        }
+        else
+        {
+            updated = text.TrimEnd('\r', '\n') + newline + newline + "[HoYoShade]" + newline + $"RocketMode = {value}" + newline;
+        }
+        if (!string.Equals(updated, text, StringComparison.Ordinal))
+            File.WriteAllText(iniPath, updated, new System.Text.UTF8Encoding(false));
+        return true;
+    }
+
     /// <summary>原神启用本 fork 0.1.9+ 时，profile 激活后保持外部 NR guide 坐标修正。</summary>
     public static bool EnsureGenshinNativeGuides(string buildDirectory)
     {

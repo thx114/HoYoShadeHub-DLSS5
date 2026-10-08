@@ -2145,7 +2145,8 @@ public sealed partial class GameLauncherPage : PageBase
                 {
                     string? buildDirectory = Path.GetDirectoryName(optiPath);
                     if (buildDirectory is null || !OptiScalerRuntime.PrepareGenshinEarlyConfiguration(
-                            buildDirectory, earlyGenshin.GameBiz.Value))
+                            buildDirectory, earlyGenshin.GameBiz.Value)
+                        || !OptiScalerRuntime.SetRocketMode(buildDirectory, false))
                     {
                         _logger.LogError("原神早期启动配置准备失败；尚未创建游戏进程 ({Build})", buildDirectory);
                         InAppToast.MainWindow?.Error("原神启动配置", "无法准备 OptiScaler 游戏配置，请检查包内配置和目录权限。", 10000);
