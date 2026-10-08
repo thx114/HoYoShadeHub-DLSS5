@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-07T00:00:00Z",
+  "updatedAt": "2026-10-08T00:00:00Z",
   "_readme": [
     "远端条件表：插件的判定条件 / dll 需求 / OptiScaler 依赖清单全部从这里下发，启动器代码零硬编码。",
     "启动器读不到本文件（离线+无种子）时用内置默认值，行为与硬编码时代完全一致。",
@@ -160,7 +160,8 @@
     "renodx-dlss5-super-anus": "RenoDX DLSS_A",
     "renodx-dlss": "RenoDX DLSS",
     "dlss5-bridge": "DLSS 5 Bridge",
-    "gitc-uplift": "GITC Uplift"
+    "gitc-uplift": "GITC Uplift",
+    "FsrBridgeDepthAddon": "FSR Bridge Depth Provider"
   },
 
   "feedAddon": {

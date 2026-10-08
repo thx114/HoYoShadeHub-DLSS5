@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-07T00:00:00Z",
+  "updatedAt": "2026-10-08T00:00:00Z",
   "_readme": [
     "远端插件目录：不重新发版也能加/改插件条目（按 id 覆盖内置的同 id 条目，新 id 直接追加）。",
     "字段语义见仓库 docs/OPEN-SOURCE-PLAN.md；改完务必跑一遍扩展自测的 --online（会逐条解析 tag/资产、并检查规则能不能命中资产名）。",
@@ -491,6 +491,45 @@
       "rules": [
         {
           "match": "*.addon64",
+          "to": "reshade-shaders/Addons",
+          "flatten": true
+        }
+      ]
+    },
+    {
+      "id": "thx114.fsr-bridge-depth",
+      "name": "FSR Bridge Depth Provider（FSR 桥深度）",
+      "version": "latest",
+      "author": "thx114",
+      "description": "FSR 桥深度插件（FsrBridgeDepthAddon.addon64）：把 FSR 桥 Dx11FsrBridge 导出的深度接到 ReShade 的 DEPTH 语义，供最终 DX12 运行时的滤镜使用，并把 DX11 效果阶段的控制交给最终 DX12 菜单里的 NR Input Effects 面板（来源预设、技术顺序、参数）。崩铁只启用后半项：不查找桥、不上传桥深度、不改写 DEPTH 绑定；绝区零不自动接管这套策略。⚠️ 需要 HoYoShade 框架与 FSR 桥配合，单独装本插件不会有桥深度。配置 FsrBridgeDepthAddon.ini：FinalRuntimeOnly=1 表示只在最终 DX12 运行时保留效果与菜单，0 表示允许 DX11 效果阶段（当前部署值，配合 NR Input Effects 面板）。",
+      "homepage": "https://github.com/thx114/FsrBridgeDepthAddon/releases",
+      "tags": [
+        "depth",
+        "fsr",
+        "bridge",
+        "genshin",
+        "reshade"
+      ],
+      "hosts": [
+        "HoYoShade"
+      ],
+      "source": {
+        "type": "github-release",
+        "repository": "thx114/FsrBridgeDepthAddon",
+        "tagPattern": "^v?[0-9]",
+        "assetPattern": "*-addon64.zip"
+      },
+      "addonPatterns": [
+        "FsrBridgeDepthAddon.addon64*"
+      ],
+      "rules": [
+        {
+          "match": "*.addon64",
+          "to": "reshade-shaders/Addons",
+          "flatten": true
+        },
+        {
+          "match": "FsrBridgeDepthAddon.ini",
           "to": "reshade-shaders/Addons",
           "flatten": true
         }
