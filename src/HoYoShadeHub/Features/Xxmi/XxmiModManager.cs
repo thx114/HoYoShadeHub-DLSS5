@@ -55,6 +55,46 @@ internal static class XxmiModManager
         return [.. list.OrderByDescending(m => m.Enabled).ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)];
     }
 
+    /// <summary>mod 自带的预览图文件名（3DMigoto 社区约定：mod 根目录的 <c>preview.png</c>）</summary>
+    private static readonly string[] _previewNames =
+        ["preview.png", "preview.jpg", "preview.jpeg", "preview.webp", "preview.bmp"];
+
+    /// <summary>
+    /// mod 目录里自带的预览图（<c>&lt;mod&gt;\preview.png</c> 这类）；没有返回 null。
+    ///
+    /// <para>
+    /// 只看 <b>一级</b>目录里这几个约定名 —— mod 目录里塞满了 diffuse / normalmap 贴图，
+    /// 随便挑一张图当预览，挑到的十有八九是法线贴图。
+    /// </para>
+    /// </summary>
+    public static string? LocalPreview(string? modDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(modDirectory) || !Directory.Exists(modDirectory))
+        {
+            return null;
+        }
+
+        foreach (string name in _previewNames)
+        {
+            try
+            {
+                string path = Path.Combine(modDirectory, name);
+
+                // Windows 文件系统大小写不敏感，preview.png 也能命中 Preview.PNG
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+            catch
+            {
+                // 路径畸形 / 没权限就当没有
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>名字是不是「启用」状态（末尾带 DISABLED 就算禁用）</summary>
     public static bool IsEnabled(string name)
         => !name.EndsWith("DISABLED", StringComparison.OrdinalIgnoreCase)

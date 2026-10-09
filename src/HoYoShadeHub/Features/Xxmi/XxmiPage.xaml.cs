@@ -284,12 +284,28 @@ public sealed partial class XxmiModItem : ObservableObject
         }
     }
 
-    /// <summary>把拉到的本地图片文件设成卡片图（必须在 UI 线程调）</summary>
-    public void SetPreviewFromFile(string path)
+    /// <summary>
+    /// 把本地图片文件设成卡片图（必须在 UI 线程调）。
+    ///
+    /// <para>
+    /// <paramref name="decodePixelWidth"/> &gt; 0 时按宽度解码：mod 自带的 <c>preview.png</c>
+    /// 动辄 3 MB / 1672×941，按卡片大小解码，别把整张原图铺进内存。
+    /// </para>
+    /// </summary>
+    public void SetPreviewFromFile(string path, int decodePixelWidth = 0)
     {
         try
         {
-            PreviewImage = new BitmapImage(new Uri(path));
+            BitmapImage image = new();
+
+            // DecodePixelWidth 必须在 UriSource 之前设，设晚了不生效
+            if (decodePixelWidth > 0)
+            {
+                image.DecodePixelWidth = decodePixelWidth;
+            }
+
+            image.UriSource = new Uri(path);
+            PreviewImage = image;
         }
         catch
         {
@@ -675,13 +691,23 @@ public sealed partial class XxmiPage : PageBase
 
 
 
+    /// <summary>卡片图按这个宽度解码（够高清屏的卡片用了，又不至于把原图铺进内存）</summary>
+    private const int PreviewDecodeWidth = 480;
+
     /// <summary>
-    /// 给 GameBanana 来的 mod 拉预览图（本地有缓存就直接用），拉到一张贴一张。
-    /// 拉不到的（不是 GameBanana 的、或者网络不通）就保持占位图，不算错误。
+    /// 给卡片找预览图，拉到一张贴一张：
+    /// <list type="number">
+    /// <item>GameBanana 来的 mod（目录名 <c>gb_数字</c>）：拿 API 的名字 / 作者 / 缩略图，本地有缓存就直接用；</item>
+    /// <item>其余 mod（作者自己打包的、或用户改了目录名）：用 <b>mod 目录里自带的 <c>preview.png</c></b>；</item>
+    /// <item>GameBanana 拉不到（离线 / 页面没了）时，也用自带的图兜底。</item>
+    /// </list>
+    /// 都没有就保持占位图，不算错误。
     /// </summary>
     private async Task LoadPreviewsAsync()
     {
-        List<XxmiModItem> targets = [.. _mods.Where(m => m.ModId is not null && !m.HasPreview)];
+        // 以前这里还多要求一条 ModId is not null，于是「目录里明明有 preview.png、
+        // 但目录名不是 gb_xxx」的 mod 连试都不试，卡片永远是占位图。
+        List<XxmiModItem> targets = [.. _mods.Where(m => !m.HasPreview)];
 
         if (targets.Count == 0)
         {
@@ -692,7 +718,17 @@ public sealed partial class XxmiPage : PageBase
         {
             await Task.WhenAll(targets.Select(async item =>
             {
-                int modId = item.ModId!.Value;
+                if (!_mods.Contains(item))
+                {
+                    return;
+                }
+
+                if (item.ModId is not { } modId)
+                {
+                    // 不是 GameBanana 来的：不联网，直接看 mod 自带的那张
+                    ApplyLocalPreview(item);
+                    return;
+                }
 
                 // ConfigureAwait(true) 保证回到 UI 线程，BitmapImage 能安全创建
                 GameBananaModInfo? info = await _previews.GetModInfoAsync(modId).ConfigureAwait(true);
@@ -712,13 +748,31 @@ public sealed partial class XxmiPage : PageBase
 
                 if (path is not null)
                 {
-                    item.SetPreviewFromFile(path);
+                    item.SetPreviewFromFile(path, PreviewDecodeWidth);
+                    return;
                 }
+
+                // GameBanana 拿不到（离线 / mod 页面没了）：还有 mod 自带的那张兜底
+                ApplyLocalPreview(item);
             }));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Load mod previews failed");
+        }
+    }
+
+    /// <summary>把 mod 目录里自带的预览图贴到卡片上（没有、或这条是散装 .ini 就什么都不做）</summary>
+    private static void ApplyLocalPreview(XxmiModItem item)
+    {
+        if (!item.IsDirectory)
+        {
+            return;
+        }
+
+        if (XxmiModManager.LocalPreview(item.Path) is { } local)
+        {
+            item.SetPreviewFromFile(local, PreviewDecodeWidth);
         }
     }
 
