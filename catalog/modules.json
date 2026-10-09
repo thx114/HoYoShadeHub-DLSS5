@@ -92,6 +92,22 @@
         "bridge",
         "frame-generation"
       ]
+    },
+    {
+      "id": "dlss-enabler",
+      "name": "DLSS Enabler 4.10（RankFTW / RHI）",
+      "description": "RankFTW / RHI 资产仓库里的 DLSS Enabler（DLL 自带说明：DLSS enabler for DX12 GPUs，内部版本 4.10.0.9）。release 包里就一个 version.dll —— 原本是放进游戏目录当代理用的 DLL，这里按「模块」下载并注入游戏进程（和 dlssg_for_sm86 那份 version.dll 一个做法）。⚠️ 它和「DLL 配置」页的 nvngx_dlss.dll、以及 OptiScaler 是三条不同路线，同一时间建议只开一条。",
+      "repository": "RankFTW/rhi-repo",
+      "tagPattern": "^DLSS-Enabler-\\d",
+      "homepage": "https://github.com/RankFTW/rhi-repo/releases",
+      "dllHint": "version.dll",
+      "tags": [
+        "dlss",
+        "enabler",
+        "dx12",
+        "amd",
+        "intel"
+      ]
     }
   ]
 }
