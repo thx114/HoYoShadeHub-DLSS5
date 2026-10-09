@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-09T00:00:00Z",
+  "updatedAt": "2026-10-10T00:00:00Z",
   "_readme": [
     "远端插件目录：不重新发版也能加/改插件条目（按 id 覆盖内置的同 id 条目，新 id 直接追加）。",
     "字段语义见仓库 docs/OPEN-SOURCE-PLAN.md；改完务必跑一遍扩展自测的 --online（会逐条解析 tag/资产、并检查规则能不能命中资产名）。",
@@ -245,14 +245,13 @@
     },
     {
       "id": "dlss5.bridge",
-      "name": "DLSS5 Bridge（DX11 桥接）",
+      "name": "DLSS5 Bridge",
       "version": "latest",
       "author": "NIGos",
-      "description": "dlss5-bridge —— 让 DX11 游戏也能吃 DLSS5 的桥接插件，单文件 addon（实测装出来就叫 dlss5-bridge.addon64，PE 版本 1.4.13-pre7 / 现在最新是 pre8）。",
+      "description": "dlss5-bridge —— DLSS 契约镜像器：hook 游戏自己的 NGX DLSS（Create/Evaluate），把完整契约（color/depth/MV/flags/subrect）镜像到私有 D3D12 设备上重建一份 DLSS feature，让神经渲染组件（renodx-dlss5 的 NR）能复用游戏的输入跑自己的模型；游戏自己没有 DLSS 时可用 synth=1 走合成契约（作者明说效果更差）。单文件 addon，装出来就叫 dlss5-bridge.addon64（PE 版本 1.4.13-pre7 / 现在最新是 pre8）。",
       "homepage": "https://github.com/NIGos/dlss5-bridge/releases",
       "tags": [
         "dlss5",
-        "dx11",
         "bridge"
       ],
       "hosts": [
@@ -281,7 +280,7 @@
       "name": "DLSS5 Feed（游戏自己没有 DLSS 时用）",
       "version": "latest",
       "author": "jlrouzies-fr",
-      "description": "给「游戏自己完全没有 DLSS」的情况用（原神这种 64 位 DX11）：Feeder 自己造出 DLAA 调用，再让神经渲染插件挂上去。它需要另一个神经消费者（Deep Fried Chicken 或 renodx-dlss5）配合；动作矢量来源用 LumeniteFX —— 所以启用这个插件会一并装 LumeniteFX，并把 Lumenite_Kernel + DLSS5_Feed 写进该游戏当前生效的 ReShade 预设（DLSS5_MV_PROVIDER=3）。已经有 dlss5-bridge 的 DX11 游戏别同时开这两个。",
+      "description": "给「游戏自己完全没有 DLSS」的情况用（原神这种 64 位 DX11）：Feeder 自己造出 DLAA 调用，再让神经渲染插件挂上去。它需要另一个神经消费者（Deep Fried Chicken 或 renodx-dlss5）配合；动作矢量来源用 LumeniteFX —— 所以启用这个插件会一并装 LumeniteFX，并把 Lumenite_Kernel + DLSS5_Feed 写进该游戏当前生效的 ReShade 预设（DLSS5_MV_PROVIDER=3）。已经有 dlss5-bridge 的游戏别同时开这两个。",
       "homepage": "https://github.com/jlrouzies-fr/DLSS5-Feeder/releases",
       "tags": [
         "dlss5",
