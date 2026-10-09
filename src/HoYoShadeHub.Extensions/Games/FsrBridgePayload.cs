@@ -79,8 +79,18 @@ public static class FsrBridgePayload
     /// <summary>
     /// 在目录里找桥要注入的那份 DLL：正身名 → 历史别名 → 目录里唯一的 DLL。
     /// 每个候选都要过 <paramref name="accept"/>（启动器拿它套 2.3.x 版本门）；找不到返回 null。
+    ///
+    /// <para>
+    /// <paramref name="canonicalName"/> / <paramref name="aliasNames"/> 让调用方（现在是模块目录里的
+    /// <c>canonicalDllName</c> / <c>aliasDllNames</c> 字段）把名字声明出来；不传就是桥的历史默认值，
+    /// 老调用方的行为一个字节都不变。
+    /// </para>
     /// </summary>
-    public static string? FindDll(string? directory, Func<string, bool>? accept = null)
+    public static string? FindDll(
+        string? directory,
+        Func<string, bool>? accept = null,
+        string? canonicalName = null,
+        IReadOnlyList<string>? aliasNames = null)
     {
         List<string> dlls = EnumerateDlls(directory);
         if (dlls.Count == 0)
@@ -90,7 +100,7 @@ public static class FsrBridgePayload
 
         accept ??= static _ => true;
 
-        foreach (string name in new[] { DllName, LegacyAliasDllName })
+        foreach (string name in CandidateNames(canonicalName, aliasNames))
         {
             string? hit = dlls.FirstOrDefault(f => Matches(Path.GetFileName(f), name));
             if (hit is not null && accept(hit))
@@ -104,23 +114,40 @@ public static class FsrBridgePayload
         return single is not null && accept(single) ? single : null;
     }
 
+    /// <summary>正身名 + 别名（去空、去重、正身优先）</summary>
+    private static IEnumerable<string> CandidateNames(string? canonicalName, IReadOnlyList<string>? aliasNames)
+    {
+        string canonical = string.IsNullOrWhiteSpace(canonicalName) ? DllName : canonicalName!;
+        yield return canonical;
+
+        foreach (string alias in aliasNames ?? [LegacyAliasDllName])
+        {
+            if (!string.IsNullOrWhiteSpace(alias)
+                && !string.Equals(alias, canonical, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return alias;
+            }
+        }
+    }
+
     /// <summary>
     /// 把旧下载器改过名的桥 DLL 归位成正身名 <c>Dx11FsrBridge.dll</c>。
     /// 幂等：正身名已存在时**什么都不做**（绝不覆盖）；目录不像桥载荷时也不动
     /// （免得把真正的 OptiScaler 改名成桥）。改成功返回正身名的完整路径，
     /// 没得改 / 文件被占用（游戏正跑）改不动就返回 null，调用方继续用原名那份。
     /// </summary>
-    public static string? NormalizeDll(string? directory)
+    public static string? NormalizeDll(string? directory, string? canonicalName = null)
     {
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
             return null;
         }
 
-        string canonical = Path.Combine(directory, DllName);
-        if (File.Exists(canonical))
+        string canonical = string.IsNullOrWhiteSpace(canonicalName) ? DllName : canonicalName!;
+        string canonicalPath = Path.Combine(directory, canonical);
+        if (File.Exists(canonicalPath))
         {
-            return canonical;
+            return canonicalPath;
         }
 
         if (!LooksLikeBridgeDirectory(directory))
@@ -136,8 +163,8 @@ public static class FsrBridgePayload
 
         try
         {
-            File.Move(alias, Path.Combine(Path.GetDirectoryName(alias) ?? directory, DllName));
-            return Path.Combine(Path.GetDirectoryName(alias) ?? directory, DllName);
+            File.Move(alias, Path.Combine(Path.GetDirectoryName(alias) ?? directory, canonical));
+            return Path.Combine(Path.GetDirectoryName(alias) ?? directory, canonical);
         }
         catch
         {

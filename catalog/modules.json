@@ -5,7 +5,7 @@
     "远端模块目录：模块 = 启动游戏时要注入进程的独立 DLL（DLSS-NR on AMD 这类），不是 ReShade 插件、也不是 OptiScaler。",
     "不重新发版也能加/改模块：按 id 覆盖内置的同 id 模块，新 id 直接追加；{ \"id\": \"...\", \"removed\": true } 表示删掉（墓碑，内置条目也能这样下架）。",
     "字段：id / name / description / repository(owner/repo) / tagPattern / homepage / dllHint(要注入的 dll 文件名) / tags。",
-    "可选字段：bundled(随包资源里就有这份 dll，不用下载) / minVersion(能接受的最低 dll 版本，如 2.3.1) / legacyDirs(历史安装位置模板，支持 {userData} {modulesCache} {id}) / directFiles+branch(文件直接躺在仓库树里，走 raw 直下)。",
+    "可选字段：bundled(随包资源里就有这份 dll，不用下载) / minVersion(能接受的最低 dll 版本，如 2.3.1) / legacyDirs(历史安装位置模板，支持 {userData} {modulesCache} {id}) / canonicalDllName + aliasDllNames(正身 dll 名与历史别名：目录里出现的是别名就按正身名找回来并归位；不写 = 不认别名) / directFiles+branch(文件直接躺在仓库树里，走 raw 直下)。",
     "下载走和 OptiScaler 一样的下载器：release 里的 .zip 会解压到模块目录，.exe 会先问一句再运行（官方安装程序）。",
     "改完跑一遍扩展自测的 --online（它会解析每个来源的 tag / 资产）。"
   ],
@@ -85,6 +85,10 @@
       "legacyDirs": [
         "{userData}/Modules/{id}",
         "{modulesCache}/{id}"
+      ],
+      "canonicalDllName": "Dx11FsrBridge.dll",
+      "aliasDllNames": [
+        "OptiScaler.dll"
       ],
       "tags": [
         "genshin",

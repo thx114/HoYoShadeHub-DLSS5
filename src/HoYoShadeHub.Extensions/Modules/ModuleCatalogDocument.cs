@@ -70,6 +70,18 @@ public sealed class ModuleManifest
     /// </summary>
     [JsonPropertyName("legacyDirs")]
     public string[]? LegacyDirs { get; set; }
+
+    /// <summary>
+    /// 「正身」DLL 文件名：模块目录里如果出现的是 <see cref="AliasDllNames"/> 里的历史别名，
+    /// 就按这个名字归位（原神桥以前被旧下载器改名成 <c>OptiScaler.dll</c>，就是靠这条认回来的）。
+    /// 不写 = 不认别名、不改名。
+    /// </summary>
+    [JsonPropertyName("canonicalDllName")]
+    public string? CanonicalDllName { get; set; }
+
+    /// <summary>能被认成同一个模块的历史 DLL 名（只在模块目录里比，不做全局按名匹配）</summary>
+    [JsonPropertyName("aliasDllNames")]
+    public string[]? AliasDllNames { get; set; }
 }
 
 /// <summary>模块目录文档（远端 / 随包种子 / 用户级共用这个形状）</summary>

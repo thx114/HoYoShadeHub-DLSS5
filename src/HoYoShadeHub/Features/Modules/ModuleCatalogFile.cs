@@ -31,7 +31,9 @@ public static class ModuleManifestExtensions
             string.IsNullOrWhiteSpace(manifest.Branch) ? "main" : manifest.Branch!,
             manifest.Bundled,
             manifest.MinVersion,
-            manifest.LegacyDirs);
+            manifest.LegacyDirs,
+            manifest.CanonicalDllName,
+            manifest.AliasDllNames);
     }
 }
 

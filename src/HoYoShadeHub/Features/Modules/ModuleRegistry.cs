@@ -38,7 +38,9 @@ public sealed record ModuleDefinition(
     string Branch = "main",
     bool Bundled = false,
     string? MinVersion = null,
-    string[]? LegacyDirs = null)
+    string[]? LegacyDirs = null,
+    string? CanonicalDllName = null,
+    string[]? AliasDllNames = null)
 {
     /// <summary>
     /// 有些模块压根不发 Release 资产，文件直接躺在仓库树里（比如 dlssg_for_sm86 的
@@ -114,7 +116,9 @@ public static class ModuleRegistry
         "main",
         false,
         "2.3.1",
-        ["{userData}/Modules/{id}", "{modulesCache}/{id}"]);
+        ["{userData}/Modules/{id}", "{modulesCache}/{id}"],
+        HoYoShadeHub.Extensions.Games.FsrBridgePayload.DllName,
+        [HoYoShadeHub.Extensions.Games.FsrBridgePayload.LegacyAliasDllName]);
 
     // The remote catalog may replace this metadata. It must not replace the
     // downloaded module with an app-bundled DLL.
@@ -172,12 +176,40 @@ public static class ModuleRegistry
         => gameId.GameBiz.ToString().StartsWith("hk4e_", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 原神 FSR 桥的模块目录可能出现的位置：当前模块根 / 迁移前的 <c>Modules</c> / 缓存模块根。
+    /// 原神 FSR 桥的模块目录可能出现的位置：模块自己的目录 + 它声明的历史位置
+    /// （远端 <c>legacyDirs</c>，内置那条也声明了迁移前的 <c>Modules</c> 和缓存模块根）。
+    /// 老代码里那两条路径永远兜底 —— 远端哪天把 legacyDirs 写没了也不至于突然找不到桥。
     /// </summary>
     public static IEnumerable<string> GenshinFsrBridgeRoots()
     {
+        ModuleDefinition? module = Find(GenshinFsrBridgeId);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string root in RootsOfBridge(module))
+        {
+            if (!string.IsNullOrWhiteSpace(root) && seen.Add(root))
+            {
+                yield return root;
+            }
+        }
+    }
+
+    private static IEnumerable<string> RootsOfBridge(ModuleDefinition? module)
+    {
         yield return AppConfig.ModuleDirectory(GenshinFsrBridgeId);
 
+        if (module is not null)
+        {
+            foreach (string legacy in module.LegacyDirs ?? [])
+            {
+                if (ExpandLegacyDir(legacy, module) is { } expanded)
+                {
+                    yield return expanded;
+                }
+            }
+        }
+
+        // 兜底：内置那条声明的那两个位置
         if (!string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
         {
             yield return Path.Combine(AppConfig.UserDataFolder, "Modules", GenshinFsrBridgeId);
@@ -199,6 +231,15 @@ public static class ModuleRegistry
     /// 只看目录归属不看文件名，所以 OptiScaler 库里的那份 <c>OptiScaler.dll</c> 不会被误认。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// 桥的「正身」DLL 名：模块声明（远端 <c>canonicalDllName</c>；内置那条也声明了）优先，
+    /// 声明不出来才退回老常量 —— 认名不再写死在代码里。
+    /// </summary>
+    private static string BridgeCanonicalDllName
+        => Find(GenshinFsrBridgeId)?.CanonicalDllName is { Length: > 0 } name
+            ? name
+            : OptiScalerRuntime.FsrBridgeDllName;
+
     public static bool IsGenshinFsrBridgeDll(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -206,7 +247,7 @@ public static class ModuleRegistry
             return false;
         }
 
-        if (string.Equals(Path.GetFileName(path), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(Path.GetFileName(path), BridgeCanonicalDllName, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -828,36 +869,55 @@ public static class ModuleRegistry
     /// </summary>
     private static string? FindModuleInjectDll(ModuleDefinition module, string directory)
     {
-        if (!string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase))
+        bool isBridge = string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase);
+
+        // 没声明正身名/别名的普通模块：按 dllHint 直接找（老行为，一个字节没变）
+        bool hasIdentity = isBridge
+                           || !string.IsNullOrWhiteSpace(module.CanonicalDllName)
+                           || module.AliasDllNames is { Length: > 0 };
+        if (!hasIdentity)
         {
             return FindInjectDll(directory, module.DllHint);
         }
 
+        // 正身名 / 别名都从模块声明里读；远端覆盖层（可能还是老缓存）没写时退回内置默认，
+        // 保证「被旧下载器改名成 OptiScaler.dll 的桥」在任何目录配置下都还认得出来。
+        string canonical = !string.IsNullOrWhiteSpace(module.CanonicalDllName)
+            ? module.CanonicalDllName!
+            : isBridge ? HoYoShadeHub.Extensions.Games.FsrBridgePayload.DllName : module.DllHint;
+        IReadOnlyList<string>? aliases = module.AliasDllNames is { Length: > 0 }
+            ? module.AliasDllNames
+            : isBridge ? [HoYoShadeHub.Extensions.Games.FsrBridgePayload.LegacyAliasDllName] : null;
+
         string? dll = HoYoShadeHub.Extensions.Games.FsrBridgePayload.FindDll(
-            directory, path => IsAcceptedModuleDll(module, path));
+            directory, path => IsAcceptedModuleDll(module, path), canonical, aliases);
         if (dll is null)
         {
-            _logger.LogWarning("FSR Bridge：{Directory} 里没有可用的 {Hint}（目录里的 DLL：{Found}）",
+            _logger.LogWarning("{Module}：{Directory} 里没有可用的 {Canonical}（目录里的 DLL：{Found}）",
+                module.Name,
                 directory,
-                OptiScalerRuntime.FsrBridgeDllName,
+                canonical,
                 string.Join("、", HoYoShadeHub.Extensions.Games.FsrBridgePayload.ListDllNames(directory)));
             return null;
         }
 
-        if (!string.Equals(Path.GetFileName(dll), OptiScalerRuntime.FsrBridgeDllName, StringComparison.OrdinalIgnoreCase))
+        // 归位（改名成正身名）只给原神桥做：它的别名是「被旧下载器改名」的历史包袱。
+        // 别的模块认别名就够了 —— 猜着改名 = 往游戏里注错东西。
+        if (isBridge && !string.Equals(Path.GetFileName(dll), canonical, StringComparison.OrdinalIgnoreCase))
         {
-            string? canonical = HoYoShadeHub.Extensions.Games.FsrBridgePayload.NormalizeDll(Path.GetDirectoryName(dll));
-            if (canonical is not null)
+            string? normalized = HoYoShadeHub.Extensions.Games.FsrBridgePayload.NormalizeDll(
+                Path.GetDirectoryName(dll), canonical);
+            if (normalized is not null)
             {
                 _logger.LogWarning(
-                    "FSR Bridge：{Directory} 里的桥 DLL 被旧版下载器改名成了 {Alias}；已归位成 {Canonical}",
-                    Path.GetDirectoryName(dll), Path.GetFileName(dll), Path.GetFileName(canonical));
-                return canonical;
+                    "{Module}：{Directory} 里的 DLL 被旧版下载器改名成了 {Alias}；已归位成 {Canonical}",
+                    module.Name, Path.GetDirectoryName(dll), Path.GetFileName(dll), Path.GetFileName(normalized));
+                return normalized;
             }
 
             _logger.LogWarning(
-                "FSR Bridge：{Directory} 里的桥 DLL 叫 {Alias}（不是 {Hint}），改名失败（文件可能被占用）；先照这个路径注入",
-                Path.GetDirectoryName(dll), Path.GetFileName(dll), OptiScalerRuntime.FsrBridgeDllName);
+                "{Module}：{Directory} 里的 DLL 叫 {Alias}（不是 {Canonical}），改名失败（文件可能被占用）；先照这个路径注入",
+                module.Name, Path.GetDirectoryName(dll), Path.GetFileName(dll), canonical);
         }
 
         return dll;
