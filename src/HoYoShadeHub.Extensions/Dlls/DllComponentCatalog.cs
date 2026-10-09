@@ -36,21 +36,67 @@ public sealed record DllCatalog(
 /// dll 组件清单。
 ///
 /// <para>
-/// 来源是用户指定的 <c>RankFTW/RHI</c> 的 <c>dlss_manifest.json</c>
-/// （见 docs/RESHADE-INI.md §4）：里面按 <c>dlss / dlssd / dlssg / dlssnr / streamline</c>
-/// 分组，每条一个 <c>{ version, url }</c>，url 指向 rhi-repo 上的一个 zip。
+/// 来源写在远端配置 <c>catalog/conditions.json</c> 的 <c>dllSources[]</c> 里：每条给出
+/// 「清单地址 manifest + 下载基址 downloadBase + 直连不通时按顺序试的公共代理 proxies」。
+/// 当前是 RankFTW/RHI 的 <c>dlss_manifest.json</c>（见 docs/RESHADE-INI.md §4）：
+/// 按 <c>dlss / dlssd / dlssg / dlssnr / streamline</c> 分组，每条一个
+/// <c>{ version, url }</c>，url 指向 rhi-repo 上的一个 zip。
+/// <b>加第二个来源 / 换镜像 / 换代理都只改那份 JSON，不用动这里、不用发版。</b>
+/// </para>
+///
+/// <para>
+/// 远端没有 <c>dllSources</c>（首跑离线、老缓存）时回落到 <see cref="DefaultSources"/> ——
+/// 历史上写死的那条 RankFTW 来源，行为与硬编码时代一致。
 /// </para>
 ///
 /// <para>
 /// 清单里 <c>dlssnr</c> 只有 2 条，但 rhi-repo 上还有 <c>-RTX40</c> / <c>.SF</c> 的变体
-/// （实测 tag <c>dlssnr-310.8.0-RTX40</c> 等），这些硬编码补进来。
+/// （实测 tag <c>dlssnr-310.8.0-RTX40</c> 等）：远端 <c>dllExtras[]</c> 负责补，
+/// 这里只保留同一份默认值兜底。
 /// </para>
 /// </summary>
 public static class DllComponentCatalog
 {
+    /// <summary>默认来源的清单地址（远端 <c>dllSources</c> 缺失时兜底；公开是为了兼容老引用）</summary>
     public const string ManifestUrl = "https://raw.githubusercontent.com/RankFTW/RHI/main/dlss_manifest.json";
 
     private const string RhiRepoDownload = "https://github.com/RankFTW/rhi-repo/releases/download";
+
+    /// <summary>内置默认来源：远端 <c>dllSources[]</c> 为空时用它</summary>
+    public static IReadOnlyList<DllSourceEntry> DefaultSources =>
+    [
+        new DllSourceEntry
+        {
+            Id = "rankftw-rhi",
+            DisplayName = "RankFTW RHI",
+            Manifest = ManifestUrl,
+            DownloadBase = RhiRepoDownload,
+            Proxies = ["https://gh-proxy.org", "https://ghfast.top"],
+        },
+    ];
+
+    /// <summary>本次要拉的来源：远端 <c>dllSources[]</c> 优先（顺序即优先级），空/读不到回落默认</summary>
+    public static IReadOnlyList<DllSourceEntry> Sources
+    {
+        get
+        {
+            DllSourceEntry[]? remote = Conditions.AddonConditions.Current?.DllSources;
+            if (remote is { Length: > 0 })
+            {
+                DllSourceEntry[] usable = [.. remote.Where(s => !string.IsNullOrWhiteSpace(s?.Manifest))];
+                if (usable.Length > 0)
+                {
+                    return usable;
+                }
+            }
+
+            return DefaultSources;
+        }
+    }
+
+    /// <summary>下载基址：<c>dllExtras</c> 写相对路径（<c>&lt;tag&gt;/&lt;文件&gt;</c>）时按它拼</summary>
+    private static string DefaultDownloadBase =>
+        Sources.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.DownloadBase))?.DownloadBase ?? RhiRepoDownload;
 
     /// <summary>
     /// 界面上的分组顺序 / 说明。可被 catalog/conditions.json 的 dllFamilies 整表替换
@@ -95,15 +141,17 @@ public static class DllComponentCatalog
     /// <summary>
     /// 拉一次清单。拉不到就返回 null（不抛），交给上层决定要不要换代理重试。
     /// </summary>
-    /// <param name="proxyUrl">为空 = 用当前设置里的代理</param>
+    /// <param name="source">来源（远端 dllSources[] 的一条）</param>
+    /// <param name="proxyUrl">为空 = 用当前设置里的代理；否则用来源自己配的代理前缀</param>
     private static async Task<Dictionary<string, List<DllManifestEntry>>?> FetchAsync(
+        DllSourceEntry source,
         CancellationToken cancellationToken,
         string? proxyUrl = null)
     {
         try
         {
             using var client = HysxHttp.CreateClient(timeout: TimeSpan.FromSeconds(20));
-            await using Stream stream = await client.GetStreamAsync(HysxHttp.Apply(ManifestUrl, proxyUrl), cancellationToken);
+            await using Stream stream = await client.GetStreamAsync(HysxHttp.Apply(source.Manifest, proxyUrl), cancellationToken);
             return await JsonSerializer.DeserializeAsync<Dictionary<string, List<DllManifestEntry>>>(stream, _options, cancellationToken);
         }
         catch
@@ -116,47 +164,72 @@ public static class DllComponentCatalog
     public static async Task<DllCatalog> LoadAsync(CancellationToken cancellationToken = default)
     {
         var components = new Dictionary<string, List<DllComponent>>(StringComparer.OrdinalIgnoreCase);
+        var failures = new List<string>();
+        int loaded = 0;
         string? error = null;
 
         try
         {
-            Dictionary<string, List<DllManifestEntry>>? manifest = await FetchAsync(cancellationToken);
-
-            if (manifest is null)
+            foreach (DllSourceEntry source in Sources)
             {
-                // 直连 raw.githubusercontent.com 在国内基本不通，会抛 SSL / 超时。
-                // 清单和远端目录都在 raw 上，所以这里必须走能转发 raw 的公共代理兜一次，
-                // 否则用户看到的就是「拉组件清单失败（还能用内置的那几条）」。
-                manifest = await FetchAsync(cancellationToken, "https://gh-proxy.org")
-                           ?? await FetchAsync(cancellationToken, "https://ghfast.top");
-            }
+                Dictionary<string, List<DllManifestEntry>>? manifest = await FetchAsync(source, cancellationToken);
 
-            if (manifest is null)
-            {
-                throw new InvalidOperationException("清单拉不到：直连和两个公共代理都失败了。");
-            }
-
-            foreach ((string family, List<DllManifestEntry> entries) in manifest ?? [])
-            {
-                var list = new List<DllComponent>();
-                foreach (DllManifestEntry entry in entries)
+                if (manifest is null)
                 {
-                    if (!string.IsNullOrWhiteSpace(entry?.Version) && !string.IsNullOrWhiteSpace(entry?.Url))
+                    // 直连 raw.githubusercontent.com 在国内基本不通，会抛 SSL / 超时。
+                    // 走哪些公共代理也写在远端配置里（dllSources[].proxies），换镜像不用发版。
+                    foreach (string proxy in source.Proxies ?? [])
                     {
-                        list.Add(new DllComponent(family, entry!.Version!, entry.Url!));
+                        if (string.IsNullOrWhiteSpace(proxy))
+                        {
+                            continue;
+                        }
+
+                        manifest = await FetchAsync(source, cancellationToken, proxy);
+                        if (manifest is not null)
+                        {
+                            break;
+                        }
                     }
                 }
 
-                if (list.Count > 0)
+                if (manifest is null)
                 {
-                    // 不能按字符串排：那样 310.9.1 会排在 310.10.0 前面、2.9 会排在 2.14 前面
-                    components[family] = [.. list.OrderByDescending(c => c.Version, DllVersionComparer.Instance)];
+                    failures.Add($"{source.Id}（直连与 {source.Proxies?.Length ?? 0} 个代理都失败）");
+                    continue;
+                }
+
+                loaded++;
+
+                foreach ((string family, List<DllManifestEntry> entries) in manifest)
+                {
+                    foreach (DllManifestEntry entry in entries)
+                    {
+                        if (!string.IsNullOrWhiteSpace(entry?.Version) && !string.IsNullOrWhiteSpace(entry?.Url))
+                        {
+                            AddIfMissing(components, family, entry!.Version!, entry.Url!, null);
+                        }
+                    }
+
+                    if (components.TryGetValue(family, out List<DllComponent>? list))
+                    {
+                        // 不能按字符串排：那样 310.9.1 会排在 310.10.0 前面、2.9 会排在 2.14 前面
+                        components[family] = [.. list.OrderByDescending(c => c.Version, DllVersionComparer.Instance)];
+                    }
                 }
             }
         }
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+
+        if (error is null && failures.Count > 0)
+        {
+            // 一个来源都没拉到 → 只剩 dllExtras / 内置兜底；部分失败就如实说一部分
+            error = loaded == 0
+                ? $"组件清单拉不到：{string.Join("；", failures)}"
+                : $"部分来源拉不到：{string.Join("；", failures)}";
         }
 
         // 屏蔽清单：conditions.json 的 blockedVersions（默认屏蔽 dlssnr 2.14.1.0 ——
@@ -181,23 +254,31 @@ public static class DllComponentCatalog
         }
 
         // 补充变体：conditions.json 的 dllExtras（默认补 rhi-repo 上的 dlssnr 变体，
-        // 清单里没有但确实存在：30/40 系、ShortFuse 分支、Lecram 修改版）
+        // 清单里没有但确实存在：30/40 系、ShortFuse 分支、Lecram 修改版）。
+        // url 写相对路径（<tag>/<文件>）就按来源的 downloadBase 拼 —— 远端加一个变体只要 3 个短字段。
         IReadOnlyList<DllExtraEntry> extras = AddonConditions.Current?.DllExtras is { Length: > 0 } remoteExtras
             ? remoteExtras
             :
             [
-                new DllExtraEntry { Family = "dlssnr", Version = "310.8.0-RTX40", Url = $"{RhiRepoDownload}/dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip", Note = "30/40 系" },
-                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF-v2", Url = $"{RhiRepoDownload}/dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", Note = "ShortFuse 分支" },
-                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF", Url = $"{RhiRepoDownload}/dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip", Note = "ShortFuse 分支" },
-                new DllExtraEntry { Family = "dlssnr", Version = "310.8.Lecram", Url = $"{RhiRepoDownload}/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip", Note = "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.0-RTX40", Url = "dlssnr-310.8.0-RTX40/nvngx_dlssnr_310.8.0-RTX40.zip", Note = "30/40 系" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF-v2", Url = "dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip", Note = "ShortFuse 分支" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.SF", Url = "dlssnr-310.8.SF/nvngx_dlssnr_310.8.SF.zip", Note = "ShortFuse 分支" },
+                new DllExtraEntry { Family = "dlssnr", Version = "310.8.Lecram", Url = "dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip", Note = "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）" },
             ];
 
         foreach (DllExtraEntry extra in extras)
         {
-            if (!string.IsNullOrWhiteSpace(extra.Family) && !string.IsNullOrWhiteSpace(extra.Version) && !string.IsNullOrWhiteSpace(extra.Url))
+            if (string.IsNullOrWhiteSpace(extra.Family) || string.IsNullOrWhiteSpace(extra.Version) || string.IsNullOrWhiteSpace(extra.Url))
             {
-                AddIfMissing(components, extra.Family, extra.Version, extra.Url, extra.Note ?? string.Empty);
+                continue;
             }
+
+            // 完整地址照用；相对路径按来源的 downloadBase 拼，省得在 JSON 里重复整个仓库地址
+            string url = extra.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? extra.Url
+                : $"{DefaultDownloadBase.TrimEnd('/')}/{extra.Url.TrimStart('/')}";
+
+            AddIfMissing(components, extra.Family, extra.Version, url, extra.Note);
         }
 
         return new DllCatalog(components, error);
@@ -208,7 +289,7 @@ public static class DllComponentCatalog
         string family,
         string version,
         string url,
-        string note)
+        string? note)
     {
         if (!components.TryGetValue(family, out List<DllComponent>? list))
         {

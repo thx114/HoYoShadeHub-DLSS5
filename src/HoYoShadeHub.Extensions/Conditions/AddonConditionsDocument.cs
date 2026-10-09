@@ -89,11 +89,36 @@ public sealed class DllExtraEntry
     [JsonPropertyName("version")]
     public string Version { get; set; } = string.Empty;
 
+    /// <summary>完整地址，或 <c>&lt;tag&gt;/&lt;文件&gt;</c> 相对路径（按来源的 downloadBase 拼）</summary>
     [JsonPropertyName("url")]
     public string Url { get; set; } = string.Empty;
 
     [JsonPropertyName("note")]
     public string? Note { get; set; }
+}
+
+/// <summary>
+/// dll 组件清单的来源（dllSources[] 元素）。加第二个来源 / 换镜像 / 换代理只改这份 JSON，不用发版。
+/// </summary>
+public sealed class DllSourceEntry
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("displayName")]
+    public string? DisplayName { get; set; }
+
+    /// <summary>组件清单地址（<c>{ family: [ { version, url } ] }</c>）</summary>
+    [JsonPropertyName("manifest")]
+    public string Manifest { get; set; } = string.Empty;
+
+    /// <summary>下载基址：<c>&lt;base&gt;/&lt;tag&gt;/&lt;文件&gt;</c>；dllExtras 写相对路径时按它拼</summary>
+    [JsonPropertyName("downloadBase")]
+    public string? DownloadBase { get; set; }
+
+    /// <summary>直连不通时按顺序试的公共代理前缀（同 HysxHttp.Apply 的 proxy 参数）</summary>
+    [JsonPropertyName("proxies")]
+    public string[]? Proxies { get; set; }
 }
 
 /// <summary>屏蔽某个组件版本（blockedVersions[] 元素）</summary>
@@ -164,6 +189,13 @@ public sealed class AddonConditionsDocument
 
     [JsonPropertyName("dllExtras")]
     public DllExtraEntry[]? DllExtras { get; set; }
+
+    /// <summary>
+    /// dll 组件清单的来源表（读不到就用 <c>DllComponentCatalog.DefaultSources</c>）。
+    /// 加来源、换镜像、换代理都只改这里 —— 代码不再写死任何仓库地址。
+    /// </summary>
+    [JsonPropertyName("dllSources")]
+    public DllSourceEntry[]? DllSources { get; set; }
 
     [JsonPropertyName("blockedVersions")]
     public BlockedVersionEntry[]? BlockedVersions { get; set; }
