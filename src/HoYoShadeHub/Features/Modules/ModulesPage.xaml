@@ -26,6 +26,12 @@
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
             <Button Click="Button_Refresh_Click" Content="刷新" />
+            <Button Click="Button_AddModuleFromRepo_Click"
+                    Content="从仓库添加"
+                    ToolTipService.ToolTip="填一个 GitHub 仓库就能当模块用 —— 写进用户级的 modules.user.json，不用等启动器发版" />
+            <Button Click="Button_OpenUserCatalog_Click"
+                    Content="用户模块目录"
+                    ToolTipService.ToolTip="直接编辑 .hysx\catalog\modules.user.json（加 / 改 / 下架模块，内置的也能下架）" />
             <TextBlock x:Name="TextBlock_Count"
                        VerticalAlignment="Center"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

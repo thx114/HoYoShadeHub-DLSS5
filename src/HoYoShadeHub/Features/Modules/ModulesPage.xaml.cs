@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Navigation;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 
 namespace HoYoShadeHub.Features.Modules;
@@ -224,6 +225,126 @@ public sealed partial class ModulesPage : PageBase
     }
 
     private void Button_Refresh_Click(object sender, RoutedEventArgs e) => Load();
+
+    /// <summary>
+    /// 从仓库加一个模块：写进用户级 <c>.hysx\catalog\modules.user.json</c>。
+    /// 「加模块要改启动器代码」这件事到此为止 —— 这条路径一行 C# 都不用动，
+    /// 也不用等我们推 catalog/modules.json。
+    /// </summary>
+    private async void Button_AddModuleFromRepo_Click(object sender, RoutedEventArgs e)
+    {
+        var boxId = new TextBox { Header = "模块 id（唯一）", PlaceholderText = "例如 my-dlss-nr" };
+        var boxName = new TextBox { Header = "名称", PlaceholderText = "例如 我的 DLSS-NR" };
+        var boxRepository = new TextBox { Header = "仓库（owner/repo）", PlaceholderText = "例如 someone/some-mod" };
+        var boxTagPattern = new TextBox { Header = "版本 tag 过滤（正则，留空 = ^v?\\d）", PlaceholderText = "^v?\\d" };
+        var boxDllHint = new TextBox { Header = "要注入的 DLL 文件名", PlaceholderText = "version.dll" };
+        var boxDescription = new TextBox
+        {
+            Header = "说明（可选）",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            Height = 64,
+        };
+
+        var form = new StackPanel { Spacing = 10, MinWidth = 420 };
+        foreach (TextBox box in new[] { boxId, boxName, boxRepository, boxTagPattern, boxDllHint, boxDescription })
+        {
+            form.Children.Add(box);
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "从仓库添加模块",
+            Content = new ScrollViewer { Content = form, MaxHeight = 440 },
+            PrimaryButtonText = "添加",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        // 必填的没填就留在窗口里，不关
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            if (string.IsNullOrWhiteSpace(boxId.Text) || string.IsNullOrWhiteSpace(boxRepository.Text))
+            {
+                TextBlock_Status.Text = "「模块 id」和「仓库（owner/repo）」是必填的。";
+                args.Cancel = true;
+            }
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        string id = boxId.Text.Trim();
+        var manifest = new HoYoShadeHub.Extensions.Modules.ModuleManifest
+        {
+            Id = id,
+            Name = string.IsNullOrWhiteSpace(boxName.Text) ? id : boxName.Text.Trim(),
+            Repository = boxRepository.Text.Trim(),
+            TagPattern = string.IsNullOrWhiteSpace(boxTagPattern.Text) ? @"^v?\d" : boxTagPattern.Text.Trim(),
+            DllHint = string.IsNullOrWhiteSpace(boxDllHint.Text) ? "version.dll" : boxDllHint.Text.Trim(),
+            Description = string.IsNullOrWhiteSpace(boxDescription.Text) ? null : boxDescription.Text.Trim(),
+        };
+
+        try
+        {
+            if (!ModuleCatalogFile.AddUserModule(manifest))
+            {
+                TextBlock_Status.Text = $"写不进用户模块目录（{ModuleCatalogFile.UserPath}）—— 文件可能被别的程序占着，或者被手改坏了。";
+                return;
+            }
+
+            Load();
+            TextBlock_Status.Text = $"已加进用户模块目录：{manifest.Name}。"
+                                    + "到左下角「全局插件 → 模块」里下载它，装完回这页就能勾。";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Add module from repository");
+            TextBlock_Status.Text = "添加失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>打开用户级模块目录文件（直接改 JSON 的入口：加 / 改 / 下架模块）</summary>
+    private void Button_OpenUserCatalog_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string path = ModuleCatalogFile.EnsureUserFile();
+            if (path.Length == 0)
+            {
+                TextBlock_Status.Text = "还没读到用户数据目录。";
+                return;
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                TextBlock_Status.Text = $"已打开 {path}（改完回这页点「刷新」）";
+            }
+            catch
+            {
+                // 没有 .json 关联：退到记事本；连记事本都不行就在资源管理器里选中它
+                try
+                {
+                    Process.Start(new ProcessStartInfo("notepad.exe", $"\"{path}\"") { UseShellExecute = true });
+                    TextBlock_Status.Text = $"已用记事本打开 {path}（改完回这页点「刷新」）";
+                }
+                catch
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                    TextBlock_Status.Text = $"文件在这里，右键编辑：{path}";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Open user module catalog");
+            TextBlock_Status.Text = "打开失败：" + ex.Message;
+        }
+    }
 
     /// <summary>这个游戏换模块版本（下拉是 TwoWay 绑定，改 SelectedVersion 就进这里）</summary>
     private void OnModuleVersionChanged(ModuleChoiceItem item, string? version)
