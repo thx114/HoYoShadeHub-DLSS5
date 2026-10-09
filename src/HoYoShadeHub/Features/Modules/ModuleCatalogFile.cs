@@ -52,6 +52,25 @@ public sealed class ModuleManifest
     [JsonPropertyName("removed")]
     public bool Removed { get; set; }
 
+    /// <summary>
+    /// 随包模块：dll 就在启动器自带资源里，不用下载。
+    /// 以前只有 C# 能置 true（schema 里没这个键），于是"加一个随包模块"必须改代码 ——
+    /// 远端能用这个字段之后，随包模块也只是 catalog/modules.json 里的一条。
+    /// </summary>
+    [JsonPropertyName("bundled")]
+    public bool Bundled { get; set; }
+
+    /// <summary>能接受的最低 dll 版本（如 <c>2.3.1</c>）。不写 = 不门控</summary>
+    [JsonPropertyName("minVersion")]
+    public string? MinVersion { get; set; }
+
+    /// <summary>
+    /// 历史安装位置（模板）。支持 <c>{userData}</c> / <c>{modulesCache}</c> / <c>{id}</c> 占位符，
+    /// 相对路径按用户数据目录展开 —— 迁移前装在别处的模块靠它仍然能被认出来，不用改代码。
+    /// </summary>
+    [JsonPropertyName("legacyDirs")]
+    public string[]? LegacyDirs { get; set; }
+
     public ModuleDefinition? ToDefinition()
     {
         if (string.IsNullOrWhiteSpace(Id) || string.IsNullOrWhiteSpace(Repository))
@@ -69,7 +88,10 @@ public sealed class ModuleManifest
             string.IsNullOrWhiteSpace(DllHint) ? "version.dll" : DllHint!,
             Tags,
             DirectFiles,
-            string.IsNullOrWhiteSpace(Branch) ? "main" : Branch!);
+            string.IsNullOrWhiteSpace(Branch) ? "main" : Branch!,
+            Bundled,
+            MinVersion,
+            LegacyDirs);
     }
 }
 

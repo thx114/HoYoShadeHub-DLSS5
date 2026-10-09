@@ -36,7 +36,9 @@ public sealed record ModuleDefinition(
     string[]? Tags = null,
     string[]? DirectFiles = null,
     string Branch = "main",
-    bool Bundled = false)
+    bool Bundled = false,
+    string? MinVersion = null,
+    string[]? LegacyDirs = null)
 {
     /// <summary>
     /// 有些模块压根不发 Release 资产，文件直接躺在仓库树里（比如 dlssg_for_sm86 的
@@ -95,6 +97,10 @@ public static class ModuleRegistry
 
     // Metadata fallback only: the DLL is never shipped inside HoYoShadeHub.
     // The actual module is downloaded from our GitHub release catalog.
+    //
+    // 这一条是**离线兜底**（首跑还没有随包种子缓存时也要认得桥）。正常情况下远端
+    // catalog/modules.json 里同 id 的那条会覆盖它 —— 所以改桥的元数据/最低版本/历史目录
+    // 都改那份 JSON，不用动这里。`removed: true` 也能把它下架。
     private static readonly ModuleDefinition GenshinFsrBridge = new(
         GenshinFsrBridgeId,
         "Genshin FSR Bridge",
@@ -106,7 +112,9 @@ public static class ModuleRegistry
         ["genshin", "fsr", "bridge", "frame-generation"],
         null,
         "main",
-        false);
+        false,
+        "2.3.1",
+        ["{userData}/Modules/{id}", "{modulesCache}/{id}"]);
 
     // The remote catalog may replace this metadata. It must not replace the
     // downloaded module with an app-bundled DLL.
@@ -145,6 +153,13 @@ public static class ModuleRegistry
             {
                 result.Add(module);
             }
+        }
+
+        // 墓碑也作用于内置条目：远端写 removed:true 就能把内置模块下架，不用改代码。
+        // （上面那段对覆盖层的墓碑判断保留，省得先加进表再删。）
+        if (RemovedIds.Count > 0)
+        {
+            result.RemoveAll(m => RemovedIds.Contains(m.Id, StringComparer.OrdinalIgnoreCase));
         }
 
         return result;
@@ -647,15 +662,20 @@ public static class ModuleRegistry
         // Portable overlays may be installed to the pre-migration Modules folder
         // while the active registry uses Cache/modules. Resolve either installed
         // location before claiming the dependency is missing; never manufacture DLLs.
-        if (string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(AppConfig.UserDataFolder))
+        // 历史安装位置由模块自己声明（远端 legacyDirs），不再按 id 写死：
+        // 支持 {userData} / {modulesCache} / {id} 占位符。
+        foreach (string legacy in module.LegacyDirs ?? [])
         {
-            string legacy = Path.Combine(AppConfig.UserDataFolder, "Modules", module.Id);
-            string cached = Path.Combine(AppConfig.ModulesCachePath, module.Id);
-            foreach (string installed in new[] { legacy, cached })
+            string? expanded = ExpandLegacyDir(legacy, module);
+            if (string.IsNullOrWhiteSpace(expanded))
             {
-                string? dll = FindModuleInjectDll(module, installed);
-                if (dll is not null && IsAcceptedModuleDll(module, dll)) return dll;
+                continue;
+            }
+
+            string? dll = FindModuleInjectDll(module, expanded!);
+            if (dll is not null && IsAcceptedModuleDll(module, dll))
+            {
+                return dll;
             }
         }
 
@@ -686,21 +706,49 @@ public static class ModuleRegistry
 
     private static bool IsAcceptedModuleDll(ModuleDefinition module, string path)
     {
-        if (!string.Equals(module.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase))
+        // 最低版本门控（远端 minVersion；桥以前写死 ≥2.3.1）：没声明就不门控。
+        if (string.IsNullOrWhiteSpace(module.MinVersion))
+        {
             return true;
+        }
 
-        // Accept maintained 2.3.x binaries, including the overlay's 2.3.2.
-        // Reject old 2.2 builds without tying support to one exact patch version.
         try
         {
             var version = FileVersionInfo.GetVersionInfo(path);
-            return HoYoShadeHub.Extensions.Games.BridgeCompatibility.IsSupported(
-                new Version(version.FileMajorPart, version.FileMinorPart, version.FileBuildPart, version.FilePrivatePart));
+            var actual = new Version(version.FileMajorPart, version.FileMinorPart, version.FileBuildPart, version.FilePrivatePart);
+
+            return Version.TryParse(module.MinVersion, out Version? floor)
+                ? actual >= floor
+                : HoYoShadeHub.Extensions.Games.BridgeCompatibility.IsSupported(actual);
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>把 <c>legacyDirs</c> 里的占位符换成实际路径；相对路径按用户数据目录展开。</summary>
+    private static string? ExpandLegacyDir(string template, ModuleDefinition module)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return null;
+        }
+
+        string userData = AppConfig.UserDataFolder ?? string.Empty;
+        string expanded = template
+            .Replace("{userData}", userData, StringComparison.OrdinalIgnoreCase)
+            .Replace("{modulesCache}", AppConfig.ModulesCachePath ?? string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("{id}", module.Id, StringComparison.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(expanded))
+        {
+            return null;
+        }
+
+        return Path.IsPathRooted(expanded)
+            ? expanded
+            : string.IsNullOrWhiteSpace(userData) ? null : Path.Combine(userData, expanded);
     }
 
     /// <summary>

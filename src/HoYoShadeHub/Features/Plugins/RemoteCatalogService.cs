@@ -205,31 +205,89 @@ internal static class RemoteCatalogService
     /// <summary>下载一个文件，成功才覆盖（先写临时文件再搬过去，避免半截文件）。</summary>
     private static async Task<bool> TryDownloadAsync(HttpClient client, string fileName, string targetPath, CancellationToken cancellationToken)
     {
-        try
-        {
-            string url = BaseUrl.TrimEnd('/') + "/" + fileName;
-            string json = await client.GetStringAsync(HysxHttp.Apply(url), cancellationToken);
+        string url = BaseUrl.TrimEnd('/') + "/" + fileName;
 
-            if (string.IsNullOrWhiteSpace(json) || json.Length < 16)
+        // 这段时间内已知「直连和公共代理都不通」：别对每个文件再把三档重试一遍
+        // （4 个文件 × 3 档 × 30 秒超时太慢）。到点自然重试。
+        if (DateTimeOffset.UtcNow < _networkDownUntil && _lastGoodProxy is null)
+        {
+            return false;
+        }
+
+        bool networkFailed = false;
+
+        // 第一档 = 已经试通过的那档（没有就用「用户设置里那个代理 / 直连」），
+        // 之后依次兜公共代理 —— raw.githubusercontent.com 在国内常不通，以前没这层兜底时
+        // 远端目录永远拉不到，只能等随包种子（= 发一次版），看起来就像"加模块必须改代码"。
+        foreach (string? proxy in Strategies())
+        {
+            try
             {
+                string json = await client.GetStringAsync(HysxHttp.Apply(url, proxy), cancellationToken);
+
+                if (string.IsNullOrWhiteSpace(json) || json.Length < 16)
+                {
+                    continue;
+                }
+
+                string temp = targetPath + ".tmp";
+                await File.WriteAllTextAsync(temp, json, cancellationToken);
+                File.Move(temp, targetPath, overwrite: true);
+
+                if (proxy is not null && !string.Equals(proxy, _lastGoodProxy, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("Remote catalog {File} fetched via public proxy {Proxy}", fileName, proxy);
+                }
+
+                _lastGoodProxy = proxy;
+                return true;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // 404 = 仓库里还没放这个文件（有些目录是可选的）。这不是网络问题，换代理也一样没有。
+                _logger.LogDebug(ex, "Remote catalog {File} not found upstream", fileName);
                 return false;
             }
+            catch (HttpRequestException ex)
+            {
+                networkFailed = true;
+                _logger.LogDebug(ex, "Remote catalog {File} not fetched (proxy={Proxy})", fileName, proxy ?? "direct");
+            }
+            catch (Exception ex)
+            {
+                networkFailed = true;
+                _logger.LogWarning(ex, "Remote catalog {File} failed (proxy={Proxy})", fileName, proxy ?? "direct");
+            }
+        }
 
-            string temp = targetPath + ".tmp";
-            await File.WriteAllTextAsync(temp, json, cancellationToken);
-            File.Move(temp, targetPath, overwrite: true);
-            return true;
-        }
-        catch (HttpRequestException ex)
+        if (networkFailed)
         {
-            // 404 = 仓库里还没放这个文件；别的 = 网络问题。都按「没拉到」处理
-            _logger.LogDebug(ex, "Remote catalog {File} not fetched", fileName);
-            return false;
+            _networkDownUntil = DateTimeOffset.UtcNow.AddMinutes(2);
         }
-        catch (Exception ex)
+
+        return false;
+    }
+
+    /// <summary>直连不通时兜的公共代理（和组件清单同一套：raw 在国内基本不通）</summary>
+    private static readonly string[] _publicProxies = ["https://gh-proxy.org", "https://ghfast.top"];
+
+    /// <summary>上一次成功用的那档（null = 直连 / 用户自己的代理），下次先试它</summary>
+    private static string? _lastGoodProxy;
+
+    /// <summary>到这个时刻之前不再重试（区分「仓库没文件」和「网络根本不通」）</summary>
+    private static DateTimeOffset _networkDownUntil = DateTimeOffset.MinValue;
+
+    /// <summary>本次要试的档位：上次成功的那档优先，然后剩下的</summary>
+    private static System.Collections.Generic.IEnumerable<string?> Strategies()
+    {
+        yield return _lastGoodProxy;
+
+        foreach (string proxy in _publicProxies)
         {
-            _logger.LogWarning(ex, "Remote catalog {File} failed", fileName);
-            return false;
+            if (!string.Equals(proxy, _lastGoodProxy, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return proxy;
+            }
         }
     }
 }
