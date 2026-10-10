@@ -52,10 +52,27 @@ public static class RocketIntegration
     }
 
     /// <summary>Construct an absolute graphics-only chain. GIMI remains exclusively Rocket-owned.</summary>
-    public static IReadOnlyList<string> BuildGraphicsChain(string bridgeDll, string? optiDll, string? shadeDll)
+    /// <param name="extraDlls">
+    /// 用户在这个游戏勾的其他模块（DLSS-NR / DLSS-Enabler 之类）。链模式下 Hub 不开外部注入器，
+    /// 它们只能由桥在游戏进程内 LoadLibraryW，否则就是「勾了等于没勾」。排在 <c>wait dxgi.dll</c>
+    /// 之后、OptiScaler 之前：先在位，再让 OptiScaler 接管 Present/交换链。
+    /// </param>
+    public static IReadOnlyList<string> BuildGraphicsChain(string bridgeDll, string? optiDll, string? shadeDll,
+        IReadOnlyList<string>? extraDlls = null)
     {
         RequireDll(bridgeDll, "Dx11FsrBridge.dll");
         List<string> steps = ["wait dxgi.dll"];
+        if (extraDlls is not null)
+        {
+            foreach (string extra in extraDlls)
+            {
+                if (string.IsNullOrWhiteSpace(extra)) continue;
+                RequireDll(extra, Path.GetFileName(extra));
+                string full = Path.GetFullPath(extra);
+                if (steps.Any(step => string.Equals(step, "load " + full, StringComparison.OrdinalIgnoreCase))) continue;
+                steps.Add("load " + full);
+            }
+        }
         if (!string.IsNullOrWhiteSpace(optiDll))
         {
             RequireDll(optiDll, "OptiScaler.dll");
@@ -71,11 +88,12 @@ public static class RocketIntegration
         return steps;
     }
 
-    public static PrepareResult EnsureGraphicsChain(string bridgeDll, string? optiDll, string? shadeDll)
+    public static PrepareResult EnsureGraphicsChain(string bridgeDll, string? optiDll, string? shadeDll,
+        IReadOnlyList<string>? extraDlls = null)
     {
         try
         {
-            var steps = BuildGraphicsChain(bridgeDll, optiDll, shadeDll);
+            var steps = BuildGraphicsChain(bridgeDll, optiDll, shadeDll, extraDlls);
             string chain = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(bridgeDll))!, BridgeChainFileName);
             string text = "# Rocket owns GIMI; Hub prepares graphics only, never starts the game.\r\n"
                 + string.Join("\r\n", steps) + "\r\n";

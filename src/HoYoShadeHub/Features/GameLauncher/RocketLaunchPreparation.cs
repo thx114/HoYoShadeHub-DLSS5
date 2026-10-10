@@ -5,6 +5,7 @@ using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Modules;
+using HoYoShadeHub.Features.OptiScaler;
 using HoYoShadeHub.Features.Plugins;
 using System;
 using System.Collections.Generic;
@@ -90,6 +91,9 @@ internal static class RocketLaunchPreparation
         if (opt is not null)
         {
             string build = Path.GetDirectoryName(opt)!;
+            // 火箭模式下 Hub 抓不到进程退出，上一次会话的改动还在主 ini 里：
+            // 在 PrepareGenshinEarlyConfiguration 用 profile 盖掉它之前，先收回来（存 profile + 回写配置）。
+            OptiScalerPresets.CollectFromRuntime(build);
             if (!OptiScalerRuntime.PrepareGenshinEarlyConfiguration(build, gameId.GameBiz.Value))
                 return new(false, "准备 OptiScaler profile/依赖路径失败。");
             if (!OptiScalerRuntime.SetRocketMode(build, true))
@@ -100,7 +104,10 @@ internal static class RocketLaunchPreparation
                 || !OptiScalerRuntime.EnsureFsrBridgeOptiSidecar(bridgeDirectory, build))
                 return new(false, "准备桥的 OptiScaler 配套配置失败。");
         }
-        var chain = RocketIntegration.EnsureGraphicsChain(bridge, opt, shade);
+        // 用户勾的其他模块也写进桥的清单：火箭模式下 Hub 同样不开外部注入器（火箭只负责把桥注进去），
+        // 以前只写图形层，这些模块就静默失效。
+        List<string> chainExtraModules = BridgeChainModules.Resolve(gameId, bridge, opt, shade);
+        var chain = RocketIntegration.EnsureGraphicsChain(bridge, opt, shade, chainExtraModules);
         if (!chain.Success) return chain;
         if (host is not null)
         {
@@ -127,7 +134,9 @@ internal static class RocketLaunchPreparation
             if (controllerDisabled || controllerMissing)
                 addonNote = Environment.NewLine + "你已禁用或未安装深度控制插件：桥深度／NR Input Effects 控制面板不可用；已保留关闭状态，不自动启用。";
         }
-        return result with { Message = RocketIntegration.WaitingText + Environment.NewLine + "桥 DLL：" + bridge + addonNote
+        string extraNote = chainExtraModules.Count == 0 ? "" : Environment.NewLine + "额外模块 " + chainExtraModules.Count
+            + " 个也在链里（GIMI 之后、OptiScaler 之前）：" + string.Join(" → ", chainExtraModules.Select(Path.GetFileName));
+        return result with { Message = RocketIntegration.WaitingText + Environment.NewLine + "桥 DLL：" + bridge + extraNote + addonNote
             + Environment.NewLine + "Rocket 已运行时请在其界面重新读取/确认额外 DLL；Hub 不会自动启动或重启 Rocket。" };
     }
 
@@ -139,12 +148,16 @@ internal static class RocketLaunchPreparation
         string? opt, string? shade)
     {
         var dlls = new List<string>();
+        // 用户勾的其他模块排最前（和 Hub 批量注入路线一致：模块 → OptiScaler → ReShade）
+        dlls.AddRange(BridgeChainModules.Resolve(gameId, opt, shade));
         if (opt is not null) dlls.Add(opt);
         if (shade is not null) dlls.Add(shade);
         if (dlls.Count == 0) return new(false, "请至少启用 OptiScaler 或 HoYoShade。");
         if (opt is not null)
         {
             string build = Path.GetDirectoryName(opt)!;
+            // 同上：先把上一次会话的改动收回它的 profile，再激活这次的 profile
+            OptiScalerPresets.CollectFromRuntime(build);
             if (!OptiScalerRuntime.PrepareGenshinEarlyConfiguration(build, gameId.GameBiz.Value))
                 return new(false, "准备 OptiScaler profile/依赖路径失败。");
             // 非原神没有 GIMI 接管最终 ReShade runtime，别把上一次原神跑留下的 true 带过去。

@@ -77,6 +77,22 @@ internal static class RocketIntegrationTests
             Check(noShade.Count==3&&noShade.All(s=>!s.Contains("ReShade")),"Shade 关闭时不偷偷加载 ReShade");
             Check(!RocketIntegration.EnsureGraphicsChain(bridge,null,null).Success,"没有选图形组件时不假报已就绪");
             Check(!RocketIntegration.EnsureGraphicsChain(bridge,Path.Combine(root,"missing","OptiScaler.dll"),shade).Success,"所选 Opt 缺失时准备失败");
+
+            // 额外模块：链模式下 Hub 不开外部注入器，模块必须进链，否则「勾了等于没勾」
+            string extra1=Path.Combine(root,"DLSS-NR.dll"), extra2=Path.Combine(root,"DLSS-Enabler.dll");
+            File.WriteAllBytes(extra1,[0x4D,0x5A]);
+            File.WriteAllBytes(extra2,[0x4D,0x5A]);
+            List<string> extrasChain=RocketIntegration.BuildGraphicsChain(bridge,opti,shade,[extra1,extra2]).ToList();
+            Check(extrasChain[0]=="wait dxgi.dll","加了额外模块，链第一步仍是 wait dxgi.dll");
+            Check(extrasChain.IndexOf("load "+Path.GetFullPath(extra1))<extrasChain.IndexOf("load "+Path.GetFullPath(opti)),"额外模块排在 OptiScaler 之前");
+            Check(extrasChain[^1]=="load "+Path.GetFullPath(shade),"加了额外模块，ReShade 仍排最后");
+            Check(extrasChain.IndexOf("load "+Path.GetFullPath(extra1))<extrasChain.IndexOf("load "+Path.GetFullPath(extra2)),"额外模块之间保持传入顺序");
+            Check(RocketIntegration.BuildGraphicsChain(bridge,opti,shade,[extra1,extra1]).Count==extrasChain.Count-1,"同一份额外 DLL 不重复写进链");
+            var extraChain=RocketIntegration.EnsureGraphicsChain(bridge,opti,shade,[extra1,extra2]);
+            Check(extraChain.Success&&File.ReadAllText(extraChain.ConfigPath??"").Contains(Path.GetFileName(extra2)),"额外模块真的落到桥的清单文件里");
+            bool extraMissing=false;
+            try{RocketIntegration.BuildGraphicsChain(bridge,opti,shade,[Path.Combine(root,"nope-extra.dll")]);}catch(FileNotFoundException){extraMissing=true;}
+            Check(extraMissing,"额外模块文件不存在时拒绝写链");
             Check(File.ReadAllBytes(bridge).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(opti).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(shade).SequenceEqual(new byte[]{1,2,3}),"准备过程不修改任何 DLL");
             Check(RocketIntegration.FindConfigPath(config)==Path.GetFullPath(config),"用户保存位置优先解析");
             Check(RocketIntegration.FindConfigPath(Path.Combine(root,"bad.ini")) is null,"保存位置失效不偷偷使用另一份 Rocket");

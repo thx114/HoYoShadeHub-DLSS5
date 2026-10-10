@@ -309,11 +309,80 @@ public sealed partial class GameLauncherPage : PageBase
                 IsRocketMode = false;
                 GameState = GameState.GameIsRunning;
                 _logger.LogInformation("Game is running ({name}, {pid})", GameProcess.ProcessName, GameProcess.Id);
+
+                // 这一局是外部启动器（火箭 / 官方启动器 / 命令行）起的：Hub 没参与启动，
+                // 日志快照只能在这里补开一张 —— 不然整局没有 sessions\ 目录，出了问题没证据可看。
+                // 同一个 pid 重复调用只会建一个会话（见 GameSessionLogCollector），Hub 自己启动
+                // 那条路径先建过就直接复用；建会话要扫目录 + 写快照，扔后台别压 UI 线程。
+                Process detected = GameProcess;
+                GameId? gameId = CurrentGameId;
+                _ = Task.Run(() => GameSessionLogCollector.Begin(
+                    gameId, detected.Id, detected.ProcessName, process: detected));
+
                 return true;
             }
         }
         catch { }
         return false;
+    }
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _externalGameWatch;
+    private bool _externalGameWatchBusy;
+
+    /// <summary>
+    /// 外部启动哨兵：火箭模式（以及官方启动器、命令行）起的游戏，Hub 手上没有任何进程句柄，
+    /// 不主动去找就永远进不了「正在游戏中」，这一局的日志快照也不会建。
+    ///
+    /// <para>
+    /// 每 2 秒找一次当前游戏的主程序，找到就设进 <see cref="GameProcess"/>：状态切到「正在游戏中」、
+    /// 退出钩子挂上（这一局的 profile / 配置回写也才有落点）、会话日志开张。游戏退出后
+    /// <see cref="GameProcess"/> 归 null，哨兵接着盯下一局。Hub 自己启动游戏时它什么都不做
+    /// （那时 <see cref="GameProcess"/> 早就有了）。
+    /// </para>
+    ///
+    /// <para>
+    /// 和「点了火箭准备才武装」的做法相比，这个哨兵**不看准备动作**：实测用户第二次直接从
+    /// Rocket 启动（没再点准备）时，Hub 既没进游戏状态、也没留下任何会话日志。
+    /// </para>
+    /// </summary>
+    private void StartExternalGameWatch()
+    {
+        _externalGameWatch ??= DispatcherQueue.CreateTimer();
+        _externalGameWatch.Interval = TimeSpan.FromSeconds(2);
+        _externalGameWatch.Tick -= ExternalGameWatchTick;
+        _externalGameWatch.Tick += ExternalGameWatchTick;
+        _externalGameWatch.Start();
+    }
+
+    private void StopExternalGameWatch() => _externalGameWatch?.Stop();
+
+    private async void ExternalGameWatchTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        // 已经在盯这一局了，或者上一轮还没回来（GetGameProcessAsync 是异步的）→ 不叠
+        if (_externalGameWatchBusy || GameProcess is not null)
+        {
+            return;
+        }
+
+        // 没定位到主程序 / 还在装：没必要扫
+        if (GameInstallPath is null || GameState is GameState.InstallGame)
+        {
+            return;
+        }
+
+        _externalGameWatchBusy = true;
+        try
+        {
+            await CheckGameRunningAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "External game watch");
+        }
+        finally
+        {
+            _externalGameWatchBusy = false;
+        }
     }
 
 
@@ -346,6 +415,14 @@ public sealed partial class GameLauncherPage : PageBase
                 _logger.LogInformation(
                     "OptiScaler ini profile stored on game-exit fallback: {Game} ({Build}, reason={Reason})",
                     gameKey, buildDirectory, reason);
+
+                // 用户要求：挂着某份「配置」进游戏改完，那份配置也要跟着动。
+                // 正常注入路径在 HookInjectedTarget 里做同一件事 —— 但原神多半是走这条兜底退出的，
+                // 少这一步就成了「页面挂着配置、退出却不回写」（配置里的改动永远存不回去）。
+                if (OptiScalerPresets.Follow(buildDirectory, gameKey) is { } followedPreset)
+                {
+                    _logger.LogInformation("OptiScaler config synced back: {Config}", followedPreset);
+                }
             }
         }
         catch (Exception ex)
@@ -559,7 +636,8 @@ public sealed partial class GameLauncherPage : PageBase
         // 注入前等目标进程加载某个模块（如 ReShade64.dll）：把 shade 先注 / OptiScaler 后注定死成
         // 确定顺序，治两条注入路径抢跑导致的 NR 吃不到原生 DLSS 数据（崩铁卡旧帧案）
         string? WaitForModule = null,
-        bool WaitForWindow = false);
+        bool WaitForWindow = false,
+        bool RequireWindow = false);
 
     /// <summary>
     /// 「额外注入 DLL」+「启动 OptiScaler」：等游戏进程出现后把 DLL LoadLibrary 进去。
@@ -807,6 +885,10 @@ public sealed partial class GameLauncherPage : PageBase
                     _logger.LogInformation("Genshin: preserve test layout; do not copy nvngx_dlssg.dll to OptiScaler component root");
                 }
 
+                // 启动体检：按这份生效配置检查构建里该有的运行时文件（缺 nvngx_dlss.dll / dlssg_sm86.dll
+                // 这类以前完全静默，游戏里只是少了菜单项）。只报告不动文件。
+                OptiScalerBuildAuditLog.Write(_logger, buildDirectory);
+
                 // 桥在 specs 里时，原神 mhyprot 会拒绝外部注入 OptiScaler（VirtualAllocEx 拒绝访问）。
                 // 改由已注入的桥在进程内 LoadLibraryW 加载 OptiScaler（不走外部注入 API，mhyprot 拦不到）：
                 // 写 sidecar 到桥 DLL 同目录，桥 initialize() 末尾读它并起线程加载。
@@ -902,6 +984,13 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 OptiScalerRuntime.EnsureFsrBridgeIni(Path.GetDirectoryName(spec.Path) ?? string.Empty);
             }
+        }
+
+        // 鸣潮只等待窗口后注入一次；不要在启动探测阶段抢建图形设备。
+        if (IsWutheringWavesCurrent)
+        {
+            for (int i = 0; i < specs.Count; i++)
+                specs[i] = specs[i] with { WaitForWindow = true, RequireWindow = true };
         }
 
         // 无条件先停掉上一次武装的注入任务：开关全关的启动（空 specs）也必须清掉残留，
@@ -1030,7 +1119,7 @@ public sealed partial class GameLauncherPage : PageBase
         // A process created by Hub's direct early launch cannot be mistaken for
         // a launcher shell that will restart itself. Don't arm another 20-minute
         // wait when that exact game process dies during startup.
-        int maxAttempts = targetProcessId.HasValue ? 1 : 3;
+        int maxAttempts = targetProcessId.HasValue || specs.Any(spec => spec.RequireWindow) ? 1 : 3;
         TimeSpan budget = TimeSpan.FromMinutes(20);
         TimeSpan survivalCheck = TimeSpan.FromSeconds(8);
         DateTime deadline = DateTime.UtcNow + budget;
@@ -1080,6 +1169,8 @@ public sealed partial class GameLauncherPage : PageBase
                 }
 
                 int pid = target.Id;
+                if (specs.Any(spec => spec.RequireWindow))
+                    GameSessionLogCollector.Begin(CurrentGameId, pid, processName, process: target);
                 injectedPids.Add(pid);
                 _logger.LogInformation("{Label} injection attempt {Attempt}/{Max}: {Process} (pid {Pid})",
                     firstLabel, attempt, maxAttempts, processName, pid);
@@ -1113,11 +1204,27 @@ public sealed partial class GameLauncherPage : PageBase
                         {
                             try
                             {
+                                target.Refresh();
                                 if (target.HasExited) { warmupLost = true; break; }
                                 if (target.MainWindowHandle != 0) break;
                             }
                             catch { break; }
                             await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
+                        }
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (spec.RequireWindow)
+                        {
+                            try
+                            {
+                                target.Refresh();
+                                if (target.HasExited || target.MainWindowHandle == 0)
+                                {
+                                    _logger.LogWarning("鸣潮窗口未就绪；取消本次 {Label} 注入（pid {Pid}），不重试当前进程", label, pid);
+                                    NotifyInjectionFailed(label, failureNotes, "鸣潮客户端未出现窗口或已经退出；本次没有加载 DLL，请检查该 PID 的 session 日志。");
+                                    return;
+                                }
+                            }
+                            catch { return; }
                         }
                         _logger.LogInformation("{Label} injection: game window up (pid {Pid}), injecting", label, pid);
                     }
@@ -1149,6 +1256,12 @@ public sealed partial class GameLauncherPage : PageBase
                     if (!ok)
                     {
                         failureNotes.Add($"{name}（pid {pid}）：{error}");
+                        if (spec.RequireWindow)
+                        {
+                            NotifyInjectionFailed(label, failureNotes,
+                                "鸣潮 DLL 加载失败；已停止本次加载链，不继续注入后续 DLL，也不重试进程。");
+                            return;
+                        }
                     }
 
                     DispatcherQueue?.TryEnqueue(() =>
@@ -1228,7 +1341,7 @@ public sealed partial class GameLauncherPage : PageBase
                     return;
                 }
 
-                if (targetProcessId.HasValue)
+                if (targetProcessId.HasValue || specs.Any(spec => spec.RequireWindow))
                 {
                     int? exitCode = null;
                     try { if (target.HasExited) exitCode = target.ExitCode; } catch { }
@@ -1935,6 +2048,13 @@ public sealed partial class GameLauncherPage : PageBase
             // **放统一入口**：以前挂在注入流程里，走别的启动路径的游戏（绝区零）就漏了。
             EnsureGameDlssgForMfg();
 
+            // 鸣潮是自定义条目：不能送进通用 XXMI/HoYoPlay 路由。
+            if (IsWutheringWavesCurrent)
+            {
+                await StartWutheringWithDirectReShadeAsync();
+                return;
+            }
+
             // 「有序注入链」是否可用（见 GenshinLaunchRouting.CanUseOrderedInjectChain）。
             // 可用时 XXMI 退成「只挂 GUI、不注入」（SKIP），Hub 在 CreateProcess 那一刻只注桥，
             // 桥在游戏进程内按清单把 GIMI(d3d11) → OptiScaler → ReShade 依次 LoadLibraryW。
@@ -2243,6 +2363,24 @@ public sealed partial class GameLauncherPage : PageBase
                         else
                         {
                             _logger.LogWarning("有序注入链：找不到 GIMI 的 d3d11.dll，本次跳过模型替换层");
+                        }
+
+                        // ③ 这个游戏勾的其他模块（DLSS-NR / DLSS-Enabler 之类）。链模式下 Hub 故意
+                        //    不开外部注入器，以前桥的内置链又只写 GIMI/OptiScaler/ReShade —— 用户勾了
+                        //    模块却没有任何人注入它，静默失效。放在 GIMI 之后、wait swapchain 之前：
+                        //    和 GIMI 同一时机（设备/交换链建出来之前就位，nvngx、设备包装类模块的要求），
+                        //    又不破坏「GIMI 先于 OptiScaler/ReShade」「ReShade 最后」这两条硬约束。
+                        List<string> chainExtraModules = BridgeChainModules.Resolve(
+                            earlyGenshin, bridgePath, optiPath, earlyShadeDll, gimiLoader, ffx12Path);
+                        foreach (string extraModule in chainExtraModules)
+                        {
+                            chainSteps.Add(OptiScalerRuntime.FsrBridgeChainStep.Load(extraModule));
+                        }
+
+                        if (chainExtraModules.Count != 0)
+                        {
+                            _logger.LogInformation("有序注入链：额外模块 {Count} 个也写进清单（GIMI 之后、OptiScaler 之前）：{Modules}",
+                                chainExtraModules.Count, string.Join(" | ", chainExtraModules.Select(Path.GetFileName)));
                         }
 
                         // OptiScaler/ReShade 必须等游戏真的把交换链建出来（= GIMI 已经包装完设备/
@@ -2745,7 +2883,8 @@ public sealed partial class GameLauncherPage : PageBase
                     return;
                 }
 
-                // 真身目录（鸣潮 = <安装>\Wuthering Waves Game\Binaries\Win64）缺 ReShade.ini 时从宿主模板补
+                // 真身目录（官方 PC 版 <安装>\Wuthering Waves Game\Client\Binaries\Win64，各渠道层级见
+                // WutheringLaunchPaths）缺 ReShade.ini 时从宿主模板补
                 if (host is not null && ShadeBlacklistBypass.RealGameDirectory(_currentGameEntry) is { } realDir)
                 {
                     string realIni = Path.Combine(realDir, "ReShade.ini");
@@ -2889,6 +3028,95 @@ public sealed partial class GameLauncherPage : PageBase
         {
             _logger.LogWarning(ex, "Align ReShade.ini paths");
         }
+    }
+
+    /// <summary>鸣潮专用：DLL 留在 Hub，由 DllInjector 等客户端窗口后加载，绝不调用 inject.exe。</summary>
+    private async Task StartWutheringWithDirectReShadeAsync()
+    {
+        string? directory = VanillaReShadeTargetDirectory;
+        if (string.IsNullOrWhiteSpace(directory)
+            || !File.Exists(Path.Combine(directory, WutheringLaunchPaths.ClientProcessName + ".exe")))
+        {
+            // 以前这里只弹一句"请检查注册的主程序路径"、一个字都不写日志 —— 事后完全查不到它试的是
+            // 哪个目录（实测踩过两次：官方 PC 版中间那层 Client 没覆盖；以及游戏压根没装）。
+            // 现在三种情况分开说，并且把注册路径 + 试过的布局写进日志。
+            string? registered = _currentGameEntry?.GameDirectory;
+            string reason =
+                string.IsNullOrWhiteSpace(registered) ? "这个游戏还没有登记安装路径。"
+                : !Directory.Exists(registered) ? $"登记的安装路径不存在：{registered}（游戏可能没装在这台机器上）。"
+                : $"在 {registered} 下没找到 {WutheringLaunchPaths.ClientProcessName}.exe。";
+
+            _logger.LogWarning(
+                "鸣潮：找不到 {Client}.exe。{Reason} 注册的安装路径 = {Registered}；已试布局 = {Layouts}",
+                WutheringLaunchPaths.ClientProcessName, reason,
+                registered ?? "(未注册安装路径)",
+                registered is null ? "(无)" : string.Join(" / ", WutheringLaunchPaths.KnownLayouts(registered)));
+
+            InAppToast.MainWindow?.Error("鸣潮启动",
+                reason + "\n请把这个游戏的安装路径指向游戏根目录（Wuthering Waves.exe 所在目录），"
+                + "或在 HoYoShade 的游戏设置里重新指定。",
+                12000);
+            return;
+        }
+
+        string? shadeDll = null;
+        if (UseVanillaReShade)
+        {
+            shadeDll = VanillaReShade.PrepareInjection(directory);
+            _logger.LogInformation("鸣潮 ReShade 直接注入：DLL={Dll}；不使用 inject.exe，不部署 dxgi.dll", shadeDll);
+        }
+        else if (VanillaReShade.HasProxyDll(directory))
+        {
+            InAppToast.MainWindow?.Error("鸣潮启动", "游戏本体目录仍有 dxgi.dll 代理。请先处理它，避免代理加载与直接注入混用。", 10000);
+            return;
+        }
+
+        if (CurrentGameId is not { } game || _currentGameEntry?.ExePath is not { } registeredExe)
+            return;
+
+        // 不关闭用户的 XXMI，不通过 HoYoPlay 解析自定义 id。
+        bool manualXxmi = AppConfig.GetXxmiLaunchMode(game) == XxmiLaunchMode.Manual;
+        string clientExe = Path.Combine(directory, WutheringLaunchPaths.ClientProcessName + ".exe");
+        if (UseXxmiInject)
+        {
+            string configError = XxmiInjector.PrepareManualMode(game, _currentGameEntry.DisplayName,
+                Path.GetFileName(clientExe), manual: manualXxmi);
+            if (!string.IsNullOrWhiteSpace(configError))
+            {
+                InAppToast.MainWindow?.Error("鸣潮 XXMI", configError, 10000);
+                return;
+            }
+            if (manualXxmi)
+            {
+                var armed = await XxmiInjector.ArmForManualLaunchAsync(game,
+                    _currentGameEntry.DisplayName, clientExe, System.Threading.CancellationToken.None);
+                if (!armed.Armed)
+                {
+                    InAppToast.MainWindow?.Error("鸣潮 XXMI", armed.Message, 10000);
+                    return;
+                }
+            }
+        }
+
+        StartExtraDllInjection(WutheringLaunchPaths.ClientProcessName, shadeDll,
+            shadeName: "ReShade（鸣潮直接注入）");
+        if (UseInjectMode)
+        {
+            ShowWaitProcessToast(WutheringLaunchPaths.ClientProcessName);
+            _logger.LogInformation("鸣潮注入模式：等待用户启动客户端；窗口就绪后加载选中的 DLL");
+            return;
+        }
+        if (UseXxmiInject && !manualXxmi)
+        {
+            var launch = XxmiInjector.LaunchOfficialBaseline(game, _currentGameEntry.DisplayName, clientExe);
+            if (!launch.Started)
+            {
+                _extraInjectCts?.Cancel();
+                InAppToast.MainWindow?.Error("鸣潮 XXMI", launch.Message, 10000);
+            }
+            return;
+        }
+        await StartCustomGameAsync();
     }
 
     /// <summary>自定义游戏：不注入，直接起它自己的 exe</summary>
