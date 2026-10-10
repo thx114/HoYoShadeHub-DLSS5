@@ -2157,6 +2157,18 @@ public sealed partial class GameLauncherPage : PageBase
                             return;
                         }
                     }
+                    // 官方 XXMI 模式：游戏由 XXMI 创建、GIMI 由 XXMI 注入，Hub 仍走批量注入。
+                    // 这里额外写一张桥的链清单，把「用户勾的其他模块 + OptiScaler」交给桥在进程内
+                    // 加载（原神的外部注入被 mhyprot 挡，只有链里进得去）；ReShade 仍由 inject.exe／
+                    // 规格注入，链里只 wait 不 load，避免同进程两份。
+                    string? officialChain = BridgeChainModules.WriteOfficialModeChain(officialGame);
+                    if (officialChain is not null)
+                    {
+                        _logger.LogInformation(
+                            "官方 XXMI 模式：桥链清单已写入（额外模块 + OptiScaler，ReShade 交给原注入者）：{Steps}",
+                            officialChain);
+                    }
+
                     // This prepares profiles, runtime paths and Bridge autoload before
                     // the official launcher starts its game, never a second Hub process.
                     StartExtraDllInjection(processName);

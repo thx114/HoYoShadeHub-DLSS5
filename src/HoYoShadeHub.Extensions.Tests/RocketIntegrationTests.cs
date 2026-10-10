@@ -100,6 +100,18 @@ internal static class RocketIntegrationTests
             string rewrittenText=File.ReadAllText(rewrittenChain.ConfigPath??"");
             Check(!rewrittenText.Contains(Path.GetFileName(extra1))&&!rewrittenText.Contains(Path.GetFileName(extra2)),"不勾模块时重写链，上次的额外模块被清掉");
             Check(rewrittenText.Contains(Path.GetFileName(opti))&&rewrittenText.Contains(Path.GetFileName(shade)),"重写链后图形层仍在");
+
+            // 官方 XXMI 模式：额外模块进链；ReShade 只 wait 不 load（避免同进程两份）；不写 migoto
+            var official=BridgeChainSteps.OfficialMode(opti,true,[extra1,extra2]);
+            Check(official[0].Verb=="wait"&&official[0].Argument=="dxgi.dll","官方模式链第一步仍是 wait dxgi.dll");
+            Check(!official.Any(s=>s.Verb=="load"&&s.Argument.Contains("ReShade",StringComparison.OrdinalIgnoreCase)),"官方模式链不 load ReShade（ReShade 归 inject.exe/注入规格）");
+            Check(official.Any(s=>s.Verb=="wait"&&s.Argument=="ReShade64.dll"),"开了 ReShade 时链里先 wait 它");
+            Check(official.FindIndex(s=>s.Verb=="load"&&s.Argument==Path.GetFullPath(opti))>official.FindIndex(s=>s.Verb=="wait"&&s.Argument=="ReShade64.dll"),"OptiScaler 排在 ReShade 之后（NR 时序）");
+            Check(official.IndexOf(official.First(s=>s.Verb=="load"&&s.Argument==Path.GetFullPath(extra1)))<official.FindIndex(s=>s.Verb=="load"&&s.Argument==Path.GetFullPath(opti)),"额外模块排在 OptiScaler 之前");
+            Check(!official.Any(s=>s.Verb=="migoto"),"官方模式链不写 migoto（GIMI 归 XXMI，避免两份 d3d11）");
+            Check(!BridgeChainSteps.OfficialMode(opti,false,[extra1]).Any(s=>s.Verb=="wait"&&s.Argument=="ReShade64.dll"),"没开 ReShade 时不白等 15 秒");
+            Check(BridgeChainSteps.OfficialMode(opti,false,[]).Count==3,"没勾其他模块且没开 ReShade 时链只有 wait dxgi → load opt → wait opt");
+            Check(BridgeChainSteps.OfficialMode(opti,true,[]).Count==4,"开了 ReShade 时多一步 wait ReShade64.dll");
             Check(File.ReadAllBytes(bridge).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(opti).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(shade).SequenceEqual(new byte[]{1,2,3}),"准备过程不修改任何 DLL");
             Check(RocketIntegration.FindConfigPath(config)==Path.GetFullPath(config),"用户保存位置优先解析");
             Check(RocketIntegration.FindConfigPath(Path.Combine(root,"bad.ini")) is null,"保存位置失效不偷偷使用另一份 Rocket");

@@ -1,4 +1,7 @@
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Features.Modules;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -91,5 +94,41 @@ internal static class BridgeChainModules
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 官方 XXMI 模式（游戏由 XXMI 创建、GIMI 由 XXMI 注入）也写一张桥的链清单：把
+    /// 「用户勾的其他模块 + OptiScaler」交给桥在进程内加载 —— 原神的外部注入被 mhyprot 挡，
+    /// 只有链里进得去。没桥或没启用 OptiScaler 时什么都不做（返回 null）。
+    /// 链里**不写 migoto**、**不 load ReShade**：GIMI 归 XXMI；ReShade 仍由 inject.exe／注入规格
+    /// 负责，链里只 wait 它（详见 <see cref="BridgeChainSteps.OfficialMode"/>）。
+    /// </summary>
+    public static string? WriteOfficialModeChain(GameId gameId)
+    {
+        if (!RocketIntegration.SupportsGame(gameId.GameBiz.Value))
+        {
+            return null;
+        }
+
+        string? bridge = ModuleRegistry.ResolveInjectionDlls(gameId)
+            .FirstOrDefault(spec => ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath)).DllPath;
+        if (string.IsNullOrWhiteSpace(bridge) || !File.Exists(bridge))
+        {
+            return null;
+        }
+
+        string? opti = AppConfig.GetUseOptiScalerLaunchOption(gameId)
+            ? AppConfig.GetSelectedOptiScalerDll(gameId)
+            : null;
+        if (string.IsNullOrWhiteSpace(opti) || !File.Exists(opti))
+        {
+            return null;
+        }
+
+        bool shade = AppConfig.GetUseHoYoShadeLaunchOption(gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
+        List<string> extras = Resolve(gameId, bridge, opti);
+        string[]? lines = OptiScalerRuntime.WriteFsrBridgeChain(
+            Path.GetDirectoryName(bridge), BridgeChainSteps.OfficialMode(opti, shade, extras));
+        return lines is null ? null : string.Join(" | ", lines);
     }
 }
