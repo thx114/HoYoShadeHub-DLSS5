@@ -71,13 +71,14 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(IsWaitProcessMode));
             OnPropertyChanged(nameof(CanUseXxmiInject));
 
-            // 注入模式：游戏由用户自己拉起来，而 XXMI 必须由它自己启动游戏 —— 两者冲突，
-            // 所以一开注入模式就把「启用XXMI」关掉并提醒（用户要求）
-            if (value && UseXxmiInject && !_isApplyingSavedLaunchOptions)
+            // 注入模式：游戏由用户自己拉起来。XXMI **官方模式**是 XXMI 自己 CreateProcess —— 和它冲突，
+            // 所以一开注入模式就把「启用XXMI」关掉并提醒；XXMI **手动模式**只是把注入器唤起来等进程，可以共存。
+            if (value && UseXxmiInject && !IsXxmiManualLaunchMode && !_isApplyingSavedLaunchOptions)
             {
                 UseXxmiInject = false;
                 DispatcherQueue?.TryEnqueue(() => InAppToast.MainWindow?.Warning("注入模式",
-                    "注入模式下不会替你启动游戏，而 XXMI 要自己把游戏拉起来 —— 两者不能同时用，已把「启用XXMI」关掉。", 10000));
+                    "注入模式下不会替你启动游戏，而 XXMI 官方模式要自己把游戏拉起来 —— 两者不能同时用，已把「启用XXMI」关掉。" +
+                    "想用 XXMI 的话，点它右边的设置改成「手动模式」（只唤起 XXMI 注入器等进程）。", 12000));
             }
 
             if (_isApplyingSavedLaunchOptions || _gameDiscovery is null || _currentGameEntry is null)
@@ -153,8 +154,9 @@ public sealed partial class GameLauncherPage : PageBase
         OnPropertyChanged(nameof(CanUseInjectMode));
         OnPropertyChanged(nameof(IsCustomGameEntry));
 
-        // 老配置里注入模式和 XXMI 都开着：注入模式优先，把 XXMI 关掉
-        if (UseInjectMode && _useXxmiInject)
+        // 老配置里注入模式和 XXMI 官方模式都开着：注入模式优先，把 XXMI 关掉
+        // （手动模式可以共存，不动它）
+        if (UseInjectMode && _useXxmiInject && !IsXxmiManualLaunchMode)
         {
             UseXxmiInject = false;
         }

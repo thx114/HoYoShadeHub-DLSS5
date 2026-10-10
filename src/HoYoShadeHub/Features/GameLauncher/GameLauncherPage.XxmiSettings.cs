@@ -60,6 +60,18 @@ public sealed partial class GameLauncherPage
                 if (config is not null) AppConfig.XxmiRoot = Path.GetDirectoryName(config);
             };
             await dialog.ShowAsync();
+
+            // 启动模式可能刚从「官方」改成「手动」（或反过来）：注入模式下只有手动模式能共存，
+            // 所以这里要重算「启用XXMI」的可用性，并把这个组合已经不合法的勾去掉。
+            OnPropertyChanged(nameof(CanUseXxmiInject));
+            OnPropertyChanged(nameof(CanConfigureXxmi));
+
+            if (UseInjectMode && UseXxmiInject && !CanUseXxmiInject)
+            {
+                UseXxmiInject = false;
+                InAppToast.MainWindow?.Warning("注入模式",
+                    "注入模式下只有 XXMI 手动模式能共存（官方模式要自己启动游戏）—— 已把「启用XXMI」关掉。", 12000);
+            }
         }
         catch (Exception ex)
         {

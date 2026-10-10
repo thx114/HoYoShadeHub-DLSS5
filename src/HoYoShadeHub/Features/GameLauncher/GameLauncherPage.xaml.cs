@@ -177,6 +177,7 @@ public sealed partial class GameLauncherPage : PageBase
             UpdateXxmiInjectVisibility();
             OnPropertyChanged(nameof(RocketVisibility));
             OnPropertyChanged(nameof(CanUseRocket));
+        OnPropertyChanged(nameof(CanConfigureXxmi));
             if (!CanUseRocket && UseRocket) UseRocket = false;
 
             // 帧率解锁：只对原神显示
@@ -726,8 +727,23 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
-    /// <summary>注入模式下不能同时用 XXMI（XXMI 要自己把游戏拉起来）</summary>
-    public bool CanUseXxmiInject => !UseInjectMode && !UseRocket;
+    /// <summary>
+    /// 能不能勾「启用XXMI」：
+    /// <list type="bullet">
+    /// <item>火箭模式独占 GIMI —— 一律不行。</item>
+    /// <item>注入模式下 Hub 不替用户启动游戏，只有 XXMI **手动模式**能共存：它只把 XXMI 注入器唤起来等进程
+    /// （<c>-x &lt;importer&gt; -n</c>），游戏由用户自己的启动器拉起，两个注入器都只是"等"。</item>
+    /// <item>XXMI 官方模式是 XXMI 自己 CreateProcess，Hub 拿不到父句柄 —— 和注入模式直接冲突。</item>
+    /// </list>
+    /// </summary>
+    public bool CanUseXxmiInject => !UseRocket && (!UseInjectMode || IsXxmiManualLaunchMode);
+
+    /// <summary>XXMI 启动模式是不是「手动」（只唤起注入器，不代管游戏进程）</summary>
+    private bool IsXxmiManualLaunchMode
+        => CurrentGameId is { } gameId && AppConfig.GetXxmiLaunchMode(gameId) == XxmiLaunchMode.Manual;
+
+    /// <summary>XXMI 设置按钮能不能点：火箭模式下不能（注入模式下仍然可以，用来把官方模式改成手动模式）</summary>
+    public bool CanConfigureXxmi => !UseRocket;
 
     /// <summary>XXMI 支持这个游戏才显示「启用XXMI」（不支持的游戏显示它没有意义）</summary>
     public Visibility XxmiInjectVisibility
@@ -741,6 +757,7 @@ public sealed partial class GameLauncherPage : PageBase
         OnPropertyChanged(nameof(XxmiInjectVisibility));
         OnPropertyChanged(nameof(RocketVisibility));
         OnPropertyChanged(nameof(CanUseRocket));
+        OnPropertyChanged(nameof(CanConfigureXxmi));
 
         if (XxmiInjectVisibility != Visibility.Visible && _useXxmiInject)
         {
@@ -779,6 +796,7 @@ public sealed partial class GameLauncherPage : PageBase
             if (SetProperty(ref _useXxmiInject, value))
             {
                 OnPropertyChanged(nameof(CanUseRocket));
+        OnPropertyChanged(nameof(CanConfigureXxmi));
                 NotifyLaunchModeChanged();
             }
         }
@@ -1043,6 +1061,7 @@ public sealed partial class GameLauncherPage : PageBase
             OnPropertyChanged(nameof(IsRocketMode));
             OnPropertyChanged(nameof(RocketVisibility));
             OnPropertyChanged(nameof(CanUseRocket));
+        OnPropertyChanged(nameof(CanConfigureXxmi));
             OnPropertyChanged(nameof(RocketInstructionVisibility));
             OnPropertyChanged(nameof(UseFpsUnlock));
             OnPropertyChanged(nameof(FpsUnlockTarget));

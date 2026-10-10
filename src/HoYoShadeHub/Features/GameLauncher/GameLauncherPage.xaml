@@ -737,10 +737,10 @@
                           IsChecked="{x:Bind UseXxmiInject, Mode=TwoWay}"
                           IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
                           Margin="0,1"
-                          ToolTipService.ToolTip="按右侧设置选择 XXMI 启动模式及启动器位置；Rocket 模式由 Rocket 独占 GIMI，此选项禁用。" />
+                          ToolTipService.ToolTip="按右侧设置选择 XXMI 启动模式及启动器位置；Rocket 模式由 Rocket 独占 GIMI，此选项禁用。注入模式下只有「手动模式」能勾（官方模式要自己启动游戏）。" />
                 <Button Click="Button_XxmiLaunchSettings_Click" Padding="8,4" VerticalAlignment="Center"
-                        IsEnabled="{x:Bind CanUseXxmiInject, Mode=OneWay}"
-                        ToolTipService.ToolTip="XXMI 启动设置（Rocket 模式下禁用）">
+                        IsEnabled="{x:Bind CanConfigureXxmi, Mode=OneWay}"
+                        ToolTipService.ToolTip="XXMI 启动设置（Rocket 模式下禁用）。开着注入模式时要在这里改成「手动模式」才能同时用 XXMI。">
                     <FontIcon Glyph="&#xE713;" FontSize="14" />
                 </Button>
             </StackPanel>

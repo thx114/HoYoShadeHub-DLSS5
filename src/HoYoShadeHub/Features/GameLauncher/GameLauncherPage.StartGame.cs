@@ -758,6 +758,14 @@ public sealed partial class GameLauncherPage : PageBase
                 bool isGenshin = ModuleRegistry.IsGenshin(optiGameId);
                 string? buildDirectory = Path.GetDirectoryName(optiScaler);
 
+                // 启动前先把挂着的「配置」重放一遍（配置 → profiles\<游戏>.ini → 主 ini），
+                // 这样在页面里改配置 / 直接改配置 ini，下次启动游戏就会生效
+                if (buildDirectory is not null
+                    && OptiScalerPresets.SyncIntoProfile(buildDirectory, gameKey) is { } launchPreset)
+                {
+                    _logger.LogInformation("OptiScaler config applied on launch: {Config} ({Game})", launchPreset, gameKey);
+                }
+
                 // ini 按游戏分离：注入前把这个游戏的那份激活为主 ini（首次从当前主 ini 继承）。
                 // 必须先 Activate 再钉 OptiDllPath，否则旧 profile（auto）会把修正覆盖掉
                 if (buildDirectory is not null
@@ -1936,7 +1944,10 @@ public sealed partial class GameLauncherPage : PageBase
 
             // Local recovery baseline: official XXMI owns game startup, as in
             // the coexistence run identified by the user. Hub arms its injectors first.
-            if (UseXxmiInject && !UseInjectMode && CurrentGameId is { } officialGame)
+            // 注入模式下也要先把「手动模式」的 XXMI 注入器架起来：它只等进程出现，游戏由用户自己的启动器拉起，
+            // 和 Hub 注入模式的「等进程」是同一种模式。官方模式在注入模式下不成立（见 CanUseXxmiInject）。
+            if (UseXxmiInject && CurrentGameId is { } officialGame
+                && (!UseInjectMode || AppConfig.GetXxmiLaunchMode(officialGame) == XxmiLaunchMode.Manual))
             {
                 string? closeError = await XxmiInjector.CloseExistingLaunchersAsync(System.Threading.CancellationToken.None);
                 if (closeError is not null)
@@ -2074,6 +2085,12 @@ public sealed partial class GameLauncherPage : PageBase
                 string pairedExe = Path.Combine(GameInstallPath!, pairedExeName);
                 string? pairedOpt = EnsureNamedOptiScalerDll(AppConfig.GetSelectedOptiScalerDll(pairedGame), AppConfig.GetOptiScalerDllName(pairedGame));
                 string? pairedBuild = pairedOpt is null ? null : Path.GetDirectoryName(pairedOpt);
+                if (pairedBuild is not null
+                    && OptiScalerPresets.SyncIntoProfile(pairedBuild, pairedGame.GameBiz.Value) is { } pairedPreset)
+                {
+                    _logger.LogInformation("崩铁 SRMI 配套启动：已按配置「{Config}」重放游戏配置", pairedPreset);
+                }
+
                 if (pairedBuild is null || !File.Exists(pairedOpt)
                     || !StarRailXxmiLaunchRouting.HasPairedLoaderExports(pairedSrmiLoader)
                     || !OptiScalerProfiles.Activate(pairedBuild, pairedGame.GameBiz.Value)
@@ -2144,6 +2161,14 @@ public sealed partial class GameLauncherPage : PageBase
                     && !string.IsNullOrWhiteSpace(optiPath) && File.Exists(optiPath))
                 {
                     string? buildDirectory = Path.GetDirectoryName(optiPath);
+
+                    // 启动前先把挂着的「配置」重放一遍（配置 → profiles\<游戏>.ini → 主 ini）
+                    if (buildDirectory is not null
+                        && OptiScalerPresets.SyncIntoProfile(buildDirectory, earlyGenshin.GameBiz.Value) is { } earlyPreset)
+                    {
+                        _logger.LogInformation("原神早期启动：已按配置「{Config}」重放游戏配置", earlyPreset);
+                    }
+
                     if (buildDirectory is null || !OptiScalerRuntime.PrepareGenshinEarlyConfiguration(
                             buildDirectory, earlyGenshin.GameBiz.Value)
                         || !OptiScalerRuntime.SetRocketMode(buildDirectory, false))
