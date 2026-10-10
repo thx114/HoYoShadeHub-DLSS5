@@ -390,10 +390,17 @@ public sealed partial class GameLauncherPage : PageBase
         private set => SetProperty(ref _isRocketWaiting, value);
     }
 
-    public bool CanUseRocket => CurrentGameId is { GameBiz.Game: GameBiz.hk4e } && !UseXxmiInject;
+    /// <summary>
+    /// 这个游戏能不能用火箭模式：要有火箭后端，并且 XXMI 支持它 ——
+    /// 原神 / 崩坏：星穹铁道 / 绝区零 / 鸣潮 / 终末地（崩坏3 火箭没有后端，异环 XXMI 没有导入器）。
+    /// </summary>
+    private bool SupportsRocketForCurrentGame
+        => RocketIntegration.SupportsRocketGame(CurrentGameId?.GameBiz.Value, _currentGameEntry?.DisplayName);
+
+    public bool CanUseRocket => SupportsRocketForCurrentGame && !UseXxmiInject;
     public Visibility RocketInstructionVisibility => UseRocket ? Visibility.Visible : Visibility.Collapsed;
 
-    public Visibility RocketVisibility => CurrentGameId is { GameBiz.Game: GameBiz.hk4e }
+    public Visibility RocketVisibility => SupportsRocketForCurrentGame
         ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>

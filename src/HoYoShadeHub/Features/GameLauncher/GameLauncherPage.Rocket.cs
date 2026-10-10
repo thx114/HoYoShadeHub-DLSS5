@@ -59,7 +59,7 @@ public sealed partial class GameLauncherPage
             var error=new TextBlock { TextWrapping=TextWrapping.Wrap };
             var panel=new StackPanel { Spacing=12 };
             panel.Children.Add(path);panel.Children.Add(browse);
-            panel.Children.Add(new TextBlock { Text="只修改原神的额外 DLL 路径和启用开关，不修改 Rocket 的 GIMI、授权、网络或抓包设置。已运行的 Rocket 可能需要重新读取配置；Hub 不会替你关闭或重启它。", TextWrapping=TextWrapping.Wrap, MaxWidth=500 });
+            panel.Children.Add(new TextBlock { Text="只写 Rocket 的第三方 DLL 位置：原神写 FSR 桥 DLL 路径和启用开关；其他游戏（星铁/绝区零/鸣潮/终末地）写「<游戏名>插件DLL列表」，按顺序注入多份 DLL（OptiScaler 在前、ReShade 在后）。不修改 Rocket 的主 DLL、授权、网络或抓包设置。已运行的 Rocket 可能需要重新读取配置；Hub 不会替你关闭或重启它。", TextWrapping=TextWrapping.Wrap, MaxWidth=500 });
             panel.Children.Add(error);
             var dialog=new ContentDialog { XamlRoot=XamlRoot, Title="Rocket 联动设置",Content=panel,
                 PrimaryButtonText="保存",CloseButtonText="取消",DefaultButton=ContentDialogButton.Primary };

@@ -80,6 +80,41 @@ internal static class RocketIntegrationTests
             Check(File.ReadAllBytes(bridge).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(opti).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(shade).SequenceEqual(new byte[]{1,2,3}),"准备过程不修改任何 DLL");
             Check(RocketIntegration.FindConfigPath(config)==Path.GetFullPath(config),"用户保存位置优先解析");
             Check(RocketIntegration.FindConfigPath(Path.Combine(root,"bad.ini")) is null,"保存位置失效不偷偷使用另一份 Rocket");
+
+            // 多游戏：火箭后端 + XXMI 导入器都有的才算支持（键前缀 = 火箭配置里的中文游戏名）
+            Check(RocketIntegration.GameNameFor("hk4e_cn","原神")=="原神","火箭配置名：原神");
+            Check(RocketIntegration.GameNameFor("hkrpg_cn",null)=="崩坏：星穹铁道","火箭配置名：崩坏：星穹铁道");
+            Check(RocketIntegration.GameNameFor("nap_cn",null)=="绝区零","火箭配置名：绝区零");
+            Check(RocketIntegration.GameNameFor(null,"Wuthering Waves")=="鸣潮","自定义游戏按名字认：鸣潮");
+            Check(RocketIntegration.GameNameFor(null,"Arknights: Endfield")=="终末地","自定义游戏按名字认：终末地");
+            Check(RocketIntegration.GameNameFor(null,"异环") is null,"异环：XXMI 没有导入器，不收");
+            Check(!RocketIntegration.SupportsRocketGame("bh3_cn","崩坏3"),"崩坏3：火箭没有后端，不收");
+            Check(RocketIntegration.SupportsGame("hk4e_cn")&&!RocketIntegration.SupportsGame("hkrpg_cn"),"SupportsGame 仍然只表示原神桥");
+
+            // 插件 DLL 列表：<游戏名>插件DLL列表 / <游戏名>插件启用列表，| 分隔、顺序即注入顺序
+            string pluginTemplate="; keep\r\n[用户设置]\r\n仅显示有Mod角色 = true\r\n原神插件DLL列表 = old1|old2\r\n原神插件启用列表 = 0|0\r\n原神过滤授权 = true\r\n[其他]\r\n原神插件DLL列表 = must-not-touch\r\n";
+            string[] wanted=[bridge,opti,shade];
+            byte[] pluginOut=RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(pluginTemplate),"原神",wanted);
+            string pluginText=Encoding.UTF8.GetString(pluginOut);
+            Check(pluginText.Contains("原神插件DLL列表 = "+string.Join('|',wanted.Select(Path.GetFullPath))),"插件 DLL 列表按顺序写成 | 分隔的绝对路径");
+            Check(pluginText.Contains("原神插件启用列表 = 1|1|1"),"启用列表跟着列表长度写 1");
+            Check(pluginText.Contains("[其他]\r\n原神插件DLL列表 = must-not-touch"),"别的节里同名键不动");
+            Check(pluginText.Contains("; keep")&&pluginText.Contains("原神过滤授权 = true"),"注释与其他键逐字节保留");
+            Check(RocketIntegration.BuildPluginListConfiguration(pluginOut,"原神",wanted).SequenceEqual(pluginOut),"插件列表写入幂等");
+
+            // 键不存在时插到 [用户设置] 节末尾，不越到下一个节
+            string bare="[原神]\r\n原神包名 = YuanShen.exe\r\n\r\n[用户设置]\r\n软件主题 = 1\r\n\r\n[用户选择]\r\n游戏选择 = 3\r\n";
+            string bareOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮",[opti]));
+            Check(bareOut.Contains("[用户设置]\r\n软件主题 = 1\r\n鸣潮插件DLL列表 = "+Path.GetFullPath(opti)+"\r\n鸣潮插件启用列表 = 1\r\n\r\n[用户选择]"),"缺键时插到 [用户设置] 节末尾，不越节");
+            void RejectPlugin(string text,string label)
+            {
+                bool rejected=false;try{RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(text),"原神",[bridge]);}catch(InvalidDataException){rejected=true;}Check(rejected,label);
+            }
+            RejectPlugin("[原神]\r\n原神包名 = a\r\n","没有 [用户设置] 节时拒绝写入");
+            RejectPlugin("[用户设置]\r\n原神插件DLL列表 = a\r\n原神插件DLL列表 = b\r\n","重复插件列表键拒绝歧义");
+            bool missingDll=false;
+            try{RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮",[Path.Combine(root,"nope.dll")]);}catch(FileNotFoundException){missingDll=true;}
+            Check(missingDll,"列表里的 DLL 不存在时拒绝写入");
         }
         finally
         {
