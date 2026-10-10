@@ -777,17 +777,44 @@
                       Margin="0,1"
                       ToolTipService.ToolTip="启动游戏时把这个游戏选中的 OptiScaler 注入进程。选哪个构建在左侧「OptiScaler」页；没装任何构建时这项点不了。只影响这一个游戏。" />
 
+            <!--  鸣潮不显示 HoYoShade 这两项（它改走本体目录的原版 ReShade，见下面那条）  -->
             <CheckBox x:Name="CheckBox_UseHoYoShade"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchHoYoShade}"
                       IsChecked="{x:Bind UseHoYoShade, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsHoYoShadeInstalled}"
+                      Visibility="{x:Bind HoYoShadeRowVisibility, Mode=OneWay}"
                       Margin="0,1" />
 
             <CheckBox x:Name="CheckBox_UseOpenHoYoShade"
                       Content="{x:Bind lang:Lang.GameLauncherPage_LaunchOpenHoYoShade}"
                       IsChecked="{x:Bind UseOpenHoYoShade, Mode=TwoWay}"
                       IsEnabled="{x:Bind IsOpenHoYoShadeInstalled}"
+                      Visibility="{x:Bind HoYoShadeRowVisibility, Mode=OneWay}"
                       Margin="0,1" />
+
+            <!--  鸣潮：原版 ReShade（官方 Addon 版）装进游戏本体进程目录，dxgi.dll 由游戏自己加载。
+                  没装显示「安装 ReShade」；装了显示「启用 ReShade」（取消勾选只是把文件改名停用，文件保留可恢复）。  -->
+            <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind VanillaReShadeVisibility, Mode=OneWay}">
+                <CheckBox x:Name="CheckBox_UseVanillaReShade"
+                          Content="启用 ReShade"
+                          IsChecked="{x:Bind UseVanillaReShade, Mode=TwoWay}"
+                          Visibility="{x:Bind VanillaReShadeToggleVisibility, Mode=OneWay}"
+                          Margin="0,1"
+                          ToolTipService.ToolTip="勾上 = 游戏本体目录里有 dxgi.dll，进游戏就会加载 ReShade，按 Home 开覆盖层。取消勾选只是把文件改名停用（随时勾回来），不删文件。" />
+                <Button x:Name="Button_InstallVanillaReShade"
+                        Content="安装 ReShade"
+                        Click="Button_InstallVanillaReShade_Click"
+                        Visibility="{x:Bind VanillaReShadeInstallVisibility, Mode=OneWay}"
+                        Padding="8,4" VerticalAlignment="Center"
+                        ToolTipService.ToolTip="下载官方「可加载插件」版原版 ReShade，装进游戏本体目录。鸣潮注册的 exe 只是启动器壳，装壳目录不会被游戏加载。" />
+                <Button x:Name="Button_RemoveVanillaReShade"
+                        Click="Button_RemoveVanillaReShade_Click"
+                        Visibility="{x:Bind VanillaReShadeToggleVisibility, Mode=OneWay}"
+                        Padding="6,2" VerticalAlignment="Center"
+                        ToolTipService.ToolTip="卸载：只删本启动器装的那份 dxgi.dll（别人装的 / 改过的不动）。">
+                    <FontIcon Glyph="&#xE74D;" FontSize="12" />
+                </Button>
+            </StackPanel>
 
             <!--  跳过 HoYoShade 的 inject.exe：Hub 自己的注入器等游戏进程注 ReShade64.dll
                   （和鸣潮黑名单绕行同一条路径）。只在勾了 shade 运行时显示。  -->
@@ -795,7 +822,7 @@
                       Content="不用 HoYoShade 注入器"
                       IsChecked="{x:Bind SkipShadeInjector, Mode=TwoWay}"
                       IsEnabled="{x:Bind CanSkipShadeInjector, Mode=OneWay}"
-                      Visibility="{x:Bind IsCustomGameEntry, Mode=OneWay}"
+                      Visibility="{x:Bind SkipShadeInjectorVisibility, Mode=OneWay}"
                       Margin="0,1"
                       ToolTipService.ToolTip="勾上后启动时不走 HoYoShade 的 inject.exe，改由 Hub 自己的注入器等游戏进程出现后直接注 ReShade64.dll（和 OptiScaler 同一套外部注入）。用于实测/绕开 inject.exe 的行为差异。只影响这一个游戏。" />
 

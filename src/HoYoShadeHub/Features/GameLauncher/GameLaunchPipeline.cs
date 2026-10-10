@@ -97,6 +97,14 @@ public static class GameLaunchPipeline
             useOpenHoYoShade = false;
         }
 
+        // 鸣潮走的是「本体进程目录放 dxgi.dll」的原版 ReShade（游戏自己加载），HoYoShade 注入那套对它一律不启用：
+        // 注入会把 ReShade64.dll 也塞进同一个进程，和 dxgi.dll 变成两份 ReShade（崩溃 / 抢钩子）。
+        if (entry is not null && Features.Plugins.GameCatalog.IsWutheringWaves(entry))
+        {
+            useHoYoShade = false;
+            useOpenHoYoShade = false;
+        }
+
         var service = AppConfig.GetService<GameLauncherService>();
         bool useXxmi = AppConfig.GetUseXxmiInjectLaunchOption(gameId);
         bool manualXxmi = AppConfig.GetXxmiLaunchMode(gameId) == XxmiLaunchMode.Manual;
@@ -546,6 +554,13 @@ public static class GameLaunchPipeline
                 && Path.GetDirectoryName(optiScaler) is { Length: > 0 } buildDirectory)
             {
                 string gameKey = gameId.GameBiz.ToString();
+
+                // 启动前先把挂着的「配置」重放一遍：配置 → profiles\<游戏>.ini → 主 ini。
+                // 以前只在切换下拉时才套用，所以改了配置 / 直接改了 ini，下次启动会被旧 profile 覆盖
+                if (OptiScalerPresets.SyncIntoProfile(buildDirectory, gameKey) is { } launchPreset)
+                {
+                    _logger.LogInformation("OptiScaler config applied on launch: {Config} ({Game})", launchPreset, gameKey);
+                }
 
                 OptiScalerProfiles.Activate(buildDirectory, gameKey);
                 OptiScalerRuntime.EnsureConfigDllPath(buildDirectory);

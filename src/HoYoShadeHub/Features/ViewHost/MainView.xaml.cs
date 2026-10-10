@@ -255,22 +255,12 @@ public sealed partial class MainView : UserControl
             bool misplaced = !string.Equals(target, entry.GameDirectory, StringComparison.OrdinalIgnoreCase)
                              && VanillaReShade.HasProxyDll(entry.GameDirectory);
 
-            // 同进程两份 ReShade：Hub 走 HoYoShade 注入时也会注一份 ReShade64.dll
-            bool shadeInject = AppConfig.GetUseHoYoShadeLaunchOption(gameId)
-                               || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
-
             string body = misplaced
                 ? $"之前那份原版 ReShade 装在了 {entry.GameDirectory}（注册目录放的是启动器壳）——" +
                   "那儿的 dxgi.dll 游戏本体不会加载，等于没装。\n\n" +
                   $"要装到本体目录 {target} 吗？装完按 Home 键开覆盖层。"
                 : "鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通。\n\n" +
                   $"要不要下载官方「可加载插件」版原版 ReShade，装到 {target}？装完按 Home 键开覆盖层。";
-
-            if (shadeInject)
-            {
-                body += "\n\n⚠ 这个游戏现在开着 HoYoShade 注入：启动时 Hub 还会再注入一份 ReShade64.dll，" +
-                        "同一个进程里两份 ReShade 可能崩。";
-            }
 
             ContentDialog dialog = new()
             {
@@ -282,23 +272,9 @@ public sealed partial class MainView : UserControl
                 DefaultButton = ContentDialogButton.Primary,
             };
 
-            if (shadeInject)
-            {
-                dialog.SecondaryButtonText = "关掉 HoYoShade 注入再装";
-            }
-
-            ContentDialogResult result = await dialog.ShowAsync();
-
-            if (result == ContentDialogResult.None)
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
             {
                 return;
-            }
-
-            if (result == ContentDialogResult.Secondary)
-            {
-                AppConfig.SetUseHoYoShadeLaunchOption(gameId, false);
-                AppConfig.SetUseOpenHoYoShadeLaunchOption(gameId, false);
-                InAppToast.MainWindow?.Information("原版 ReShade", "已关掉这个游戏的 HoYoShade 注入。", 6000);
             }
 
             InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);

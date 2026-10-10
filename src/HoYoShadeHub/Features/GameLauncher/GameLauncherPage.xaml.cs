@@ -474,6 +474,162 @@ public sealed partial class GameLauncherPage : PageBase
     /// <summary>开了模块 / OptiScaler / 任一 shade 运行时（插件由它加载）时「不用注入器」可勾</summary>
     public bool CanSkipShadeInjector => UseModules || UseOptiScaler || IsShadeLaunchSelected;
 
+    /// <summary>当前游戏是不是鸣潮（自定义条目里认出来的那个）—— 鸣潮走本体目录的原版 ReShade，不用 HoYoShade</summary>
+    private bool IsWutheringWavesCurrent => _currentGameEntry is { } entry && GameCatalog.IsWutheringWaves(entry);
+
+    /// <summary>鸣潮不显示「启用 HoYoShade / 启用 Open HoYoShade」</summary>
+    public Visibility HoYoShadeRowVisibility
+        => IsWutheringWavesCurrent ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>「不用 HoYoShade 注入器」只对自定义游戏显示，鸣潮除外（它已经没有 HoYoShade 这条路）</summary>
+    public Visibility SkipShadeInjectorVisibility
+        => IsCustomGameEntry && !IsWutheringWavesCurrent ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>鸣潮才显示原版 ReShade 那一行</summary>
+    public Visibility VanillaReShadeVisibility
+        => IsWutheringWavesCurrent ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>装了原版 ReShade 才显示「启用 ReShade」勾选框</summary>
+    public Visibility VanillaReShadeToggleVisibility
+        => _isVanillaReShadeInstalled ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>没装原版 ReShade 时这一行显示「安装 ReShade」按钮</summary>
+    public Visibility VanillaReShadeInstallVisibility
+        => _isVanillaReShadeInstalled ? Visibility.Collapsed : Visibility.Visible;
+
+    private bool _useVanillaReShade;
+
+    /// <summary>
+    /// 启用 ReShade（鸣潮）：勾上 = 游戏本体进程目录里 dxgi.dll 在位，游戏启动时自己加载它。
+    /// 勾选状态直接落到文件（启用 / 改名停用），所以一律以磁盘实际状态为准，不另存配置。
+    /// </summary>
+    public bool UseVanillaReShade
+    {
+        get => _useVanillaReShade;
+        set
+        {
+            if (SetProperty(ref _useVanillaReShade, value))
+            {
+                ApplyVanillaReShadeState();
+            }
+        }
+    }
+
+    private bool _isVanillaReShadeInstalled;
+
+    public bool IsVanillaReShadeInstalled
+    {
+        get => _isVanillaReShadeInstalled;
+        set
+        {
+            if (SetProperty(ref _isVanillaReShadeInstalled, value))
+            {
+                OnPropertyChanged(nameof(VanillaReShadeToggleVisibility));
+                OnPropertyChanged(nameof(VanillaReShadeInstallVisibility));
+            }
+        }
+    }
+
+    /// <summary>鸣潮原版 ReShade 的目标目录 = 本体进程目录（注册 exe 只是启动器壳，装壳目录不会被加载）</summary>
+    private string? VanillaReShadeTargetDirectory
+        => _currentGameEntry is { } entry
+            ? VanillaReShade.ResolveTargetDirectory(entry, entry.GameDirectory)
+            : null;
+
+    /// <summary>只读一次磁盘状态刷新界面（不写文件）</summary>
+    private void LoadVanillaReShadeForCurrentClient()
+    {
+        string? target = VanillaReShadeTargetDirectory;
+
+        _isVanillaReShadeInstalled = VanillaReShade.IsInstalled(target);
+        _useVanillaReShade = VanillaReShade.IsActive(target);
+
+        OnPropertyChanged(nameof(IsVanillaReShadeInstalled));
+        OnPropertyChanged(nameof(UseVanillaReShade));
+        OnPropertyChanged(nameof(VanillaReShadeToggleVisibility));
+        OnPropertyChanged(nameof(VanillaReShadeInstallVisibility));
+    }
+
+    /// <summary>把勾选落到文件：启用 = 改名回 dxgi.dll，停用 = 改名保留（不是本启动器装的一律不碰）</summary>
+    private void ApplyVanillaReShadeState()
+    {
+        if (_isApplyingSavedLaunchOptions || !IsWutheringWavesCurrent)
+        {
+            return;
+        }
+
+        string? target = VanillaReShadeTargetDirectory;
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return;
+        }
+
+        if (!VanillaReShade.SetActive(target, _useVanillaReShade, out string message)
+            && !string.IsNullOrWhiteSpace(message))
+        {
+            InAppToast.MainWindow?.Information("原版 ReShade", message, 6000);
+        }
+
+        // 以磁盘实际状态为准回刷：切换失败时勾要弹回原位
+        _useVanillaReShade = VanillaReShade.IsActive(target);
+        OnPropertyChanged(nameof(UseVanillaReShade));
+    }
+
+    /// <summary>鸣潮：下载官方原版 ReShade 并装进游戏本体目录</summary>
+    private async void Button_InstallVanillaReShade_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string? target = VanillaReShadeTargetDirectory;
+
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                InAppToast.MainWindow?.Error("原版 ReShade", "认不出游戏本体目录，没法安装。", 8000);
+                return;
+            }
+
+            // 目录里已经有别人的 dxgi.dll（别的 ReShade / OptiScaler 代理）—— 覆盖前先问一句
+            if (VanillaReShade.HasProxyDll(target) && !VanillaReShade.IsInstalled(target))
+            {
+                ContentDialog confirm = new()
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "原版 ReShade",
+                    Content = $"{target} 里已经有一个 dxgi.dll（不是本启动器装的），多半是别的 ReShade 或 OptiScaler 代理。\n\n" +
+                              "继续会把它覆盖掉，确定吗？",
+                    PrimaryButtonText = "覆盖安装",
+                    CloseButtonText = "取消",
+                    DefaultButton = ContentDialogButton.Close,
+                };
+
+                if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+                {
+                    return;
+                }
+            }
+
+            InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);
+            string installed = await VanillaReShade.InstallToGameAsync(target, null, default);
+            LoadVanillaReShadeForCurrentClient();
+            InAppToast.MainWindow?.Success("原版 ReShade", $"已装进 {installed}（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
+        }
+        catch (Exception ex)
+        {
+            InAppToast.MainWindow?.Error("原版 ReShade", "下载 / 安装失败：" + ex.Message, 10000);
+        }
+    }
+
+    /// <summary>鸣潮：卸载原版 ReShade（只删本启动器装的那份）</summary>
+    private void Button_RemoveVanillaReShade_Click(object sender, RoutedEventArgs e)
+    {
+        string? target = VanillaReShadeTargetDirectory;
+
+        VanillaReShade.RemoveFromGame(target, out string message);
+        LoadVanillaReShadeForCurrentClient();
+        InAppToast.MainWindow?.Information("原版 ReShade", message, 8000);
+    }
+
     /// <summary>本地库里有没有装好的 OptiScaler 构建</summary>
     private static bool HasInstalledOptiScaler()
     {
@@ -898,6 +1054,24 @@ public sealed partial class GameLauncherPage : PageBase
 
             // 注入模式：跟着当前客户端走，也存进游戏条目
             LoadInjectModeForCurrentClient();
+
+            // 鸣潮：HoYoShade 那两项既不显示也不用（改成「启用 ReShade」= 本体目录 dxgi.dll）。
+            // 两边同时开就是同一个进程里两份 ReShade（抢钩子 / 崩），所以这里直接清零，落库时写回去。
+            OnPropertyChanged(nameof(HoYoShadeRowVisibility));
+            OnPropertyChanged(nameof(SkipShadeInjectorVisibility));
+            OnPropertyChanged(nameof(VanillaReShadeVisibility));
+
+            if (IsWutheringWavesCurrent)
+            {
+                _useHoYoShade = false;
+                _useOpenHoYoShade = false;
+                OnPropertyChanged(nameof(UseHoYoShade));
+                OnPropertyChanged(nameof(UseOpenHoYoShade));
+                OnPropertyChanged(nameof(IsShadeLaunchSelected));
+                OnPropertyChanged(nameof(CanSkipShadeInjector));
+            }
+
+            LoadVanillaReShadeForCurrentClient();
 
             // AI 插帧（NVIDIA Smooth Motion）：读驱动里这个游戏条目的开关状态
             LoadSmoothMotionForCurrentClient();

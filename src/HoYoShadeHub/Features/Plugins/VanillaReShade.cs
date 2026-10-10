@@ -46,6 +46,9 @@ internal static class VanillaReShade
     /// <summary>安装标记：记下这份 dxgi.dll 是本启动器装的、哪个版本、哈希多少 —— 移除时只删自己那份</summary>
     public const string MarkerFileName = ".hysx-vanilla-reshade.json";
 
+    /// <summary>停用时 dxgi.dll 改成的名字（文件保留，勾回去就能恢复）</summary>
+    public const string InactiveFileName = "dxgi.dll.hysx-off";
+
     private const string MarkerVersionKey = "version";
     private const string MarkerHashKey = "sha256";
     private const string MarkerInstalledKey = "installed";
@@ -60,8 +63,86 @@ internal static class VanillaReShade
             ? real
             : (string.IsNullOrWhiteSpace(registeredDirectory) ? null : registeredDirectory);
 
-    /// <summary>这个目录里是不是本启动器装的原版 ReShade（认安装标记）</summary>
-    public static bool IsInstalled(string? directory) => ReadMarker(directory) is not null;
+    /// <summary>这个目录里是不是本启动器装的原版 ReShade（认安装标记，且文件还在）</summary>
+    public static bool IsInstalled(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || ReadMarker(directory) is null)
+        {
+            return false;
+        }
+
+        return File.Exists(Path.Combine(directory, "dxgi.dll"))
+               || File.Exists(Path.Combine(directory, InactiveFileName));
+    }
+
+    /// <summary>原版 ReShade 现在是启用状态吗（dxgi.dll 在位，游戏进程会加载它）</summary>
+    public static bool IsActive(string? directory)
+        => !string.IsNullOrWhiteSpace(directory) && File.Exists(Path.Combine(directory, "dxgi.dll"));
+
+    /// <summary>
+    /// 启用 / 停用原版 ReShade。停用 = 把 dxgi.dll 改名成 <see cref="InactiveFileName"/>（文件保留，随时勾回来），
+    /// <b>不是本启动器装的那份一律不碰</b>。
+    /// </summary>
+    public static bool SetActive(string? directory, bool active, out string message)
+    {
+        message = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            message = "没有可用的游戏目录。";
+            return false;
+        }
+
+        string activePath = Path.Combine(directory, "dxgi.dll");
+        string inactivePath = Path.Combine(directory, InactiveFileName);
+
+        try
+        {
+            if (active)
+            {
+                if (File.Exists(activePath))
+                {
+                    return true;
+                }
+
+                if (!File.Exists(inactivePath))
+                {
+                    message = "目录里没有可启用的 ReShade 文件，请先点「安装 ReShade」。";
+                    return false;
+                }
+
+                File.Move(inactivePath, activePath);
+                Logger.LogInformation("原版 ReShade 已启用：{Dir}", directory);
+                return true;
+            }
+
+            if (!File.Exists(activePath))
+            {
+                return true;
+            }
+
+            if (!IsInstalled(directory))
+            {
+                message = "这个 dxgi.dll 不是本启动器装的，没有动它。";
+                return false;
+            }
+
+            if (File.Exists(inactivePath))
+            {
+                File.Delete(inactivePath);
+            }
+
+            File.Move(activePath, inactivePath);
+            Logger.LogInformation("原版 ReShade 已停用（文件保留，可再勾回来）：{Dir}", directory);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "切换原版 ReShade 状态失败：{Dir}", directory);
+            message = "切换失败：" + ex.Message;
+            return false;
+        }
+    }
 
     /// <summary>目录里有没有 dxgi.dll（不区分谁装的）</summary>
     public static bool HasProxyDll(string? directory)
@@ -91,19 +172,34 @@ internal static class VanillaReShade
 
         string markerPath = Path.Combine(directory, MarkerFileName);
         string dllPath = Path.Combine(directory, "dxgi.dll");
+        string inactivePath = Path.Combine(directory, InactiveFileName);
 
         try
         {
+            if (File.Exists(dllPath)
+                && !string.Equals(TryHash(dllPath), marker.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(markerPath);
+                message = "dxgi.dll 已被替换或改动，没有删除（安装记录已清除）。";
+                return false;
+            }
+
+            if (File.Exists(inactivePath)
+                && !string.Equals(TryHash(inactivePath), marker.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(markerPath);
+                message = $"{InactiveFileName} 已被替换或改动，没有删除（安装记录已清除）。";
+                return false;
+            }
+
             if (File.Exists(dllPath))
             {
-                if (!string.Equals(TryHash(dllPath), marker.Sha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    File.Delete(markerPath);
-                    message = "dxgi.dll 已被替换或改动，没有删除（安装记录已清除）。";
-                    return false;
-                }
-
                 File.Delete(dllPath);
+            }
+
+            if (File.Exists(inactivePath))
+            {
+                File.Delete(inactivePath);
             }
 
             File.Delete(markerPath);
