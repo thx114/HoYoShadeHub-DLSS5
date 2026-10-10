@@ -1660,7 +1660,8 @@ public static class LauncherActionRunner
             OptiScalerDllPath = AppConfig.GetSelectedOptiScalerDll(context.GameId),
         };
 
-        List<Dlss5CompatItem> items = await Dlss5CompatibilityCheck.RunAsync(compatContext);
+        // RunAsync 内部是同步读盘（没有真正的 await）：挪到线程池，别冻结调用它的 UI 线程
+        List<Dlss5CompatItem> items = await Task.Run(() => Dlss5CompatibilityCheck.RunAsync(compatContext));
         List<Dlss5CompatItem> problems = [.. items.Where(i => i.Level is Dlss5CheckLevel.Warning or Dlss5CheckLevel.Error)];
         string summary = problems.Count == 0
             ? $"兼容性检测通过（{items.Count} 项全绿）"

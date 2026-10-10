@@ -103,6 +103,16 @@ internal sealed class XxmiLocator
     public static bool SupportsGame(string? gameBiz, string? gameName)
         => ImporterForGame(gameBiz, gameName) is not null;
 
+    /// <summary>
+    /// 「上次全盘没找到」的冷却到期时刻（UTC）。没装 XXMI 时，兼容性检测 / 重新检测 / 每次修复后重检 /
+    /// 进「模型替换」页都会各触发一次全盘浅扫，冷却期内直接返回 null；只放内存 ——
+    /// 不往 DB 写负值（<c>hysx_xxmi_root</c> 的语义是「找到了」）。
+    /// 手动指定（<see cref="AppConfig.XxmiRoot"/>）走上面的早返回，不受冷却影响。
+    /// </summary>
+    private static DateTime _notFoundUntilUtc = DateTime.MinValue;
+
+    private const int NotFoundCooldownSeconds = 60;
+
     /// <summary>XXMI 根目录（没有配置 / 启动器 / 任何 MI 实例就不算）</summary>
     public static string? FindRoot()
     {
@@ -115,7 +125,13 @@ internal sealed class XxmiLocator
                 return _cachedRoot;
             }
 
+            if (DateTime.UtcNow < _notFoundUntilUtc)
+            {
+                return null;
+            }
+
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            const double scanBudgetSeconds = 8;
 
             // 便宜来源（手动配置 / AppData / 开始菜单 / 注册表）：立刻过完
             foreach (string candidate in RootCandidatesFast())
@@ -133,15 +149,21 @@ internal sealed class XxmiLocator
                 }
             }
 
-            // 全盘浅扫是慢路径（机械盘 3 层枚举可达 1-2 分钟）：加 8 秒时间盒，
-            // 找不到本次放弃（让用户到「模型替换」页手动指定），不再卡死启动流程
+            // 全盘浅扫是慢路径（机械盘 3 层枚举可达 1-2 分钟）：8 秒时间盒。
+            //
+            // 时间盒必须跟着「枚举推进」走。以前 DriveScanRoots 在迭代器里做 IsXxmiRoot 过滤，
+            // 没装 XXMI 时一个候选都 yield 不出来 → 这个循环体（连同下面的超时判断）一次都不执行
+            // → 枚举照样把每块固定盘 3 层扫完才返回（SSD 上实测 64.8 秒，再点一次还是 64.8 秒）。
+            // 现在过滤搬回循环体，超时判断按目录逐个执行，8 秒是硬上限。
             foreach (string candidate in DriveScanRoots())
             {
-                if (sw.Elapsed.TotalSeconds > 8)
+                if (sw.Elapsed.TotalSeconds > scanBudgetSeconds)
                 {
-                    Logger.LogWarning("XXMI 全盘搜索超过 8 秒未定位根目录，放弃本次（可在「模型替换」页手动指定）");
+                    Logger.LogWarning("XXMI 全盘搜索超过 {Seconds} 秒未定位根目录，放弃本次（可在「模型替换」页手动指定）", scanBudgetSeconds);
+                    _notFoundUntilUtc = DateTime.UtcNow.AddSeconds(NotFoundCooldownSeconds);
                     return null;
                 }
+
                 try
                 {
                     if (IsXxmiRoot(candidate))
@@ -155,6 +177,7 @@ internal sealed class XxmiLocator
                 }
             }
 
+            _notFoundUntilUtc = DateTime.UtcNow.AddSeconds(NotFoundCooldownSeconds);
             return null;
         }
         catch (Exception ex)
@@ -166,6 +189,7 @@ internal sealed class XxmiLocator
         {
             Logger.LogInformation("XXMI 根目录：{Root}", root);
             _cachedRoot = root;
+            _notFoundUntilUtc = DateTime.MinValue;
             if (string.IsNullOrWhiteSpace(AppConfig.XxmiRoot))
             {
                 try
@@ -560,9 +584,13 @@ internal sealed class XxmiLocator
         }
     }
 
-    /// <summary>全盘浅扫（慢路径；FindRoot 已加时间盒）</summary>
+    /// <summary>
+    /// 全盘浅扫（慢路径）：<b>只枚举、不过滤</b> —— 过滤和 8 秒时间盒都在 <see cref="FindRoot"/> 的
+    /// 循环体里，时间盒才真的能限时（过滤留在迭代器里会让「找不到」的分支永远不进入循环体）。
+    /// </summary>
     private static IEnumerable<string> DriveScanRoots()
-    {        foreach (DriveInfo drive in DriveInfo.GetDrives())
+    {
+        foreach (DriveInfo drive in DriveInfo.GetDrives())
         {
             if (drive.DriveType != DriveType.Fixed || !drive.IsReady)
             {
@@ -571,10 +599,7 @@ internal sealed class XxmiLocator
 
             foreach (string dir in ShallowDirectories(drive.RootDirectory.FullName, 3))
             {
-                if (IsXxmiRoot(dir))
-                {
-                    yield return dir;
-                }
+                yield return dir;
             }
         }
     }

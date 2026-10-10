@@ -877,9 +877,10 @@ public sealed partial class XxmiPage : PageBase
     /// （ini 头写着 intended to be loaded by XXMI Launcher），我们用 3dmloader 的 Inject 把它塞进游戏进程
     /// 能成功加载，但它完全不初始化（连 d3d11_log.txt 都不写），所以注入这条路先不做。
     /// </summary>
-    private void Button_LaunchXxmi_Click(object sender, RoutedEventArgs e)
+    private async void Button_LaunchXxmi_Click(object sender, RoutedEventArgs e)
     {
-        string? root = XxmiLocator.FindRoot();
+        // 没装 XXMI 时这是全盘浅扫（8 秒上限）：别在 UI 线程上跑，否则点一下卡 8 秒
+        string? root = await Task.Run(XxmiLocator.FindRoot);
 
         if (root is null)
         {
