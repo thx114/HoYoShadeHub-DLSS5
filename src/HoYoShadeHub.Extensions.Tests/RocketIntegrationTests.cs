@@ -93,6 +93,13 @@ internal static class RocketIntegrationTests
             bool extraMissing=false;
             try{RocketIntegration.BuildGraphicsChain(bridge,opti,shade,[Path.Combine(root,"nope-extra.dll")]);}catch(FileNotFoundException){extraMissing=true;}
             Check(extraMissing,"额外模块文件不存在时拒绝写链");
+            Check(RocketIntegration.EnsureGraphicsChain(bridge,opti,shade,[extra1,extra2]).BackupPath is null,"带额外模块的链重复准备幂等");
+
+            // 可逆：不勾模块时重写链，上一次写进去的额外模块必须消失（不能残留）
+            var rewrittenChain=RocketIntegration.EnsureGraphicsChain(bridge,opti,shade);
+            string rewrittenText=File.ReadAllText(rewrittenChain.ConfigPath??"");
+            Check(!rewrittenText.Contains(Path.GetFileName(extra1))&&!rewrittenText.Contains(Path.GetFileName(extra2)),"不勾模块时重写链，上次的额外模块被清掉");
+            Check(rewrittenText.Contains(Path.GetFileName(opti))&&rewrittenText.Contains(Path.GetFileName(shade)),"重写链后图形层仍在");
             Check(File.ReadAllBytes(bridge).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(opti).SequenceEqual(new byte[]{1,2,3})&&File.ReadAllBytes(shade).SequenceEqual(new byte[]{1,2,3}),"准备过程不修改任何 DLL");
             Check(RocketIntegration.FindConfigPath(config)==Path.GetFullPath(config),"用户保存位置优先解析");
             Check(RocketIntegration.FindConfigPath(Path.Combine(root,"bad.ini")) is null,"保存位置失效不偷偷使用另一份 Rocket");
@@ -131,6 +138,16 @@ internal static class RocketIntegrationTests
             bool missingDll=false;
             try{RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮",[Path.Combine(root,"nope.dll")]);}catch(FileNotFoundException){missingDll=true;}
             Check(missingDll,"列表里的 DLL 不存在时拒绝写入");
+
+            // 可逆：清空插件列表 = 值留空、无残留、幂等；键不存在时一个字都不改
+            byte[] cleared=RocketIntegration.BuildClearedPluginListConfiguration(pluginOut,"原神");
+            string clearedText=Encoding.UTF8.GetString(cleared);
+            Check(clearedText.Contains("原神插件DLL列表 = \r\n")&&clearedText.Contains("原神插件启用列表 = \r\n"),"清空插件列表=两个键都留空");
+            Check(!clearedText.Contains(Path.GetFullPath(opti))&&!clearedText.Contains(Path.GetFullPath(bridge)),"清空后不残留任何 DLL 路径");
+            Check(clearedText.Contains("[其他]\r\n原神插件DLL列表 = must-not-touch"),"清空不越过节去动别的节");
+            Check(RocketIntegration.BuildClearedPluginListConfiguration(cleared,"原神").SequenceEqual(cleared),"清空幂等");
+            Check(Encoding.UTF8.GetString(RocketIntegration.BuildClearedPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮"))==bare,"键不存在时清空是空操作（不插空键）");
+            Check(!RocketIntegration.ClearPluginList(null,"鸣潮").Success&&!RocketIntegration.ClearPluginList(Path.Combine(root,"no-config.ini"),"鸣潮").Success,"没有 config.ini 时清空报失败而不是假装成功");
         }
         finally
         {

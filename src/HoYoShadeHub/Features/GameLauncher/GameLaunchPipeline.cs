@@ -543,6 +543,18 @@ public static class GameLaunchPipeline
             _logger.LogInformation("已撤走 FSR Bridge 的 OptiScaler autoload 清单（本次没启用 OptiScaler）");
         }
 
+        // ①'' 桥永远优先读链清单。CLI/auto.json 这条路只写 autoload（OptiScaler 外部注入），
+        //      所以上一次「有序注入链」留下的清单必须撤走 —— 否则它会照旧把链里那几层（含用户
+        //      上次勾的额外模块）全部拉进进程，看起来就是「取消勾选的 DLL 还在注入」。
+        if (bridgeSpec is not null)
+        {
+            string? chainDirectory = Path.GetDirectoryName(bridgeSpec.Path);
+            if (OptiScalerRuntime.RemoveFsrBridgeChain(chainDirectory, out string? staleChain))
+            {
+                _logger.LogInformation("CLI/auto.json 注入路线：已撤走上一次留下的桥链清单 {Path}", staleChain);
+            }
+        }
+
         // ② OptiScaler：勾了「启用OptiScaler」+ 这个游戏选过构建
         if (optiScalerWanted)
         {
@@ -581,6 +593,11 @@ public static class GameLaunchPipeline
                 {
                     _logger.LogInformation("Genshin: preserve test layout; do not copy nvngx_dlssg.dll to OptiScaler component root");
                 }
+
+                // 启动体检：按这份生效配置检查构建里该有的运行时文件。缺 nvngx_dlss.dll / dlssg_sm86.dll
+                // 这类以前是完全静默的 —— 游戏里只是菜单少了选项，日志里一个字都没有，只能靠人猜。
+                // 只报告不动文件；补齐走「全局插件 → OptiScaler」。
+                OptiScalerBuildAuditLog.Write(_logger, buildDirectory);
 
                 // 原神 mhyprot 拒绝外部注入：有桥就让桥在进程内 LoadLibrary（写 sidecar 清单）
                 if (bridgeSpec is not null)

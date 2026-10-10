@@ -143,14 +143,30 @@ public static class RocketIntegration
         if (string.IsNullOrWhiteSpace(gameName)) throw new InvalidDataException("缺少火箭配置里的游戏名。");
         if (dllPaths.Count == 0) throw new InvalidDataException("插件 DLL 列表为空。");
         foreach (string path in dllPaths) RequirePluginDll(path);
+        return BuildPluginListValues(original, gameName,
+            string.Join(PluginListSeparator, dllPaths.Select(Path.GetFullPath)),
+            string.Join(PluginListSeparator, dllPaths.Select(_ => "1")), insertIfMissing: true);
+    }
+
+    /// <summary>
+    /// 把插件列表清空（取消勾选火箭模式时的可逆动作）：值留空 = Rocket 没东西可注。
+    /// 键本来就不存在时**不插空键**（只返回原样），所以对没用过这个机制的游戏是彻底的空操作。
+    /// </summary>
+    public static byte[] BuildClearedPluginListConfiguration(byte[] original, string gameName)
+    {
+        if (string.IsNullOrWhiteSpace(gameName)) throw new InvalidDataException("缺少火箭配置里的游戏名。");
+        return BuildPluginListValues(original, gameName, "", "", insertIfMissing: false);
+    }
+
+    private static byte[] BuildPluginListValues(byte[] original, string gameName, string dllValue, string enabledValue,
+        bool insertIfMissing)
+    {
 
         bool bom = original.Length >= 3 && original[0] == 0xEF && original[1] == 0xBB && original[2] == 0xBF;
         string text = new UTF8Encoding(false, true).GetString(original, bom ? 3 : 0, original.Length - (bom ? 3 : 0));
         string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         string dllKey = gameName + "插件DLL列表";
         string enabledKey = gameName + "插件启用列表";
-        string dllValue = string.Join(PluginListSeparator, dllPaths.Select(Path.GetFullPath));
-        string enabledValue = string.Join(PluginListSeparator, dllPaths.Select(_ => "1"));
 
         var lines = new List<(int Start, int Length, string Text)>();
         foreach (Match match in Regex.Matches(text, @"[^\r\n]*(?:\r\n|\n|\r|$)"))
@@ -194,7 +210,7 @@ public static class RocketIntegration
             throw new InvalidDataException("Rocket 配置缺少 [用户设置] 节，无法写入插件 DLL 列表；未修改配置。");
 
         string updated = string.Concat(lines.Select(x => x.Text));
-        if (dllCount == 0 || enabledCount == 0)
+        if (insertIfMissing && (dllCount == 0 || enabledCount == 0))
         {
             string added = "";
             if (dllCount == 0) added += dllKey + " = " + dllValue + newline;
@@ -240,6 +256,24 @@ public static class RocketIntegration
             return new(true, WaitingText, Path.GetFullPath(configPath), backup);
         }
         catch (Exception ex) { return new(false, "准备 Rocket 插件列表失败：" + ex.Message, configPath); }
+    }
+
+    /// <summary>
+    /// 清空这个游戏的插件 DLL 列表（撤掉火箭模式的可逆动作）：带备份、幂等，
+    /// 键本来就不存在时一个字都不改（对没用过这个机制的游戏是彻底空操作）。
+    /// </summary>
+    public static PrepareResult ClearPluginList(string? configPath, string gameName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
+                return new(false, "找不到 Rocket config.ini。", configPath);
+            byte[] original = File.ReadAllBytes(configPath);
+            byte[] updated = BuildClearedPluginListConfiguration(original, gameName);
+            string? backup = WriteBackedUp(configPath, updated, "hysx-rocket-clear", original);
+            return new(true, "已清空 " + gameName + " 的插件 DLL 列表。", Path.GetFullPath(configPath), backup);
+        }
+        catch (Exception ex) { return new(false, "清空 Rocket 插件列表失败：" + ex.Message, configPath); }
     }
 
     public static PrepareResult Prepare(string? configPath, string bridgeDllPath)

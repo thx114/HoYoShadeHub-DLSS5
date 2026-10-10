@@ -99,6 +99,8 @@ public sealed partial class GameLauncherPage : PageBase
     {
         InitializeGameFeature();
         CheckGameVersion();
+        // 火箭模式那类「Hub 不启动游戏」的路线：自己找进程，进了游戏才有状态、才有会话日志
+        StartExternalGameWatch();
         CheckShadeInstallation();
         _ = InitializeGameServerAsync();
         _ = InitializeBackgameImageSwitcherAsync();
@@ -116,6 +118,7 @@ public sealed partial class GameLauncherPage : PageBase
     {
         WeakReferenceMessenger.Default.UnregisterAll(this);
         _dispatchTimer.Stop();
+        StopExternalGameWatch();
         BackgroundImages = null!;
     }
 
@@ -508,8 +511,7 @@ public sealed partial class GameLauncherPage : PageBase
     private bool _useVanillaReShade;
 
     /// <summary>
-    /// 启用 ReShade（鸣潮）：勾上 = 游戏本体进程目录里 dxgi.dll 在位，游戏启动时自己加载它。
-    /// 勾选状态直接落到文件（启用 / 改名停用），所以一律以磁盘实际状态为准，不另存配置。
+    /// 鸣潮 ReShade：每游戏保存注入开关，DLL 留在 Hub 缓存，不部署 dxgi.dll。
     /// </summary>
     public bool UseVanillaReShade
     {
@@ -549,8 +551,8 @@ public sealed partial class GameLauncherPage : PageBase
     {
         string? target = VanillaReShadeTargetDirectory;
 
-        _isVanillaReShadeInstalled = VanillaReShade.IsInstalled(target);
-        _useVanillaReShade = VanillaReShade.IsActive(target);
+        _isVanillaReShadeInstalled = VanillaReShade.IsInjectionInstalled(target);
+        _useVanillaReShade = VanillaReShade.IsInjectionEnabled(target);
 
         OnPropertyChanged(nameof(IsVanillaReShadeInstalled));
         OnPropertyChanged(nameof(UseVanillaReShade));
@@ -558,7 +560,7 @@ public sealed partial class GameLauncherPage : PageBase
         OnPropertyChanged(nameof(VanillaReShadeInstallVisibility));
     }
 
-    /// <summary>把勾选落到文件：启用 = 改名回 dxgi.dll，停用 = 改名保留（不是本启动器装的一律不碰）</summary>
+    /// <summary>保存每游戏注入开关；仅迁移哈希匹配的旧代理，未知代理不碰。</summary>
     private void ApplyVanillaReShadeState()
     {
         if (_isApplyingSavedLaunchOptions || !IsWutheringWavesCurrent)
@@ -573,14 +575,16 @@ public sealed partial class GameLauncherPage : PageBase
             return;
         }
 
-        if (!VanillaReShade.SetActive(target, _useVanillaReShade, out string message)
-            && !string.IsNullOrWhiteSpace(message))
+        try
         {
-            InAppToast.MainWindow?.Information("原版 ReShade", message, 6000);
+            VanillaReShade.SetInjectionEnabled(target, _useVanillaReShade);
+        }
+        catch (Exception ex)
+        {
+            InAppToast.MainWindow?.Error("ReShade 注入配置", ex.Message, 8000);
         }
 
-        // 以磁盘实际状态为准回刷：切换失败时勾要弹回原位
-        _useVanillaReShade = VanillaReShade.IsActive(target);
+        _useVanillaReShade = VanillaReShade.IsInjectionEnabled(target);
         OnPropertyChanged(nameof(UseVanillaReShade));
     }
 
@@ -597,30 +601,10 @@ public sealed partial class GameLauncherPage : PageBase
                 return;
             }
 
-            // 目录里已经有别人的 dxgi.dll（别的 ReShade / OptiScaler 代理）—— 覆盖前先问一句
-            if (VanillaReShade.HasProxyDll(target) && !VanillaReShade.IsInstalled(target))
-            {
-                ContentDialog confirm = new()
-                {
-                    XamlRoot = XamlRoot,
-                    Title = "原版 ReShade",
-                    Content = $"{target} 里已经有一个 dxgi.dll（不是本启动器装的），多半是别的 ReShade 或 OptiScaler 代理。\n\n" +
-                              "继续会把它覆盖掉，确定吗？",
-                    PrimaryButtonText = "覆盖安装",
-                    CloseButtonText = "取消",
-                    DefaultButton = ContentDialogButton.Close,
-                };
-
-                if (await confirm.ShowAsync() != ContentDialogResult.Primary)
-                {
-                    return;
-                }
-            }
-
             InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);
-            string installed = await VanillaReShade.InstallToGameAsync(target, null, default);
+            string installed = await VanillaReShade.InstallForInjectionAsync(target, default);
             LoadVanillaReShadeForCurrentClient();
-            InAppToast.MainWindow?.Success("原版 ReShade", $"已装进 {installed}（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
+            InAppToast.MainWindow?.Success("原版 ReShade", $"注入 DLL 已准备：{installed}。由 Hub 等客户端窗口后加载，不调用 inject.exe。", 8000);
         }
         catch (Exception ex)
         {
@@ -633,9 +617,17 @@ public sealed partial class GameLauncherPage : PageBase
     {
         string? target = VanillaReShadeTargetDirectory;
 
-        VanillaReShade.RemoveFromGame(target, out string message);
-        LoadVanillaReShadeForCurrentClient();
-        InAppToast.MainWindow?.Information("原版 ReShade", message, 8000);
+        if (string.IsNullOrWhiteSpace(target)) return;
+        try
+        {
+            VanillaReShade.RemoveInjection(target);
+            LoadVanillaReShadeForCurrentClient();
+            InAppToast.MainWindow?.Information("ReShade 注入", "已停用并移除 Hub 中的注入副本；游戏配置与旧代理备份保留。", 8000);
+        }
+        catch (Exception ex)
+        {
+            InAppToast.MainWindow?.Error("ReShade 注入", ex.Message, 8000);
+        }
     }
 
     /// <summary>本地库里有没有装好的 OptiScaler 构建</summary>
@@ -779,10 +771,21 @@ public sealed partial class GameLauncherPage : PageBase
         set
         {
             if (value && UseXxmiInject) value = false;
+            bool wasRocket = _useRocket;
             if (SetProperty(ref _useRocket, value))
             {
                 IsRocketMode = false;
                 if (value) UseXxmiInject = false;
+                if (wasRocket && !value && CurrentGameId is { } rocketReleaseGame)
+                {
+                    // 可逆：取消勾选火箭模式就把启动器写进 Rocket/桥的东西撤掉，
+                    // 否则 Rocket 自己启动游戏时还会照旧注入那些「多余 DLL」。
+                    string released = RocketArtifacts.Release(rocketReleaseGame, _currentGameEntry?.DisplayName);
+                    if (!string.IsNullOrWhiteSpace(released))
+                    {
+                        _logger.LogInformation("退出火箭模式，已回收：{Text}", released);
+                    }
+                }
                 OnPropertyChanged(nameof(RocketInstructionVisibility));
                 OnPropertyChanged(nameof(IsRocketMode));
                 OnPropertyChanged(nameof(CanUseXxmiInject));
@@ -1081,7 +1084,7 @@ public sealed partial class GameLauncherPage : PageBase
             // 注入模式：跟着当前客户端走，也存进游戏条目
             LoadInjectModeForCurrentClient();
 
-            // 鸣潮：HoYoShade 那两项既不显示也不用（改成「启用 ReShade」= 本体目录 dxgi.dll）。
+            // 鸣潮使用独立 ReShade 注入开关，由 Hub 的 DllInjector 加载，不调用 inject.exe。
             // 两边同时开就是同一个进程里两份 ReShade（抢钩子 / 崩），所以这里直接清零，落库时写回去。
             OnPropertyChanged(nameof(HoYoShadeRowVisibility));
             OnPropertyChanged(nameof(SkipShadeInjectorVisibility));
