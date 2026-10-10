@@ -396,6 +396,7 @@ public sealed partial class XxmiPage : PageBase
         base.OnNavigatedTo(e);
         _gameId = e.Parameter as GameId;
         _gameName = ResolveGameName();
+        RefreshVanillaReShade();
         LoadInstance();
     }
 
@@ -801,8 +802,104 @@ public sealed partial class XxmiPage : PageBase
             AppConfig.SetXxmiInstance(_gameId.GameBiz, null);
         }
 
+        // 用户明确要求重新找：清掉「上次自动没找到」的冷却，别让它挡住这次
+        XxmiLocator.ClearNotFoundCooldown();
         LoadInstance();
         TextBlock_Status.Text = _instance is null ? "自动查找没找到 XXMI（可以手动指定 MI 目录）。" : $"自动找到：{_instance}";
+    }
+
+    /// <summary>刷新「原版 ReShade」状态行与按钮可用性</summary>
+    private void RefreshVanillaReShade()
+    {
+        try
+        {
+            var entry = _gameId is null ? null : GameCatalog.GetOrCreate(GameCatalog.CreateService(), _gameId);
+            string? target = VanillaReShade.ResolveTargetDirectory(entry, entry?.GameDirectory);
+
+            bool installed = VanillaReShade.IsInstalled(target);
+            bool hasProxy = VanillaReShade.HasProxyDll(target);
+            bool misplaced = !installed && !hasProxy && target is not null
+                             && entry?.GameDirectory is { } root
+                             && !string.Equals(target, root, StringComparison.OrdinalIgnoreCase)
+                             && VanillaReShade.HasProxyDll(root);
+
+            string state = installed
+                ? $"原版 ReShade：已装（{target}）"
+                : hasProxy
+                    ? $"原版 ReShade：{target} 里已有 dxgi.dll（不是本启动器装的）"
+                    : misplaced
+                        ? "原版 ReShade：装在注册目录（游戏本体不加载），建议重装到本体目录"
+                        : "原版 ReShade：未安装";
+
+            if (_gameId is not null
+                && (AppConfig.GetUseHoYoShadeLaunchOption(_gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(_gameId)))
+            {
+                state += " · 这个游戏开着 HoYoShade 注入（同进程两份 ReShade 会冲突）";
+            }
+
+            TextBlock_VanillaReShade.Text = state;
+            Button_InstallVanillaReShade.IsEnabled = target is not null && !installed && !hasProxy;
+            Button_RemoveVanillaReShade.IsEnabled = installed;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "刷新原版 ReShade 状态失败");
+        }
+    }
+
+    /// <summary>装原版 ReShade 到**游戏本体目录**（鸣潮 = 真身进程目录；装注册目录不生效）</summary>
+    private async void Button_InstallVanillaReShade_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var entry = _gameId is null ? null : GameCatalog.GetOrCreate(GameCatalog.CreateService(), _gameId);
+            string? target = VanillaReShade.ResolveTargetDirectory(entry, entry?.GameDirectory);
+
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                TextBlock_Status.Text = "找不到游戏目录，没法装原版 ReShade。";
+                return;
+            }
+
+            if (_gameId is not null
+                && (AppConfig.GetUseHoYoShadeLaunchOption(_gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(_gameId)))
+            {
+                ContentDialog warn = new()
+                {
+                    XamlRoot = XamlRoot,
+                    Title = "原版 ReShade",
+                    Content = "这个游戏还开着 HoYoShade 注入：启动时 Hub 会再注入一份 ReShade64.dll，" +
+                              "同一个进程里两份 ReShade 可能崩。装之前建议先在启动页关掉 HoYoShade。\n\n仍然安装吗？",
+                    PrimaryButtonText = "仍然安装",
+                    CloseButtonText = "取消",
+                    DefaultButton = ContentDialogButton.Close,
+                };
+
+                if (await warn.ShowAsync() != ContentDialogResult.Primary)
+                {
+                    return;
+                }
+            }
+
+            TextBlock_Status.Text = "正在下载原版 ReShade…";
+            string installed = await VanillaReShade.InstallToGameAsync(target, null, default);
+            TextBlock_Status.Text = $"原版 ReShade 已装进 {installed}（dxgi.dll），进游戏按 Home 开覆盖层。";
+            RefreshVanillaReShade();
+        }
+        catch (Exception ex)
+        {
+            TextBlock_Status.Text = "原版 ReShade 安装失败：" + ex.Message;
+        }
+    }
+
+    private void Button_RemoveVanillaReShade_Click(object sender, RoutedEventArgs e)
+    {
+        var entry = _gameId is null ? null : GameCatalog.GetOrCreate(GameCatalog.CreateService(), _gameId);
+        string? target = VanillaReShade.ResolveTargetDirectory(entry, entry?.GameDirectory);
+
+        VanillaReShade.RemoveFromGame(target, out string message);
+        TextBlock_Status.Text = message;
+        RefreshVanillaReShade();
     }
 
     private async void Button_Browse_Click(object sender, RoutedEventArgs e)

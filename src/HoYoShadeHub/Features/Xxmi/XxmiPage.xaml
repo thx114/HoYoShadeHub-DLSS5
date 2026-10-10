@@ -452,11 +452,35 @@
                 </GridView.ItemTemplate>
             </GridView>
 
-            <!-- 2 底部状态 -->
-            <TextBlock x:Name="TextBlock_Status"
-                       Grid.Row="2"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       TextWrapping="Wrap" />
+            <!-- 2 底部状态 + 原版 ReShade（装到游戏本体目录，鸣潮这类壳启动的游戏装注册目录不生效） -->
+            <Grid Grid.Row="2" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="TextBlock_Status"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center" />
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            Spacing="8"
+                            VerticalAlignment="Center">
+                    <TextBlock x:Name="TextBlock_VanillaReShade"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center" />
+                    <Button x:Name="Button_InstallVanillaReShade"
+                            Click="Button_InstallVanillaReShade_Click"
+                            Content="装原版 ReShade"
+                            ToolTipService.ToolTip="下载官方 Addon 版 ReShade，装到游戏本体目录（鸣潮是真身进程目录）" />
+                    <Button x:Name="Button_RemoveVanillaReShade"
+                            Click="Button_RemoveVanillaReShade_Click"
+                            Content="移除"
+                            ToolTipService.ToolTip="只删本启动器装的那份 dxgi.dll；别人装的或改过的不动" />
+                </StackPanel>
+            </Grid>
         </Grid>
 
         <!-- 右侧筛选侧边栏：先做壳（能开合、能收起），内容待定 -->

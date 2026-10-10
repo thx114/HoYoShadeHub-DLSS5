@@ -113,6 +113,12 @@ internal sealed class XxmiLocator
 
     private const int NotFoundCooldownSeconds = 60;
 
+    /// <summary>
+    /// 用户明确要求重新找（「模型替换」页的「自动查找」）时清掉冷却 ——
+    /// 上一次自动失败不该挡住这一次手动查找。
+    /// </summary>
+    public static void ClearNotFoundCooldown() => _notFoundUntilUtc = DateTime.MinValue;
+
     /// <summary>XXMI 根目录（没有配置 / 启动器 / 任何 MI 实例就不算）</summary>
     public static string? FindRoot()
     {

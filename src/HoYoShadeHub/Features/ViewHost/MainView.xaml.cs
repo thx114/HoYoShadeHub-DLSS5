@@ -8,6 +8,7 @@ using NuGet.Versioning;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoShade;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.Modules;
@@ -201,12 +202,13 @@ public sealed partial class MainView : UserControl
         NavigationViewItem_Screenshot.Visibility = CurrentGameFeatureConfig.SupportedPages.Contains(nameof(ScreenshotPage)).ToVisibility();
 
         // 「模型替换」跟着游戏显示对应的 MI 实例名（绝区零 → ZZMI；自定义游戏按名字认 → 鸣潮 → WWMI）
-        string? gameName = CurrentGameId is null ? null
-            : Features.Plugins.GameCatalog.GetOrCreate(Features.Plugins.GameCatalog.CreateService(), CurrentGameId)?.DisplayName;
+        GameEntry? gameEntry = CurrentGameId is null ? null
+            : Features.Plugins.GameCatalog.GetOrCreate(Features.Plugins.GameCatalog.CreateService(), CurrentGameId);
+        string? gameName = gameEntry?.DisplayName;
         string? importer = CurrentGameId is null ? null : Features.Xxmi.XxmiLocator.ImporterForGame(CurrentGameId.GameBiz, gameName);
         TextBlock_XxmiNav.Text = importer is null ? "模型替换" : $"模型替换（{importer}）";
 
-        MaybePromptVanillaReShade(gameName);
+        MaybePromptVanillaReShade(gameEntry);
 
         if (CurrentGameId is null)
         {
@@ -224,47 +226,84 @@ public sealed partial class MainView : UserControl
     /// <summary>
     /// 切到鸣潮（WWMI 那条识别的自定义游戏）时提示装原版 ReShade：
     /// 鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通，原版 ReShade 至少能用滤镜 / 插件。
-    /// 游戏目录里已经有 dxgi.dll（不管谁装的）就不问。
+    /// <para>
+    /// 目标目录是<b>本体进程目录</b>（<see cref="VanillaReShade.ResolveTargetDirectory"/>）：鸣潮注册 exe 只是
+    /// 启动器壳，装到根目录的 dxgi.dll 不会被游戏本体加载（旧版本正是装在根目录，等于没装）。
+    /// </para>
+    /// 本体目录里已经有 dxgi.dll（不管谁装的）就不问。
     /// </summary>
-    private async void MaybePromptVanillaReShade(string? gameName)
+    private async void MaybePromptVanillaReShade(GameEntry? entry)
     {
         try
         {
-            if (XamlRoot is null || CurrentGameId is null
-                || Features.Xxmi.XxmiLocator.ImporterForGame(CurrentGameId.GameBiz, gameName) is not "WWMI"
-                || !_vanillaPrompted.Add(CurrentGameId.Id))
+            if (XamlRoot is null || CurrentGameId is not { } gameId || entry is null
+                || Features.Xxmi.XxmiLocator.ImporterForGame(gameId.GameBiz, entry.DisplayName) is not "WWMI"
+                || !_vanillaPrompted.Add(gameId.Id))
             {
                 return;
             }
 
-            string? gameDir = Features.Plugins.GameCatalog.GetOrCreate(
-                Features.Plugins.GameCatalog.CreateService(), CurrentGameId)?.GameDirectory;
+            string? target = VanillaReShade.ResolveTargetDirectory(entry, entry.GameDirectory);
 
-            if (string.IsNullOrWhiteSpace(gameDir) || !Directory.Exists(gameDir)
-                || File.Exists(Path.Combine(gameDir, "dxgi.dll")))
+            if (string.IsNullOrWhiteSpace(target) || !Directory.Exists(target)
+                || VanillaReShade.HasProxyDll(target))
             {
                 return;
+            }
+
+            // 旧版本装在注册根目录（壳进程旁边）：那份不生效，提示纠正
+            bool misplaced = !string.Equals(target, entry.GameDirectory, StringComparison.OrdinalIgnoreCase)
+                             && VanillaReShade.HasProxyDll(entry.GameDirectory);
+
+            // 同进程两份 ReShade：Hub 走 HoYoShade 注入时也会注一份 ReShade64.dll
+            bool shadeInject = AppConfig.GetUseHoYoShadeLaunchOption(gameId)
+                               || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
+
+            string body = misplaced
+                ? $"之前那份原版 ReShade 装在了 {entry.GameDirectory}（注册目录放的是启动器壳）——" +
+                  "那儿的 dxgi.dll 游戏本体不会加载，等于没装。\n\n" +
+                  $"要装到本体目录 {target} 吗？装完按 Home 键开覆盖层。"
+                : "鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通。\n\n" +
+                  $"要不要下载官方「可加载插件」版原版 ReShade，装到 {target}？装完按 Home 键开覆盖层。";
+
+            if (shadeInject)
+            {
+                body += "\n\n⚠ 这个游戏现在开着 HoYoShade 注入：启动时 Hub 还会再注入一份 ReShade64.dll，" +
+                        "同一个进程里两份 ReShade 可能崩。";
             }
 
             ContentDialog dialog = new()
             {
                 XamlRoot = XamlRoot,
                 Title = "原版 ReShade",
-                Content = $"鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通。\n\n" +
-                          "要不要下载官方「可加载插件」版原版 ReShade，装到游戏目录？装完按 Home 键开覆盖层。",
+                Content = body,
                 PrimaryButtonText = "下载并安装",
                 CloseButtonText = "不用",
                 DefaultButton = ContentDialogButton.Primary,
             };
 
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            if (shadeInject)
+            {
+                dialog.SecondaryButtonText = "关掉 HoYoShade 注入再装";
+            }
+
+            ContentDialogResult result = await dialog.ShowAsync();
+
+            if (result == ContentDialogResult.None)
             {
                 return;
             }
 
+            if (result == ContentDialogResult.Secondary)
+            {
+                AppConfig.SetUseHoYoShadeLaunchOption(gameId, false);
+                AppConfig.SetUseOpenHoYoShadeLaunchOption(gameId, false);
+                InAppToast.MainWindow?.Information("原版 ReShade", "已关掉这个游戏的 HoYoShade 注入。", 6000);
+            }
+
             InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);
-            await Features.Plugins.VanillaReShade.InstallToGameAsync(gameDir, null, CancellationToken.None);
-            InAppToast.MainWindow?.Success("原版 ReShade", "已装进游戏目录（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
+            string installed = await VanillaReShade.InstallToGameAsync(target, null, CancellationToken.None);
+            InAppToast.MainWindow?.Success("原版 ReShade", $"已装进 {installed}（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
         }
         catch (OperationCanceledException)
         {

@@ -1,10 +1,13 @@
 using HoYoShadeHub.Core.Networking;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.ReShade;
+using HoYoShadeHub.Features.GameLauncher;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -26,8 +29,11 @@ internal static class VanillaReShade
 
     private static readonly ILogger Logger = AppConfig.GetLogger<Marker>();
 
+    /// <summary>官方安装器版本（下载 URL 与安装标记共用）</summary>
+    public const string SetupVersion = "6.8.0";
+
     /// <summary>官方 Addon 版安装器（Addon 版 = 带完整插件支持的原版 ReShade）</summary>
-    public const string SetupUrl = "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe";
+    public const string SetupUrl = "https://reshade.me/downloads/ReShade_Setup_" + SetupVersion + "_Addon.exe";
 
     private static string CacheDirectory => Path.Combine(AppConfig.CacheFolder, "vanilla-reshade");
 
@@ -36,6 +42,171 @@ internal static class VanillaReShade
 
     /// <summary>原版 dll 是不是已经下载过了（下过一次就不重复下）</summary>
     public static bool IsDownloaded => File.Exists(CachedDllPath);
+
+    /// <summary>安装标记：记下这份 dxgi.dll 是本启动器装的、哪个版本、哈希多少 —— 移除时只删自己那份</summary>
+    public const string MarkerFileName = ".hysx-vanilla-reshade.json";
+
+    private const string MarkerVersionKey = "version";
+    private const string MarkerHashKey = "sha256";
+    private const string MarkerInstalledKey = "installed";
+
+    /// <summary>
+    /// 原版 ReShade 该装到哪个目录。鸣潮这种「注册 exe 是启动器壳」的游戏必须装进
+    /// <b>本体进程目录</b>（<c>&lt;根&gt;\Wuthering Waves Game\Binaries\Win64</c>）：
+    /// 壳进程旁边的 dxgi.dll 游戏本体根本不会加载。认不出真身目录就退回注册目录。
+    /// </summary>
+    public static string? ResolveTargetDirectory(GameEntry? entry, string? registeredDirectory)
+        => entry is not null && ShadeBlacklistBypass.RealGameDirectory(entry) is { } real
+            ? real
+            : (string.IsNullOrWhiteSpace(registeredDirectory) ? null : registeredDirectory);
+
+    /// <summary>这个目录里是不是本启动器装的原版 ReShade（认安装标记）</summary>
+    public static bool IsInstalled(string? directory) => ReadMarker(directory) is not null;
+
+    /// <summary>目录里有没有 dxgi.dll（不区分谁装的）</summary>
+    public static bool HasProxyDll(string? directory)
+        => !string.IsNullOrWhiteSpace(directory) && File.Exists(Path.Combine(directory, "dxgi.dll"));
+
+    /// <summary>
+    /// 卸掉本启动器装的原版 ReShade。只删「安装标记里的哈希与当前 dxgi.dll 一致」的那份 ——
+    /// 别人装的、或用户后来换过的 dxgi.dll 一律不碰。ReShade.ini 保留（用户可能已经配过）。
+    /// </summary>
+    public static bool RemoveFromGame(string? directory, out string message)
+    {
+        message = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            message = "没有可用的游戏目录。";
+            return false;
+        }
+
+        InstallMarker? marker = ReadMarker(directory);
+
+        if (marker is null)
+        {
+            message = "这个目录没有本启动器的安装记录，未删除任何文件（避免删掉别人装的 dxgi.dll）。";
+            return false;
+        }
+
+        string markerPath = Path.Combine(directory, MarkerFileName);
+        string dllPath = Path.Combine(directory, "dxgi.dll");
+
+        try
+        {
+            if (File.Exists(dllPath))
+            {
+                if (!string.Equals(TryHash(dllPath), marker.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(markerPath);
+                    message = "dxgi.dll 已被替换或改动，没有删除（安装记录已清除）。";
+                    return false;
+                }
+
+                File.Delete(dllPath);
+            }
+
+            File.Delete(markerPath);
+            Logger.LogInformation("原版 ReShade 已移除：{Dir}", directory);
+            message = "已移除原版 ReShade（dxgi.dll）。ReShade.ini 保留。";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "移除原版 ReShade 失败：{Dir}", directory);
+            message = "移除失败：" + ex.Message;
+            return false;
+        }
+    }
+
+    private sealed record InstallMarker(string Version, string Sha256);
+
+    private static InstallMarker? ReadMarker(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string path = Path.Combine(directory, MarkerFileName);
+
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            string? version = null;
+            string? sha = null;
+
+            foreach (string line in File.ReadAllLines(path))
+            {
+                int split = line.IndexOf('=');
+
+                if (split <= 0)
+                {
+                    continue;
+                }
+
+                string key = line[..split].Trim();
+                string value = line[(split + 1)..].Trim();
+
+                if (key.Equals(MarkerVersionKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    version = value;
+                }
+                else if (key.Equals(MarkerHashKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    sha = value;
+                }
+            }
+
+            return string.IsNullOrWhiteSpace(sha) ? null : new InstallMarker(version ?? "?", sha);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void WriteMarker(string directory, string installedDllPath)
+    {
+        try
+        {
+            string? hash = TryHash(installedDllPath);
+
+            if (string.IsNullOrWhiteSpace(hash))
+            {
+                return;
+            }
+
+            string body =
+                $"{MarkerVersionKey}={SetupVersion}{Environment.NewLine}" +
+                $"{MarkerHashKey}={hash}{Environment.NewLine}" +
+                $"{MarkerInstalledKey}={DateTime.UtcNow:O}{Environment.NewLine}";
+
+            File.WriteAllText(Path.Combine(directory, MarkerFileName), body);
+        }
+        catch (Exception ex)
+        {
+            // 标记写不上不影响使用，只是以后不能自动移除
+            Logger.LogWarning(ex, "写原版 ReShade 安装标记失败：{Dir}", directory);
+        }
+    }
+
+    private static string? TryHash(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return Convert.ToHexString(SHA256.HashData(stream));
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     /// <summary>下载并解出 ReShade64.dll；有缓存直接返回。失败抛异常，由调用方弹给用户看。</summary>
     public static async Task<string> EnsureDllAsync(IProgress<string>? progress, CancellationToken cancellationToken)
@@ -83,7 +254,12 @@ internal static class VanillaReShade
 
     /// <summary>
     /// 装到游戏目录：ReShade64.dll 以 <c>dxgi.dll</c> 的名字铺进去（DX11 / DX12 游戏都会被它拦到），
-    /// 没有 ReShade.ini 就补一份最小的。返回装好的游戏目录。
+    /// 没有 ReShade.ini 就补一份最小的，并写安装标记（供 <see cref="RemoveFromGame"/> 只删自己那份）。
+    /// <para>
+    /// 目录必须传 <b>游戏本体进程所在目录</b> —— 鸣潮这类「注册 exe 是启动器壳」的游戏要用
+    /// <see cref="ResolveTargetDirectory"/> 解析真身目录，否则 dxgi.dll 不会被游戏加载。
+    /// </para>
+    /// 返回装好的游戏目录。
     /// </summary>
     public static async Task<string> InstallToGameAsync(string gameDirectory, IProgress<string>? progress, CancellationToken cancellationToken)
     {
@@ -102,6 +278,8 @@ internal static class VanillaReShade
         {
             ReShadeProfile.CreateNew(ini).Save();
         }
+
+        WriteMarker(gameDirectory, target);
 
         Logger.LogInformation("原版 ReShade 已装进游戏目录：{Dir}", gameDirectory);
         return gameDirectory;
