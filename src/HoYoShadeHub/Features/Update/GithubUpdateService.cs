@@ -1,6 +1,7 @@
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Helpers;
 using Microsoft.Extensions.Logging;
 using NuGet.Versioning;
 using System;
@@ -178,8 +179,9 @@ internal sealed class GithubUpdateService
             using ZipArchive archive = ZipFile.OpenRead(zipPath);
             strip = DetectWrapperPrefix(archive);
 
-            int failed = 0;
-            string firstError = string.Empty;
+            var entries = new List<(ZipArchiveEntry Entry, string Target)>();
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            byte[]? versionContents = null;
 
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
@@ -201,37 +203,65 @@ internal sealed class GithubUpdateService
                     continue;
                 }
 
-                string target = Path.Combine(root, name.Replace('/', Path.DirectorySeparatorChar));
+                string target = PortableUpdatePolicy.GetArchiveTarget(root, name);
+                if (!targets.Add(target))
+                {
+                    throw new InvalidDataException($"Update contains duplicate destination: {name}");
+                }
+
+                if (target.Equals(versionIni, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (entry.Length > 65536)
+                    {
+                        throw new InvalidDataException("version.ini is too large.");
+                    }
+
+                    using var content = new MemoryStream();
+                    using (Stream input = entry.Open())
+                    {
+                        input.CopyTo(content);
+                    }
+
+                    versionContents = content.ToArray();
+                    continue;
+                }
+
+                entries.Add((entry, target));
+            }
+
+            if (versionContents is null)
+            {
+                throw new InvalidDataException("Update does not contain version.ini.");
+            }
+
+            string selectedExe = PortableUpdatePolicy.ReadVersionTarget(root, System.Text.Encoding.UTF8.GetString(versionContents).TrimStart('\uFEFF'));
+            if (!entries.Any(item => item.Target.Equals(selectedExe, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidDataException("Update does not contain the executable selected by version.ini.");
+            }
+
+            // Validate the entire package before touching payloads; switch the version only after all writes succeed.
+            foreach ((ZipArchiveEntry entry, string target) in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PortableUpdatePolicy.GetArchiveTarget(root, Path.GetRelativePath(root, target));
                 string? dir = Path.GetDirectoryName(target);
                 if (!string.IsNullOrEmpty(dir))
                 {
                     Directory.CreateDirectory(dir);
                 }
 
-                try
-                {
-                    ExtractOver(entry, target, stamp, leftovers);
-                }
-                catch (Exception ex)
-                {
-                    failed++;
-                    if (firstError.Length == 0)
-                    {
-                        firstError = $"{Path.GetFileName(target)}: {ex.Message}";
-                    }
-                }
+                ExtractOver(entry, target, stamp, leftovers);
             }
 
-            if (failed > 0)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(selectedExe))
             {
-                throw new IOException($"有 {failed} 个文件写不进去（多半被别的程序占用，先关掉游戏/杀毒再试）。第一个：{firstError}");
+                throw new InvalidDataException("The selected update executable was not installed.");
             }
 
-            // 能删掉的旧文件备份顺手清；被运行中程序占用的留给下次
-            foreach (string old in leftovers)
-            {
-                try { File.Delete(old); } catch { /* 占用中，算了 */ }
-            }
+            PortableUpdatePolicy.GetArchiveTarget(root, "version.ini");
+            PortableUpdatePolicy.WriteVersionAtomically(versionIni, versionContents);
         }, cancellationToken);
 
         _logger.LogInformation(
@@ -254,10 +284,18 @@ internal sealed class GithubUpdateService
         {
         }
 
-        string backup = target + ".old-" + stamp;
-        File.Move(target, backup, overwrite: true);
-        leftovers?.Add(backup);
-        entry.ExtractToFile(target, overwrite: true);
+        string backup = target + ".old-" + stamp + "-" + Guid.NewGuid().ToString("N");
+        File.Move(target, backup);
+        try
+        {
+            entry.ExtractToFile(target, overwrite: true);
+            leftovers?.Add(backup);
+        }
+        catch
+        {
+            File.Move(backup, target, overwrite: true);
+            throw;
+        }
     }
 
     /// <summary>
@@ -316,6 +354,8 @@ internal sealed class GithubUpdateService
             {
                 FileName = launcher,
                 WorkingDirectory = Path.GetDirectoryName(launcher),
+                Arguments = LauncherCommandLine.BuildRestartArguments(),
+                UseShellExecute = false,
             });
 
             Environment.Exit(0);

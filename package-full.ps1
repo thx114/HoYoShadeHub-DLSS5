@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  构建「完整包」：便携版启动器 + 自带 HoYoShade（框架本体 + 预置 + 精简滤镜/材质），插件目录留空。
+  构建「完整包」：便携版启动器 + 自带 HoYoShade，默认清理未引用的搞怪滤镜，可选捆绑汉化 addon。
 
 .DESCRIPTION
   和普通便携包（package.ps1）的区别只有一处：多带一份 HoYoShade 框架，装完即用，不用再让用户自己装 HoYoShade。
@@ -14,7 +14,7 @@
           InjectResource\  LauncherResource\  Presets\
           reshade-shaders\Shaders\    ← 只带必要滤镜（按预设算闭包，见下）
           reshade-shaders\Textures\   ← 只带必要材质（同上）
-          reshade-shaders\Addons\     ← **空**（插件由用户在启动器里装）
+          reshade-shaders\Addons\     ← 默认空；-IncludeFilterChinese 仅加入独立滤镜汉化 addon
           ScreenShot\                 ← 空
 
   说明：
@@ -27,7 +27,9 @@
                                         -PresetIncludeFrameworkPresets 则连带框架自带 Presets\*.ini 用到的
                                         特效一起带（推荐：仍是几十个文件的量级，但随包预置切过去都能用）
       -ShaderAllowList / -TextureAllowList   直接给清单文件（一行一个，可写文件名或相对路径，`#` 是注释）
-    两者都不给 = 整目录照搬（历史行为）。
+    两者都不给 = 拷贝后清理未引用的搞怪效果与可证明独占的材质；-KeepNoveltyShaders 保留这些效果。
+    动态/宏材质引用无法可靠判定时保留材质。清理报告随包写入 shader-curation.json，源目录不修改。
+  * -IncludeFilterChinese 捆绑 native/ReShadeChinese/build 中的 addon 与词典；先运行其 build.ps1，要求兼容 API 20 / ImGui 1.92.5 的 x64 宿主。
   * 框架 ReShade.ini 里的 `[ADDON] DisabledAddons` 是**本机插件开关状态**，默认会被原样打进包；要出厂不预置
     任何禁用就传 `-DisabledAddons ''`（插件开关本该由启动器按游戏写，见 ReShadeProfile.SetDisabledAddons）。
 
@@ -57,6 +59,12 @@ param(
     # 只保留匹配这些清单的滤镜 / 材质（一行一个，可写文件名或相对路径，支持 # 注释）；不传 = 整目录照搬
     [string] $ShaderAllowList = "",
     [string] $TextureAllowList = "",
+
+    # 默认从打包副本移除未被预设/保留滤镜引用的搞怪效果；保留常用画质滤镜。
+    [switch] $KeepNoveltyShaders,
+
+    # 可选捆绑独立汉化 addon（只支持 x64，先运行 native/ReShadeChinese/build.ps1）。
+    [switch] $IncludeFilterChinese,
 
     # 按预设推导「必要滤镜/材质」白名单（自动调用 tools\make-shader-allowlist.ps1，清单写到 build\shader-allowlist\）
     [string[]] $PresetIni = @(),
@@ -128,7 +136,8 @@ function Copy-Filtered {
     param(
         [string] $From,
         [string] $To,
-        [string[]] $AllowList
+        [string[]] $AllowList,
+        [string[]] $ExcludeFileNames = @()
     )
 
     if (-not (Test-Path $From)) { return 0 }
@@ -158,6 +167,8 @@ function Copy-Filtered {
     }
 
     foreach ($file in $files) {
+        # Exclusions win over allowlist and preset-derived rules.
+        if ($ExcludeFileNames -contains $file.Name) { continue }
         $relative = $file.FullName.Substring($prefix).TrimStart("\")
 
         if ($AllowList.Count -gt 0) {
@@ -251,6 +262,13 @@ try {
     Write-Host "配置           : $Configuration / $Architecture / $Version" -ForegroundColor DarkGray
 
     $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+    if ($IncludeFilterChinese -and $Architecture -ne 'x64') { throw 'Filter Chinese addon requires x64.' }
+    $chineseBuild = Join-Path $repoRoot 'native\ReShadeChinese\build'
+    if ($IncludeFilterChinese) {
+        foreach ($file in @('ReShadeChinese.addon64', 'ReShadeChinese.tsv')) {
+            if (!(Test-Path -LiteralPath (Join-Path $chineseBuild $file))) { throw "Missing $file; run native/ReShadeChinese/build.ps1 first." }
+        }
+    }
 
     # 复用输出目录时，先清掉上一步完整包添加的 HoYoShade 框架：内层 package.ps1 会把
     # 输出目录里的所有内容打进「基础便携包」zip，不清的话第二次构建基础包从 180MB 肿到 235MB。
@@ -308,8 +326,14 @@ try {
         Write-Host ("      {0,-18} {1} 个文件" -f $dir, $count) -ForegroundColor DarkGray
     }
 
-    $shaderCount = Copy-Filtered -From (Join-Path $shadeRoot "reshade-shaders\Shaders") -To (Join-Path $target "reshade-shaders\Shaders") -AllowList $shaderList
+    $shaderCount = Copy-Filtered -From (Join-Path $shadeRoot "reshade-shaders\Shaders") -To (Join-Path $target "reshade-shaders\Shaders") -AllowList $shaderList -ExcludeFileNames @("Gravity.fx")
     $textureCount = Copy-Filtered -From (Join-Path $shadeRoot "reshade-shaders\Textures") -To (Join-Path $target "reshade-shaders\Textures") -AllowList $textureList
+    if (!$KeepNoveltyShaders) {
+        $curation = & (Join-Path $repoRoot 'tools\curate-package-shaders.ps1') -ShadeRoot $target -SourceRoot $shadeRoot -PresetIni $PresetIni -ReportPath (Join-Path $outDir 'shader-curation.json') -Apply
+        $shaderCount -= $curation.removedShaderCount
+        $textureCount -= $curation.removedTextureCount
+        Write-Host "滤镜清理：$($curation.removedShaderCount) 个效果 / $($curation.removedTextureCount) 个独占材质；报告 shader-curation.json"
+    }
     Write-Host ("      {0,-18} {1} 个文件（必要滤镜）" -f "Shaders", $shaderCount) -ForegroundColor DarkGray
     Write-Host ("      {0,-18} {1} 个文件（必要材质）" -f "Textures", $textureCount) -ForegroundColor DarkGray
 
@@ -349,6 +373,11 @@ try {
 
     $addonFiles = @(Get-ChildItem -Path (Join-Path $target "reshade-shaders\Addons") -Recurse -File -ErrorAction SilentlyContinue)
     if ($addonFiles.Count -gt 0) { throw "插件目录必须为空，但现在有 $($addonFiles.Count) 个文件。" }
+    if ($IncludeFilterChinese) {
+        foreach ($file in @('ReShadeChinese.addon64', 'ReShadeChinese.tsv')) {
+            Copy-Item -LiteralPath (Join-Path $chineseBuild $file) -Destination (Join-Path $target 'reshade-shaders\Addons') -Force
+        }
+    }
 
     # 完整包永远带「真便携」标记：缓存 / 配置 / 日志全留在包内不碰 C: 盘，
     # 自带 HoYoShade 也必须是包目录当用户数据目录才能被认出来。
@@ -356,6 +385,10 @@ try {
     $markerPath = Join-Path $outDir ".portable"
     Write-Host "==> 写入真便携标记 => $markerPath" -ForegroundColor Cyan
     Set-Content -Path $markerPath -Value "portable-local=1" -Encoding UTF8
+
+    # This root layout is supported, not a legacy store needing migration.
+    $layout = @{ schema = 1; layout = 'full-portable-v1'; moduleRoot = 'Modules'; optiscalerRoot = 'OptiScaler'; cacheRoot = 'cache' }
+    $layout | ConvertTo-Json | Set-Content -Path (Join-Path $outDir 'portable-layout.json') -Encoding UTF8
 
     # 7) 打 zip
     $zipDir = Join-Path $repoRoot "build/release"
@@ -404,6 +437,7 @@ try {
 
             $need = @(
                 "version.ini",
+                "portable-layout.json",
                 "HoYoShadeHub.exe",
                 "app-$Version/HoYoShadeHub.exe",
                 "HoYoShade/ReShade64.dll",
@@ -416,10 +450,19 @@ try {
 
             # 末尾带 / 的是空目录占位条目，不算文件
             $addonEntries = @($names | Where-Object { $_ -like "HoYoShade/reshade-shaders/Addons/*" -and -not $_.EndsWith("/") })
-            if ($addonEntries.Count -gt 0) { throw "zip 里插件目录不是空的（$($addonEntries.Count) 个条目）" }
+            $expectedAddons = @()
+            if ($IncludeFilterChinese) {
+                $expectedAddons = @('HoYoShade/reshade-shaders/Addons/ReShadeChinese.addon64', 'HoYoShade/reshade-shaders/Addons/ReShadeChinese.tsv')
+            }
+            if ($addonEntries.Count -ne $expectedAddons.Count -or @($addonEntries | Where-Object { $_ -notin $expectedAddons }).Count -gt 0) {
+                throw 'zip addon entries differ from the requested bundle.'
+            }
 
             $shaderEntries = @($names | Where-Object { $_ -like "HoYoShade/reshade-shaders/Shaders/*" })
             $textureEntries = @($names | Where-Object { $_ -like "HoYoShade/reshade-shaders/Textures/*" })
+            if (@($shaderEntries | Where-Object { ($_ -split "/")[-1] -ieq "Gravity.fx" }).Count -gt 0) {
+                throw "完整包不应包含已排除的 Gravity.fx"
+            }
             if ($shaderEntries.Count -eq 0) { throw "zip 里没有滤镜" }
             if ($textureEntries.Count -eq 0) { throw "zip 里没有材质" }
         } finally { $readArchive.Dispose() }
@@ -436,7 +479,8 @@ try {
     Write-Host "  框架   : $target"
     Write-Host "  压缩包 : $zip"
     Write-Host ("  大小   : {0:F1} MB / {1} 个条目" -f ($zipInfo.Length / 1MB), $entries)
-    Write-Host ("  内含   : app-$Version、HoYoShade 框架、$shaderCount 个滤镜、$textureCount 个材质、插件目录留空")
+    $addonSummary = if ($IncludeFilterChinese) { '独立滤镜汉化 addon' } else { '插件目录留空' }
+    Write-Host ("  内含   : app-$Version、HoYoShade 框架、$shaderCount 个滤镜、$textureCount 个材质、$addonSummary")
 }
 finally {
     Pop-Location

@@ -13,12 +13,59 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+if (args.Length == 1 && args[0] == "genshin-graphics-tests")
+    return HoYoShadeHub.Extensions.Tests.GenshinGraphicsSettingsTests.Run();
+
+if (args.Length == 1 && args[0] == "genshin-graphics-snapshot")
+    return HoYoShadeHub.Extensions.Tests.GenshinGraphicsSettingsTests.ValidateLocalSnapshot();
+
+if (args.Length == 1 && args[0] == "launcher-regression-tests")
+    return await HoYoShadeHub.Extensions.Tests.LauncherRegressionTests.RunAsync();
+
+if (args.Length == 1 && args[0] == "package-install-tests")
+{
+    await HoYoShadeHub.Extensions.Tests.PackageInstallSafetyTests.RunAsync();
+    Console.WriteLine("PASS package installation and progress");
+    return 0;
+}
+
+if (args.Length == 1 && args[0] == "ui-runtime-tests")
+    return (await HoYoShadeHub.Extensions.Tests.UiRuntimeTests.RunAsync()).Failed == 0 ? 0 : 1;
+
+if (args.Length == 1 && args[0] == "opti-page-loading-tests")
+    return HoYoShadeHub.Extensions.Tests.OptiPageLoadingTests.Run();
+
+if (args.Length == 1 && args[0] == "download-tests")
+    return await HoYoShadeHub.Extensions.Tests.DownloadServiceTests.RunAsync();
+
+if (args.Length > 0 && args[0] is "pack-once-tests" or "pack-once-worker")
+    return await HoYoShadeHub.Extensions.Tests.PackOnceNavigationTests.RunAsync(args);
+
+if (args.Length == 1 && args[0] == "xxmi-preparation-tests")
+    return HoYoShadeHub.Extensions.Tests.XxmiInjectionPreparationTests.Run();
+
+if (args.Length == 1 && args[0] == "rtss-profile-tests")
+    return HoYoShadeHub.Extensions.Tests.RtssProfileTests.Run();
+
+if (args.Length == 1 && args[0] == "opti-ai-interlock-tests")
+    return HoYoShadeHub.Extensions.Tests.OptiSmoothMotionTests.Run();
+
+if (args.Length == 1 && args[0] == "wuthering-reshade-tests")
+    return HoYoShadeHub.Extensions.Tests.WutheringReShadeInjectionTests.Run();
+
+if (args.Length == 1 && args[0] == "addon-freshness-tests")
+    return HoYoShadeHub.Extensions.Tests.AddonFreshnessTests.Run();
+
 // Focused bootstrap regressions: no game or launcher process is started.
 if (args.Length == 1 && args[0] == "bootstrap-tests")
     return HoYoShadeHub.Extensions.Tests.GameIniBootstrapTests.Run();
 
 if (args.Length == 1 && args[0] == "rocket-tests")
     return HoYoShadeHub.Extensions.Tests.RocketIntegrationTests.Run().Failed == 0 ? 0 : 1;
+
+// 启动体检：按生效 ini 报构建里缺的运行时文件（不启动任何游戏）。
+if (args.Length == 1 && args[0] == "opti-audit-tests")
+    return HoYoShadeHub.Extensions.Tests.OptiScalerBuildAuditTests.Run();
 
 // Controlled worker for lifecycle regression; no real XXMI/game is touched.
 if (args.Length > 0 && args[0] == "owned-process-test-worker")
@@ -1128,7 +1175,37 @@ List<GameEntry> found2 = discovery2.DiscoverAll([knownA, knownB]);
 Check(found2.Count == 4, $"重新发现：2 个已知 + 2 个自定义（一个带 ini 一个不带）= {found2.Count}");
 Check(found2.First(e => e.Id == "biz:hk4e_cn").UseInjectMode, "注入模式开关跟着 id 活过了重启");
 Check(!found2.First(e => e.Id == "biz:hkrpg_cn").UseInjectMode, "别的游戏不受影响（只影响单个游戏）");
-Check(discovery2.RemoveCustom(bare.Entry!.Id), "自定义条目可以删掉");
+Check(!discovery2.RemoveCustom(entryA.Id, out string? nativeRemoveError),
+    "已知游戏不能误删成自定义条目：" + nativeRemoveError);
+Check(discovery2.RemoveCustom(bare.Entry!.Id, out string? bareRemoveError),
+    "自定义条目可以删掉：" + bareRemoveError);
+Check(File.Exists(bareExe), "移除条目不删除用户的游戏 exe");
+Check(GameEntryStore.Load(storePath).Find(bare.Entry.Id) is null, "移除结果写回 games.json");
+Check(discovery2.RemoveCustom(added.Entry!.Id, out string? customRemoveError),
+    "带 ReShade.ini 的自定义条目也可以删掉：" + customRemoveError);
+Check(GameEntryStore.Load(storePath).Find(added.Entry.Id) is null, "删除后重载不会重新出现自定义条目");
+Check(File.Exists(customExe) && File.Exists(added.Entry.ReShadeIniPath!), "移除记录保留游戏和 ReShade 文件");
+Check(!discovery2.RemoveCustom(added.Entry.Id, out string? missingRemoveError)
+    && !string.IsNullOrWhiteSpace(missingRemoveError), "重复移除提供错误原因");
+
+var failedRemoveStore = GameEntryStore.Load(storePath);
+failedRemoveStore.Capture(added.Entry);
+failedRemoveStore.SetUseInjectMode(added.Entry.Id, true);
+failedRemoveStore.SetSkipShadeInjector(added.Entry.Id, true);
+failedRemoveStore.Save(storePath);
+byte[] beforeFailedRemove = File.ReadAllBytes(storePath);
+GameEntryRecord beforeFailedRecord = failedRemoveStore.Find(added.Entry.Id)!;
+using (var storeLock = File.Open(storePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+{
+    var failingDiscovery = new GameDiscoveryService(failedRemoveStore) { StorePath = storePath };
+    Check(!failingDiscovery.RemoveCustom(added.Entry.Id, out string? saveRemoveError)
+        && !string.IsNullOrWhiteSpace(saveRemoveError), "文件锁定时移除失败并报告保存错误");
+    Check(ReferenceEquals(failedRemoveStore.Find(added.Entry.Id), beforeFailedRecord), "保存失败恢复原游戏记录");
+    Check(failedRemoveStore.GetUseInjectMode(added.Entry.Id)
+        && failedRemoveStore.GetSkipShadeInjector(added.Entry.Id), "保存失败恢复注入开关");
+}
+Check(File.ReadAllBytes(storePath).SequenceEqual(beforeFailedRemove), "保存失败保持磁盘游戏列表不变");
+Check(GameEntryStore.Load(storePath).Find(added.Entry.Id) is not null, "保存失败后重载仍保留游戏");
 Check(new GameEntryStore().Games.Count == 0, "空 store 不会炸");
 
 Console.WriteLine();
@@ -1703,6 +1780,40 @@ Check(afterAlign.Split(shadeRoot + @"\reshade-shaders\Shaders\**").Length - 1 ==
 Check(!ShadePathAligner.Align(seriIni, shadeRoot).Changed, "修完再对齐是幂等的");
 try { Directory.Delete(Path.GetDirectoryName(seriIni)!, true); } catch { }
 
+// 用户截图那个 case 2：旧启动器（便携版）按「每游戏插件包」把 AddonPath 写到它的
+// <旧安装>\cache\games\hk4e_cn\Addons，旧安装清理后目录没了。这种路径不带特征目录段，
+// RootOf 认不出 → 提示条一直报不一致、点「指回」却弹「不用改」，死锁。
+// 死目录必须被指回当前共享插件目录。
+string deadPackIni = Path.Combine(root, "dead-pack-game", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(deadPackIni)!);
+string deadPackAddons = Path.Combine(root, "old-install-gone", "cache", "games", "hk4e_cn", "Addons");
+File.WriteAllLines(deadPackIni, [
+    "[ADDON]",
+    @"AddonPath=" + deadPackAddons,
+]);
+
+ShadePathAlignResult deadPackAligned = ShadePathAligner.Align(deadPackIni, shadeRoot);
+Check(deadPackAligned.ChangedKeys.Contains("[ADDON] AddonPath"), "死掉的他机插件包 AddonPath 被指回当前根");
+Check(ReShadeProfile.Load(deadPackIni).AddonPath == Path.Combine(shadeRoot, "reshade-shaders", "Addons"),
+    "指回后是共享插件目录");
+Check(!ShadePathAligner.Align(deadPackIni, shadeRoot).Changed, "改完再对齐是幂等的");
+try { Directory.Delete(Path.GetDirectoryName(deadPackIni)!, true); } catch { }
+
+// 反过来：AddonPath 指向存在着的自定义目录（不是插件包、不带特征段）—— 用户在别的地方
+// 维护的插件目录可能就是这样，不能因为「不认识」就改掉
+string customAddons = Path.Combine(root, "my-own-addons");
+Directory.CreateDirectory(customAddons);
+string customIni = Path.Combine(root, "custom-game", "ReShade.ini");
+Directory.CreateDirectory(Path.GetDirectoryName(customIni)!);
+File.WriteAllLines(customIni, [
+    "[ADDON]",
+    @"AddonPath=" + customAddons,
+]);
+
+Check(!ShadePathAligner.Align(customIni, shadeRoot).Changed, "存在着的自定义 AddonPath 不动");
+try { Directory.Delete(Path.GetDirectoryName(customIni)!, true); } catch { }
+try { Directory.Delete(customAddons, true); } catch { }
+
 // 用户截图那个 case：完整包把绝对路径改写成相对，模板复制到游戏目录后 AddonPath 变成相对路径，
 // 按 ini 所在目录解析落到游戏目录\reshade-shaders\Addons（不存在）——
 // 提示条报「指向游戏目录」，对齐器却跳过相对路径 → 点「指回」弹「不用改」，死锁
@@ -1868,8 +1979,7 @@ Check(OptiScalerRuntime.HasFsrBridge(bridgeWithDll), "DLL 在就算有桥（ini 
 //（OptiScalerLibrary.NormalizePrimaryDll 对所有 Release 模块一律归一化），之后所有「按文件名
 // 找桥」的地方都认不出来 —— 模块明明装好了却一直报「FSR Bridge 缺失」。
 Console.WriteLine("-- 桥被旧下载器改名成 OptiScaler.dll（装了也要认得出来）--");
-string hostPe = Environment.ProcessPath
-    ?? System.Reflection.Assembly.GetEntryAssembly()?.Location
+string hostPe = System.Reflection.Assembly.GetEntryAssembly()?.Location
     ?? throw new InvalidOperationException("拿不到测试宿主自己的 PE 路径");
 
 string renamedBridge = Path.Combine(root, "bridge-renamed", "genshin-fsr-bridge", "v2.3.4-fg-20261006");
@@ -1980,11 +2090,21 @@ string[]? chainLines = OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge,
 ]);
 Check(chainLines is { Length: 5 }, $"链清单写了 5 步（实际 {chainLines?.Length}）");
 Check(chainLines![0] == "wait dxgi.dll", "第 1 步是 wait dxgi.dll —— 3DMigoto DllMain 的硬门槛");
-Check(chainLines[1] == "migoto " + Path.Combine("..", "GIMI", "d3d11.dll"),
-    $"第 2 步是 migoto 且按相对桥目录写（实际 {chainLines[1]}）");
-Check(chainLines[2] == "load " + Path.Combine("..", "OptiScaler", "OptiScaler.dll"), "第 3 步 load OptiScaler");
-Check(chainLines[3] == "wait OptiScaler.dll", "第 4 步等 OptiScaler 进模块表，之后才注 ReShade");
-Check(chainLines[4] == "load " + Path.Combine("..", "Shade", "ReShade64.dll"), "ReShade 排最后（先注它会 600）");
+Check(chainLines[1] == "migoto " + Path.GetFullPath(chainGimi),
+    $"step 2 migoto is an absolute path (actual {chainLines[1]})");
+Check(chainLines[2] == "load " + Path.GetFullPath(autoloadDll), "step 3 loads OptiScaler by absolute path");
+Check(chainLines[3] == "wait OptiScaler.dll", "step 4 waits for OptiScaler before ReShade");
+Check(chainLines[4] == "load " + Path.GetFullPath(chainShade), "ReShade stays last and is absolute");
+
+string ffx12Path = Path.Combine(autoloadRoot, "payload", "AMD", "amd_fidelityfx_upscaler_dx12.dll");
+Directory.CreateDirectory(Path.GetDirectoryName(ffx12Path)!);
+File.WriteAllText(ffx12Path, "fake");
+List<string> ordinaryExePlan = GenshinLaunchRouting.BuildExeInjectionPlan(
+    autoloadDll, ffx12Path, autoloadDll, chainShade, [chainGimi, chainGimi]);
+Check(ordinaryExePlan.SequenceEqual([autoloadDll, chainGimi, ffx12Path, chainShade]),
+    "Ordinary Genshin EXE batch is Bridge -> extras -> FFX -> Opti -> ReShade, deduplicated");
+Check(ordinaryExePlan.Count(path => string.Equals(path, autoloadDll, StringComparison.OrdinalIgnoreCase)) == 1,
+    "Opti appears once even if it is both bridge-owned slot and selected runtime");
 
 byte[] chainBytes = File.ReadAllBytes(Path.Combine(autoloadBridge, OptiScalerRuntime.FsrBridgeChainName));
 Check(!(chainBytes.Length >= 3 && chainBytes[0] == 0xEF && chainBytes[1] == 0xBB && chainBytes[2] == 0xBF),
@@ -1994,8 +2114,57 @@ Check(OptiScalerRuntime.ReadFsrBridgeChain(autoloadBridge)?.Contains("wait dxgi.
 
 string[]? chainFar = OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge,
     [OptiScalerRuntime.FsrBridgeChainStep.Migoto(Path.Combine(root, "far-away", "d3d11.dll"))]);
-Check(chainFar is { Length: 1 } && chainFar[0].Contains(Path.Combine("far-away", "d3d11.dll"), StringComparison.Ordinal),
-    "爬到两层以上照样写得进去（退回绝对路径，那种布局本来也搬不走）");
+Check(chainFar is { Length: 1 } && chainFar[0] == "migoto " + Path.GetFullPath(Path.Combine(root, "far-away", "d3d11.dll")),
+    "a path outside the bridge tree is still one absolute migoto step");
+
+string relativeFfx = Path.Combine("..", "AMD", "amd_fidelityfx_upscaler_dx12.dll");
+string[]? absoluteFromRelative = OptiScalerRuntime.WriteFsrBridgeChain(autoloadBridge,
+[
+    OptiScalerRuntime.FsrBridgeChainStep.Wait("dxgi.dll"),
+    OptiScalerRuntime.FsrBridgeChainStep.Load(relativeFfx),
+    OptiScalerRuntime.FsrBridgeChainStep.Load(autoloadDll),
+    OptiScalerRuntime.FsrBridgeChainStep.Wait("OptiScaler.dll"),
+]);
+Check(absoluteFromRelative is { Length: 4 }
+      && absoluteFromRelative[0] == "wait dxgi.dll"
+      && absoluteFromRelative[1] == "load " + Path.GetFullPath(relativeFfx)
+      && Path.IsPathRooted(absoluteFromRelative[1]["load ".Length..])
+      && !absoluteFromRelative[1].Contains(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+      && absoluteFromRelative[2] == "load " + Path.GetFullPath(autoloadDll)
+      && absoluteFromRelative[3] == "wait OptiScaler.dll",
+    "a relative load path is canonicalized to absolute while wait tokens and order stay unchanged");
+
+string concurrentRoot = Path.Combine(root, "chain-concurrent");
+var concurrentDirs = Enumerable.Range(0, 8).Select(i =>
+{
+    string dir = Path.Combine(concurrentRoot, i.ToString());
+    Directory.CreateDirectory(dir);
+    return dir;
+}).ToArray();
+var concurrentLines = new string[concurrentDirs.Length][];
+Parallel.For(0, concurrentDirs.Length, i =>
+{
+    string dll = Path.Combine("rel", $"m{i}.dll");
+    concurrentLines[i] = OptiScalerRuntime.WriteFsrBridgeChain(concurrentDirs[i],
+    [
+        OptiScalerRuntime.FsrBridgeChainStep.Wait("dxgi.dll"),
+        OptiScalerRuntime.FsrBridgeChainStep.Load(dll),
+        OptiScalerRuntime.FsrBridgeChainStep.Wait("OptiScaler.dll"),
+    ])!;
+});
+bool concurrentOk = true;
+for (int i = 0; i < concurrentDirs.Length; i++)
+{
+    string expected = "load " + Path.GetFullPath(Path.Combine("rel", $"m{i}.dll"));
+    if (concurrentLines[i] is not { Length: 3 }
+        || concurrentLines[i][0] != "wait dxgi.dll"
+        || concurrentLines[i][1] != expected
+        || concurrentLines[i][2] != "wait OptiScaler.dll")
+    {
+        concurrentOk = false;
+    }
+}
+Check(concurrentOk, "concurrent chain writes keep each load absolute and do not cross steps");
 
 Check(OptiScalerRuntime.RemoveFsrBridgeChain(autoloadBridge, out string? chainBackup)
       && chainBackup is not null && File.Exists(chainBackup)
@@ -3170,6 +3339,128 @@ File.Delete(minimalIni);
 Check(!OptiScalerRuntime.EnsureConfigDllPath(minimalBuild), "missing INI not fabricated");
 Check(!OptiScalerRuntime.EnsureConfigDllPath(Path.Combine(root, "absent-build")), "missing build not fabricated");
 
+Console.WriteLine("== 回写「配置」时保留用户写的机器相关键（OptiDllPath） ==");
+string pinnedBuild = Path.Combine(root, "回写配置", "mfg-ada-0.1.9");
+Directory.CreateDirectory(pinnedBuild);
+string pinnedIni = Path.Combine(pinnedBuild, "OptiScaler.ini");
+string pinnedAbsolute = Path.Combine(pinnedBuild, "OptiScaler");
+
+// 用户自己写的配置：相对路径 + 一份游戏内设置
+string userConfig =
+    "; Main folder for OptiScaler to check dll files below\r\n"
+    + "; Default is .\\OptiScaler\r\n"
+    + "[Libraries]\r\n"
+    + "OptiDllPath = .\\OptiScaler\r\n"
+    + "\r\n"
+    + "[FrameGen]\r\n"
+    + "FGOutput = DLSSG\r\n";
+
+// 运行时那份：Hub 启动时已把 OptiDllPath 钉成本机绝对路径，游戏里又把 FGOutput 改了
+string runtimeText =
+    "; Main folder for OptiScaler to check dll files below\r\n"
+    + "; Default is .\\OptiScaler\r\n"
+    + "[Libraries]\r\n"
+    + $"OptiDllPath = {pinnedAbsolute}\r\n"
+    + "\r\n"
+    + "[FrameGen]\r\n"
+    + "FGOutput = FSR3\r\n";
+
+string restored = OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, userConfig);
+Check(restored.Contains("OptiDllPath = .\\OptiScaler"), "回写的配置保留用户写的相对路径");
+Check(!restored.Contains(pinnedAbsolute), "本机绝对路径没被带进配置");
+Check(restored.Contains("FGOutput = FSR3"), "游戏内改的设置照常回写进配置");
+Check(restored.Contains("; Default is .\\OptiScaler") && restored.Contains("[FrameGen]"), "配置其余内容原样保留");
+
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, "[libraries]\r\noptidllpath=X:\\previous-machine\r\n")
+        .Contains("OptiDllPath = X:\\previous-machine"),
+    "配置里小写节 / 小写键也认（换机器后就该拿配置自己那份）");
+
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, "[FrameGen]\r\nFGOutput=DLSSG\r\n") == runtimeText,
+    "配置里没写这个键 → 不动它，不凭空造值");
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, null) == runtimeText, "没有参考配置 → 原样返回");
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, string.Empty) == runtimeText, "参考配置为空 → 原样返回");
+
+// 「把当前配置存成一份新配置」：没有旧值可留 → 退回 OptiScaler 自己的默认值，仍然不带本机路径
+string brandNew = OptiScalerRuntime.RestoreMachinePinnedKeys(
+    runtimeText, null, OptiScalerRuntime.DefaultOptiDllPath);
+Check(brandNew.Contains($"OptiDllPath = {OptiScalerRuntime.DefaultOptiDllPath}") && !brandNew.Contains(pinnedAbsolute),
+    "另存为新配置也不带本机绝对路径（退回 .\\OptiScaler）");
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(runtimeText, userConfig, OptiScalerRuntime.DefaultOptiDllPath)
+        .Contains("OptiDllPath = .\\OptiScaler"),
+    "有旧值的配置优先用旧值，fallback 只在没旧值时生效");
+
+// 配置落地后照常按本机路径钉一遍：配置文件保持便携，运行时那份仍是本机的
+File.WriteAllText(pinnedIni, restored);
+Check(OptiScalerRuntime.EnsureConfigDllPath(pinnedBuild), "回写后的配置再钉一次照常成功");
+string pinnedAgain = File.ReadAllText(pinnedIni);
+Check(pinnedAgain.Contains($"OptiDllPath = {pinnedAbsolute}"), "运行时那份仍是本机绝对路径");
+Check(OptiScalerRuntime.RestoreMachinePinnedKeys(pinnedAgain, restored).Contains("OptiDllPath = .\\OptiScaler"),
+    "钉过之后再回写，配置还是用户那份（来回多次也不会被污染）");
+
+Console.WriteLine("== 火箭模式：主 ini 归属记账 + 收回上一次会话的改动 ==");
+string rocketBuild = Path.Combine(root, "火箭模式", "mfg-ada-0.1.9");
+Directory.CreateDirectory(rocketBuild);
+string rocketIni = Path.Combine(rocketBuild, "OptiScaler.ini");
+string rocketProfiles = Path.Combine(rocketBuild, "profiles");
+string rocketOwnerFile = Path.Combine(rocketBuild, OptiScalerProfiles.RuntimeOwnerFileName);
+
+string RocketIni(string frameGen) =>
+    $"[FrameGen]\r\nFGOutput = {frameGen}\r\n[Libraries]\r\nOptiDllPath = .\\OptiScaler\r\n";
+string RocketProfile(string game) => File.ReadAllText(Path.Combine(rocketProfiles, game + ".ini"));
+
+Check(!OptiScalerProfiles.Activate(rocketBuild, "hk4e_cn"), "主 ini 不存在时不激活");
+Check(!File.Exists(rocketOwnerFile), "激活失败不留记账");
+
+File.WriteAllText(rocketIni, RocketIni("DLSSG"));
+Check(OptiScalerProfiles.Activate(rocketBuild, "hk4e_cn"), "首次激活原神：从主 ini 继承一份 profile");
+Check(OptiScalerProfiles.RuntimeOwner(rocketBuild) == "hk4e_cn", "激活时记下「主 ini 现在是谁的」");
+
+// 火箭会话：游戏把设置写进主 ini，但 Hub 这次没抓到退出（或者压根不在场）
+File.WriteAllText(rocketIni, RocketIni("FSR3"));
+Check(OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) == "hk4e_cn", "下次准备前把主 ini 的改动收回原神 profile");
+Check(RocketProfile("hk4e_cn").Contains("FGOutput = FSR3"), "改动确实落到原神 profile");
+
+// 换游戏：记账跟着换，收回的是绝区零，原神那份不许被动
+File.WriteAllText(OptiScalerProfiles.ProfilePath(rocketBuild, "nap_cn"), RocketIni("DLSSG"));
+Check(OptiScalerProfiles.Activate(rocketBuild, "nap_cn") && OptiScalerProfiles.RuntimeOwner(rocketBuild) == "nap_cn",
+    "换游戏后记账跟着换");
+Check(RocketProfile("hk4e_cn").Contains("FGOutput = FSR3") && RocketProfile("nap_cn").Contains("FGOutput = DLSSG"),
+    "切到绝区零没有污染原神 profile");
+
+File.WriteAllText(rocketIni, RocketIni("FSR2"));
+Check(OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) == "nap_cn", "收回的是绝区零");
+Check(RocketProfile("nap_cn").Contains("FGOutput = FSR2") && RocketProfile("hk4e_cn").Contains("FGOutput = FSR3"),
+    "绝区零的改动只进绝区零 profile");
+
+// 记账丢了（老版本留下的构建目录）→ 什么都不做：宁可不动，也不能把 A 的状态写进 B
+File.Delete(rocketOwnerFile);
+Check(OptiScalerProfiles.RuntimeOwner(rocketBuild) is null
+      && OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) is null,
+    "没记账就一个 profile 都不碰");
+
+// 记账指着一个还没有 profile 的游戏 → 同样不动，不凭空造文件
+File.WriteAllText(rocketOwnerFile, "hkrpg_cn");
+Check(OptiScalerProfiles.CollectRuntimeChangesChecked(rocketBuild).Status == OptiScalerProfiles.CollectionStatus.Blocked
+      && !File.Exists(Path.Combine(rocketProfiles, "hkrpg_cn.ini")), "记账指向没 profile 的游戏时不造文件");
+
+// 收回来的 profile 里 OptiDllPath 就是主 ini 那份本机绝对路径，回写成配置时必须还原
+File.Delete(rocketOwnerFile);
+Check(OptiScalerProfiles.Activate(rocketBuild, "hk4e_cn"), "恢复原神配置时重新建立归属基线");
+File.WriteAllText(rocketIni, RocketIni("FSR3").Replace(".\\OptiScaler", pinnedAbsolute));
+Check(OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) == "hk4e_cn", "记账说是原神就收原神的");
+string collected = RocketProfile("hk4e_cn");
+Check(collected.Contains(pinnedAbsolute), "收回来的 profile 带着本机绝对路径（运行时那份本来就该是）");
+Check(!OptiScalerRuntime.RestoreMachinePinnedKeys(collected, userConfig).Contains(pinnedAbsolute)
+      && OptiScalerRuntime.RestoreMachinePinnedKeys(collected, userConfig).Contains("OptiDllPath = .\\OptiScaler"),
+    "这份内容回写成配置时，本机路径被还原成用户写的那份");
+
+// 主 ini 和 profile 一模一样 = 这次没有要收回的改动：必须空操作，
+// 否则会把用户刚手改过的配置拿 profile 盖回去
+File.WriteAllText(rocketOwnerFile, "hk4e_cn");
+File.WriteAllText(rocketIni, RocketIni("FSR3"));
+Check(OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) == "hk4e_cn", "有改动就收");
+Check(OptiScalerProfiles.CollectRuntimeChanges(rocketBuild) is null, "收完之后主 ini 与 profile 一致 → 再收是空操作");
+
 Console.WriteLine("== 启动前引导：游戏 ReShade.ini 缺失 / 教程标记 / 第二个 runtime 的 ReShade2.ini ==");
 string bootHostRoot = Path.Combine(root, "bootstrap-host");
 Directory.CreateDirectory(Path.Combine(bootHostRoot, "reshade-shaders", "Addons"));
@@ -3240,6 +3531,38 @@ Check(fixedSecondary.GetValue("OVERLAY", "TutorialProgress") == "4", "教程标�
 GameIniBootstrapResult boot7 = GameIniBootstrap.Ensure(bootEntry, bootHost);
 Check(!boot7.SyncedSecondary && !boot7.ChangedAnything, "同步幂等：再跑一遍什么都不写");
 Check(HoYoShadeHub.Extensions.Tests.GameIniBootstrapTests.Run() == 0, "最终 DX12 bootstrap 回归通过");
+Check(HoYoShadeHub.Extensions.Tests.XxmiInjectionPreparationTests.Run() == 0, "原神 XXMI Manual 主组件顺序/唯一责任/准备拒绝回归通过");
+
+// ⑥ 写坏的热键值（36,,0,,0,,0）：ReShade 解析不出来 = 这个键根本没绑 → 按 Home 打不开菜单，
+//    而覆盖包存档每次启动又把它写回去（2026-10-10 工单）。启动前必须收敛回四段。
+Check(ReShadeHotkeys.TryNormalize("INPUT", "KeyOverlay", "36,,0,,0,,0", out string hotkeyA) && hotkeyA == "36,0,0,0",
+    "写坏的热键收敛回四段：36,,0,,0,,0 → 36,0,0,0");
+Check(ReShadeHotkeys.TryNormalize("INPUT", "KeyOverlay", "36,0,0,,0", out string hotkeyB) && hotkeyB == "36,0,0,0",
+    "缺段的热键补齐：36,0,0,,0 → 36,0,0,0");
+Check(!ReShadeHotkeys.TryNormalize("INPUT", "KeyOverlay", "36,0,0,0", out _)
+      && !ReShadeHotkeys.TryNormalize("INPUT", "KeyEffects", "0,0,0,0", out _)
+      && !ReShadeHotkeys.TryNormalize("INPUT", "KeyOverlay", "abc,0,0,0", out _)
+      && !ReShadeHotkeys.TryNormalize("GENERAL", "PresetShortcutKeys", "36,,0", out _)
+      && !ReShadeHotkeys.TryNormalize("INPUT", "InputProcessing", "2", out _),
+    "正常热键 / 非热键 / 认不出来的值一律不动");
+
+ReShadeProfile brokenPrimary = ReShadeProfile.Load(bootEntry.ReShadeIniPath!);
+brokenPrimary.SetValue("INPUT", "KeyOverlay", "36,,0,,0,,0");
+brokenPrimary.Save();
+ReShadeProfile brokenSecondary = ReShadeProfile.Load(staleSecondary);
+brokenSecondary.SetValue("INPUT", "KeyScreenshot", "44,0,0,,0");
+brokenSecondary.Save();
+
+GameIniBootstrapResult boot8 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(boot8.RepairedHotkeys, "启动前发现写坏的热键");
+Check(ReShadeProfile.Load(bootEntry.ReShadeIniPath!).GetValue("INPUT", "KeyOverlay") == "36,0,0,0",
+    "主 ini 的坏热键被修成 36,0,0,0");
+Check(ReShadeProfile.Load(staleSecondary).GetValue("INPUT", "KeyScreenshot") == "44,0,0,0",
+    "第二 runtime 的坏热键同样被修");
+Check(ReShadeProfile.Load(staleSecondary).GetValue("INPUT", "KeyOverlay") == "113,0,0,0",
+    "修热键不碰第二 runtime 自己的好值");
+GameIniBootstrapResult boot9 = GameIniBootstrap.Ensure(bootEntry, bootHost);
+Check(!boot9.RepairedHotkeys && !boot9.ChangedAnything, "热键修完再跑一遍什么都不写（幂等）");
 
 Console.WriteLine("== DLSS5 预设切换器：分享码编解码 + 预设库 ==");
 // 跨实现测试向量：Python 独立实现（zlib.crc32 + 自定义字母表 base64）算的 flags=0 裸路径
@@ -3374,6 +3697,21 @@ Check(GamePackIniConfig.Load(ucPackRoot) is null, "坏 ini_config.json 当没有
 File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.IniConfigFileName), "{}");
 Check(GamePackIniConfig.Load(ucPackRoot) is null, "空配置当没有");
 
+// 覆盖包的 ini_config.json 是「每次启动都重新写」的一条路：里面写坏的热键值必须被挡住，
+// 否则用户手改游戏 ini 会被它一直盖回坏值（Home 罢工的复现路径）。
+File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.IniConfigFileName), """
+{
+  "set": { "INPUT": { "KeyOverlay": "36,,0,,0,,0" } }
+}
+""");
+string hotkeyIni = Path.Combine(root, "hotkey.ini");
+File.WriteAllText(hotkeyIni, "[INPUT]\nKeyOverlay=36,,0,,0,,0\n");
+Check(GamePackIniConfig.Load(ucPackRoot)!.Apply(hotkeyIni), "包里的坏热键值触发一次写入");
+string hotkeyText = File.ReadAllText(hotkeyIni);
+Check(hotkeyText.Contains("KeyOverlay=36,0,0,0") && !hotkeyText.Contains(",,"),
+    "写入时已收敛成 36,0,0,0，坏值不再落盘");
+Check(!GamePackIniConfig.Load(ucPackRoot)!.Apply(hotkeyIni), "收敛后再 apply 幂等（不抖 mtime）");
+
 // auto.json：动作 / runOnLaunch / 步骤参数
 File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.AutoActionFileName), """
 {
@@ -3392,7 +3730,9 @@ File.WriteAllText(Path.Combine(ucPackRoot, GameAddonPackUserContent.AutoActionFi
   ]
 }
 """);
-List<PackAutoAction> actions = PackAutoActionFile.Load(ucPackRoot);
+Check(PackAutoActionFile.Load(ucPackRoot).Count == 0, "坏覆盖包整体拒绝，不执行剩余步骤");
+List<PackAutoAction> actions = PackAutoActionFile.Parse(File.ReadAllText(
+    Path.Combine(ucPackRoot, GameAddonPackUserContent.AutoActionFileName)));
 Check(actions.Count == 2, "空动作被丢掉、坏步骤被跳过");
 Check(actions[0].Name == "一键 NR" && actions[0].RunOnLaunch && actions[0].Steps.Count == 3,
     "动作名 / runOnLaunch / 步骤数");
@@ -3611,6 +3951,26 @@ Check(GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, false, false), "Without
 Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(true, false, false), "Injection-only mode not changed into direct start");
 Check(!GenshinLaunchRouting.UseEarlyGraphicsLaunch(false, true, false), "Starward launch remains separate");
 
+Console.WriteLine("== Ordinary Genshin EXE batch injection route gate ==");
+Check(GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, false, true, true, true, @"C:\Genshin"),
+    "Ordinary Genshin with selected/enabled Bridge and OptiScaler uses EXE batch injection");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(false, false, false, false, true, true, true, @"C:\Game"),
+    "Non-Genshin never uses the Genshin EXE batch route");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, false, false, true, true, @"C:\Genshin"),
+    "OptiScaler launch disabled keeps the ordinary safe path");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, false, true, false, true, @"C:\Genshin"),
+    "Globally disabled or unchecked Bridge is not selected by the route");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, true, false, false, true, true, true, @"C:\Genshin"),
+    "Injection-only mode is not redirected to ordinary EXE batch");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, true, false, true, true, true, @"C:\Genshin"),
+    "Starward route remains unchanged");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, true, true, true, true, @"C:\Genshin"),
+    "XXMI routes remain on their existing chain path");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, false, true, true, false, @"C:\Genshin"),
+    "Missing OptiScaler build keeps the existing safe fallback");
+Check(!GenshinLaunchRouting.CanUseGenshinExeInjection(true, false, false, false, true, true, true, null),
+    "Missing game path denies EXE batch creation");
+
 Console.WriteLine("== Genshin ordered inject chain gate ==");
 Check(GenshinLaunchRouting.CanUseOrderedInjectChain(true, false, false, true, true, @"C:\g", @"C:\b\Dx11FsrBridge.dll"),
     "Manual XXMI + Genshin + bridge: chain allowed");
@@ -3647,11 +4007,7 @@ Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("MANUAL") == "MANUAL", "
 Check(XxmiLaunchConfiguration.PreserveLegacyStartMethod("") == "OPTION_REMOVED", "Missing obsolete key uses current placeholder");
 
 Console.WriteLine("== Pre-launch process cleanup is bounded to supplied instances ==");
-using (var worker = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-{
-    FileName = Environment.ProcessPath!, Arguments = "owned-process-test-worker",
-    UseShellExecute = false, CreateNoWindow = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-}))
+using (var worker = System.Diagnostics.Process.Start(TestWorkerStartInfo()))
 {
     Check(worker is not null, "Controlled process started");
     if (worker is not null)
@@ -3853,7 +4209,8 @@ Check(XxmiLaunchModes.Parse("unknown") == XxmiLaunchMode.Official, "Invalid save
 
     // ===== 真机会话：有就拿现成的 session.txt 做一次真实前后对比 =====
     string realSessions = @"D:\APPS\HoYoShadeHub\log\sessions";
-    if (Directory.Exists(realSessions))
+    // Offline verification must not inspect unrelated live game/session logs.
+    if (!args.Contains("--fixtures-only", StringComparer.Ordinal) && Directory.Exists(realSessions))
     {
         DirectoryInfo? newest = new DirectoryInfo(realSessions).GetDirectories()
             .OrderByDescending(d => d.LastWriteTime)
@@ -3938,6 +4295,10 @@ Check(XxmiLaunchModes.Parse("unknown") == XxmiLaunchMode.Official, "Invalid save
 
 var rocketTests = HoYoShadeHub.Extensions.Tests.RocketIntegrationTests.Run();
 _passed += rocketTests.Passed; _failed += rocketTests.Failed;
+var uiRuntimeTests = await HoYoShadeHub.Extensions.Tests.UiRuntimeTests.RunAsync();
+_passed += uiRuntimeTests.Passed; _failed += uiRuntimeTests.Failed;
+Check(await HoYoShadeHub.Extensions.Tests.LauncherRegressionTests.RunAsync() == 0,
+    "Launcher regression suites pass");
 Console.WriteLine($"========== PASS {_passed} / FAIL {_failed} ==========");
 try { Directory.Delete(root, true); } catch { }
 static void WriteZipText(ZipArchive zip, string entryName, string text)
@@ -3949,10 +4310,24 @@ static void WriteZipText(ZipArchive zip, string entryName, string text)
 
 static string HostBridgeVersion()
 {
-    string path = Environment.ProcessPath
-        ?? System.Reflection.Assembly.GetEntryAssembly()?.Location
+    string path = System.Reflection.Assembly.GetEntryAssembly()?.Location
         ?? string.Empty;
     return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion ?? string.Empty;
+}
+
+static System.Diagnostics.ProcessStartInfo TestWorkerStartInfo()
+{
+    var start = new System.Diagnostics.ProcessStartInfo
+    {
+        FileName = Environment.ProcessPath!,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+    };
+    if (string.Equals(Path.GetFileNameWithoutExtension(start.FileName), "dotnet", StringComparison.OrdinalIgnoreCase))
+        start.ArgumentList.Add(System.Reflection.Assembly.GetEntryAssembly()!.Location);
+    start.ArgumentList.Add("owned-process-test-worker");
+    return start;
 }
 
 // 和 ModuleRegistry.IsAcceptedModuleDll 同一把尺：桥只收 2.3.1+。本测试宿主只引用 Extensions

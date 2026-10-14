@@ -137,6 +137,19 @@ public sealed class OverlayManifest
 
     public bool IsValid => EffectiveSchema > 0;
 
+    public void ValidatePaths(string packageRoot)
+    {
+        if (Game is not null) PackageTree.ValidateGame(Game);
+        foreach (OverlayManifestTarget target in Targets)
+            PackageTree.ResolveRelative(packageRoot, target.From ?? string.Empty);
+        foreach (OverlayManifestDll dll in Dlls)
+            if (!string.IsNullOrWhiteSpace(dll.File)) PackageTree.ResolveRelative(packageRoot, dll.File);
+        foreach (OverlayManifestAddon addon in Addons)
+            if (!string.IsNullOrWhiteSpace(addon.File)) PackageTree.ResolveRelative(packageRoot, addon.File);
+        foreach (OverlayManifestFile file in Files)
+            if (!string.IsNullOrWhiteSpace(file.Path)) PackageTree.ResolveRelative(packageRoot, file.Path);
+    }
+
     /// <summary>界面上的名字：没写 name 就用版本号 / 「覆盖包」</summary>
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? "覆盖包" : Name.Trim();
 

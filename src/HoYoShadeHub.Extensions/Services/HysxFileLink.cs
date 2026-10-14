@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace HoYoShadeHub.Extensions.Services;
 
@@ -34,7 +35,7 @@ public static class HysxFileLink
 
     /// <summary>
     /// 把 <paramref name="source"/> 链接/复制到 <paramref name="target"/>。
-    /// 已经存在同名目标会先删掉（调用方负责判断「内容一样就跳过」）。
+    /// 先准备临时链接/副本，再替换目标（调用方负责判断内容一样就跳过）。
     /// </summary>
     /// <returns>true = 硬链接，false = 复制</returns>
     public static bool LinkOrCopy(string source, string target)
@@ -47,25 +48,18 @@ public static class HysxFileLink
             return true;
         }
 
-        if (File.Exists(targetFull))
+        string staged = targetFull + ".hysx-" + Guid.NewGuid().ToString("N");
+        try
         {
-            try
-            {
-                File.Delete(targetFull);
-            }
-            catch
-            {
-                // 删不掉就交给下面的 Copy 覆盖
-            }
+            bool linked = SameVolume(source, staged) && CreateHardLinkW(staged, Path.GetFullPath(source), IntPtr.Zero);
+            if (!linked) File.Copy(source, staged, overwrite: false);
+            File.Move(staged, targetFull, overwrite: true);
+            return linked;
         }
-
-        if (SameVolume(source, targetFull) && CreateHardLinkW(targetFull, source, IntPtr.Zero))
+        finally
         {
-            return true;
+            if (File.Exists(staged)) File.Delete(staged);
         }
-
-        File.Copy(source, targetFull, overwrite: true);
-        return false;
     }
 
     /// <summary>
@@ -90,12 +84,38 @@ public static class HysxFileLink
                 return false;
             }
 
+            string ext = Path.GetExtension(source);
+            if (ext.Equals(".addon64", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".addon64x", StringComparison.OrdinalIgnoreCase)
+                || IsSmallConfig(source))
+            {
+                using var a = File.OpenRead(source);
+                using var b = File.OpenRead(target);
+                return SHA256.HashData(a).AsSpan().SequenceEqual(SHA256.HashData(b));
+            }
             return sourceInfo.LastWriteTimeUtc <= targetInfo.LastWriteTimeUtc.AddSeconds(1);
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 「小配置」按内容比，不按 mtime 比：大小一样但内容换了（同长度）必须算过期。
+    ///
+    /// <para>
+    /// 覆盖包的插件配置是一族文件：基名 <c>FsrBridgeDepthAddon.ini</c>、游戏专属
+    /// <c>FsrBridgeDepthAddon.hk4e.ini</c> / <c>FsrBridgeDepthAddon-nap.ini</c>。
+    /// 插件在原神读的是 hk4e 那份（`resolve_controller_ini`），只给基名开内容比较会让
+    /// 同族文件规则不一致 —— 所以整族都按内容比。
+    /// </para>
+    /// </summary>
+    private static bool IsSmallConfig(string path)
+    {
+        string name = Path.GetFileName(path);
+        return name.StartsWith("FsrBridgeDepthAddon", StringComparison.OrdinalIgnoreCase)
+               && name.EndsWith(".ini", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>两个文件都存在且大小一样（判断「不用重链」的廉价近似）</summary>

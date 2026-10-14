@@ -86,8 +86,9 @@ public sealed class OptiScalerLibrary
     public bool Exists => RootPath.Length > 0 && Directory.Exists(RootPath);
 
     /// <summary>扫一遍库里的所有构建（新装的排前面）。目录不存在就返回空表。</summary>
-    public List<OptiScalerBuild> List()
+    public List<OptiScalerBuild> List(bool includeDirectorySize = true, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var builds = new List<OptiScalerBuild>();
         if (!Exists)
         {
@@ -96,10 +97,12 @@ public sealed class OptiScalerLibrary
 
         foreach (string sourceDir in Directory.EnumerateDirectories(RootPath))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // 只有「来源目录」下面一层才是构建
             foreach (string versionDir in Directory.EnumerateDirectories(sourceDir))
             {
-                OptiScalerBuild? build = TryReadBuild(sourceDir, versionDir);
+                cancellationToken.ThrowIfCancellationRequested();
+                OptiScalerBuild? build = TryReadBuild(sourceDir, versionDir, includeDirectorySize);
                 if (build is not null)
                 {
                     builds.Add(build);
@@ -111,7 +114,7 @@ public sealed class OptiScalerLibrary
     }
 
     /// <summary>当前启用的那个（state.json 里记的）；没启用 / 目录已经没了 → null</summary>
-    public OptiScalerBuild? GetSelected()
+    public OptiScalerBuild? GetSelected(bool includeDirectorySize = true, CancellationToken cancellationToken = default)
     {
         OptiScalerState state = ReadState();
         if (string.IsNullOrWhiteSpace(state.Selected))
@@ -119,7 +122,7 @@ public sealed class OptiScalerLibrary
             return null;
         }
 
-        return List().FirstOrDefault(b => string.Equals(b.Id, state.Selected, StringComparison.OrdinalIgnoreCase));
+        return List(includeDirectorySize, cancellationToken).FirstOrDefault(b => string.Equals(b.Id, state.Selected, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>当前启用构建的主 DLL 路径（没启用 / 包里没有 dll → null）</summary>
@@ -290,7 +293,7 @@ public sealed class OptiScalerLibrary
         "dbghelp.dll",
     ];
 
-    private OptiScalerBuild? TryReadBuild(string sourceDir, string versionDir)
+    private OptiScalerBuild? TryReadBuild(string sourceDir, string versionDir, bool includeDirectorySize)
     {
         string manifestPath = Path.Combine(versionDir, BuildManifestName);
         OptiScalerBuildManifest? manifest = null;
@@ -326,7 +329,7 @@ public sealed class OptiScalerLibrary
             AssetName = manifest?.AssetName,
             DllPath = dll,
             InstalledAt = manifest?.InstalledAt ?? SafeDirectoryTime(versionDir),
-            SizeBytes = SafeDirectorySize(versionDir),
+            SizeBytes = includeDirectorySize ? SafeDirectorySize(versionDir) : 0,
         };
     }
 

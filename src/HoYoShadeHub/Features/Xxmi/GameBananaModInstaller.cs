@@ -1,8 +1,8 @@
 using HoYoShadeHub.Core;
+using HoYoShadeHub.Extensions.Games;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -26,7 +26,7 @@ internal sealed record GameBananaInstallRequest(
 
 /// <summary>
 /// GameBanana 模组下载安装：把 zip 下载到临时目录，解压进对应游戏 MI 实例的 <c>Mods\</c>。
-/// 更新（Replace）时先把旧目录移到 <c>Mods\_backup\</c> 再解压新版本。
+/// 更新时先验证新版本，再备份旧目录并提交；提交失败恢复旧版本。
 /// </summary>
 internal sealed class GameBananaModInstaller
 {
@@ -67,36 +67,26 @@ internal sealed class GameBananaModInstaller
             ?? throw new InvalidOperationException($"暂不支持 GameBanana 游戏 id {request.GameId}（目前支持：19567 绝区零 → ZZMI）。");
 
         string instance = ResolveInstance(importer);
-        string modsDirectory = XxmiLocator.ModsDirectory(instance);
-        Directory.CreateDirectory(modsDirectory);
+        if (request.ModId <= 0 || request.FileId <= 0) throw new ArgumentException("Mod and file ids must be positive.");
+        var context = ModDirectoryPolicy.ResolveXxmi("gamebanana:" + request.GameId, instance);
+        string modsDirectory = context.ModsDirectory;
+        using FileStream installLease = await ModInstallTransaction.AcquireAsync(context, request.ModId, cancellationToken).ConfigureAwait(false);
 
         // 一个模组在 Mods 下固定一个目录：gb_{modId}，更新时才能精确找到旧版本。
         string destination = Path.Combine(modsDirectory, $"gb_{request.ModId}");
-        string staging = Path.Combine(modsDirectory, "_cache", $"gb_{request.ModId}_{Path.GetRandomFileName()}");
+        string staging = Path.Combine(modsDirectory, "_cache", $"gb_{request.ModId}_{Guid.NewGuid():N}");
+        string? zipPath = null;
 
         try
         {
-            string zipPath = await DownloadAsync(request, cancellationToken).ConfigureAwait(false);
+            ModInstallTransaction.CheckPath(destination);
+            if (!request.Replace && Directory.Exists(destination)) throw new IOException("Mod already exists: " + destination);
+            ModInstallTransaction.CheckPath(staging);
+            zipPath = await DownloadAsync(request, cancellationToken).ConfigureAwait(false);
+            string inner = ModInstallTransaction.PrepareZip(zipPath, staging);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            // BackupOldVersion 用 Directory.Move 原子地把旧目录移进 _backup，
-            // 移动后 destination 已不存在，无需再删除。
-            if (request.Replace && Directory.Exists(destination))
-            {
-                BackupOldVersion(modsDirectory, destination, request.ModId);
-            }
-
-            if (Directory.Exists(destination))
-            {
-                throw new InvalidOperationException($"目标目录已存在：{destination}（请先在模型替换页删除旧版本）。");
-            }
-
-            Directory.CreateDirectory(staging);
-            ZipFile.ExtractToDirectory(zipPath, staging, overwriteFiles: true);
-            TryDeleteFile(zipPath);
-
-            // 常见打包习惯：zip 里只有一层同名根目录。剥掉这层，让 Mods\gb_{id}\ 直接是 mod 内容。
-            string inner = UnwrapSingleRoot(staging);
-            Directory.Move(inner, destination);
+            ModInstallTransaction.Commit(context, request.ModId, inner, request.Replace);
 
             _logger.LogInformation("GameBanana mod {ModId} installed to {Path}", request.ModId, destination);
         }
@@ -107,6 +97,7 @@ internal sealed class GameBananaModInstaller
         }
         finally
         {
+            if (zipPath is not null) TryDeleteFile(zipPath);
             if (Directory.Exists(staging))
             {
                 TryDeleteDirectory(staging);
@@ -116,15 +107,27 @@ internal sealed class GameBananaModInstaller
 
     private string ResolveInstance(string importer)
     {
-        // 扩展协议没有 GameBiz 上下文，按期望实例名在已发现的 XXMI 根下找
-        //（裸名 ZZMI 和版本化名 ZZMI-PACKAGE-V1.4.5 都算）。
+        string[] manual = GameBiz.AllGameBizs
+            .Where(biz => XxmiLocator.ImporterFor(biz) == importer)
+            .Select(biz => AppConfig.GetXxmiInstance(biz))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(path!).TrimEnd('\\', '/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (manual.Length > 1) throw new InvalidOperationException("Multiple saved MI instances; protocol target is ambiguous.");
+        if (manual.Length == 1)
+        {
+            if (!XxmiLocator.IsInstanceForImporter(manual[0], importer)) throw new InvalidOperationException("Saved MI instance is invalid for this game.");
+            return manual[0];
+        }
+        // The protocol carries no region: conflicting saved or discovered targets fail closed.
         string? root = XxmiLocator.FindRoot();
         if (root is not null)
         {
-            string? found = XxmiLocator.ListInstances(root).FirstOrDefault(d => XxmiLocator.IsInstanceForImporter(d, importer));
-            if (found is not null)
+            string[] found = Directory.GetDirectories(root).Where(d => XxmiLocator.IsInstanceForImporter(d, importer)).ToArray();
+            if (found.Length > 1) throw new InvalidOperationException("Multiple MI instances; select a target in the Mod page first.");
+            if (found.Length == 1)
             {
-                return found;
+                return found[0];
             }
         }
 
@@ -135,49 +138,29 @@ internal sealed class GameBananaModInstaller
     private async Task<string> DownloadAsync(GameBananaInstallRequest request, CancellationToken cancellationToken)
     {
         string url = request.DownloadUrl ?? $"https://gamebanana.com/dl/{request.FileId}";
-        string extension = Path.GetExtension(request.FileName ?? string.Empty);
-        if (string.IsNullOrEmpty(extension))
-        {
-            extension = ".zip";
-        }
-        string zipPath = Path.Combine(TemporaryFolder.Path, $"gamebanana_{request.ModId}_{request.FileId}{extension}");
+        string zipPath = Path.Combine(TemporaryFolder.Path, $"gamebanana_{request.ModId}_{request.FileId}_{Guid.NewGuid():N}.zip");
 
         _logger.LogInformation("Downloading GameBanana mod {ModId} from {Url}", request.ModId, url);
 
-        using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, url))
-        using (HttpResponseMessage response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
+        try
         {
-            response.EnsureSuccessStatusCode();
-            await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-            await using (FileStream target = File.Create(zipPath))
+            using (HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, url))
+            using (HttpResponseMessage response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false))
             {
-                await source.CopyToAsync(target, 81920, cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+                await using (FileStream target = new(zipPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    await source.CopyToAsync(target, 81920, cancellationToken).ConfigureAwait(false);
+                }
             }
+            return zipPath;
         }
-
-        return zipPath;
-    }
-
-    private static void BackupOldVersion(string modsDirectory, string oldDestination, int modId)
-    {
-        string backupRoot = Path.Combine(modsDirectory, "_backup");
-        Directory.CreateDirectory(backupRoot);
-        string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        string backup = Path.Combine(backupRoot, $"gb_{modId}_{stamp}");
-        Directory.Move(oldDestination, backup);
-    }
-
-    // zip 内若只有一个顶层目录，返回该目录；否则返回解压根。
-    private static string UnwrapSingleRoot(string directory)
-    {
-        string[] dirs = Directory.GetDirectories(directory);
-        string[] files = Directory.GetFiles(directory);
-
-        if (dirs.Length == 1 && files.Length == 0)
+        catch
         {
-            return dirs[0];
+            TryDeleteFile(zipPath);
+            throw;
         }
-        return directory;
     }
 
     private static void TryDeleteFile(string path)
@@ -187,6 +170,6 @@ internal sealed class GameBananaModInstaller
 
     private static void TryDeleteDirectory(string path)
     {
-        try { Directory.Delete(path, recursive: true); } catch { }
+        try { ModInstallTransaction.CheckTree(path); Directory.Delete(path, recursive: true); } catch { }
     }
 }

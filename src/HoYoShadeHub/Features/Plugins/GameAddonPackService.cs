@@ -77,32 +77,15 @@ internal static class GameAddonPackService
                     string hint = Path.GetFileName(hintDir);
                     if (!gameKey.StartsWith(hint, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    Directory.CreateDirectory(packDirectory);
-                    foreach (string pendingFile in Directory.EnumerateFiles(hintDir))
-                    {
-                        string target = Path.Combine(packDirectory, Path.GetFileName(pendingFile));
-                        try
-                        {
-                            File.Copy(pendingFile, target, overwrite: true);
-                        }
-                        catch
-                        {
-                            // 占用中下轮再铺
-                        }
-                    }
-                    try
-                    {
-                        Directory.Delete(hintDir, recursive: true);
-                    }
-                    catch
-                    {
-                    }
+                    if (!PackPendingMigration.TryMigrate(hintDir, packDirectory, out string? error))
+                        throw new IOException("Pending 覆盖包迁移未完成；源内容保留：" + error);
                 }
             }
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // 暂存铺放只是增强，不挡同步
+            // 不允许部分迁移的 auto.json 在后续步骤中获得授权。
+            throw new IOException("Pending 覆盖包不可用；同步已阻断。", ex);
         }
         string? iniPath = entry?.ReShadeIniPath is { } ini && File.Exists(ini) ? ini : null;
 
@@ -133,7 +116,11 @@ internal static class GameAddonPackService
             return null;
         }
 
-        GameAddonPack.Sync(addonsDirectory, entries, selections.Select(kv => (kv.Key, kv.Value)));
+        // 包指纹：源（共享 Addons / 版本归档）没变就不重铺 —— 覆盖包只生效一次，
+        // 用户在包目录里改过的插件设置不会被下次启动刷回。装包/升级/降级/换版本才重铺一次。
+        var selectionPairs = selections.Select(kv => (kv.Key, kv.Value));
+        string identity = GameAddonPack.ComputeIdentity(gameKey, entries, selectionPairs);
+        GameAddonPack.Sync(addonsDirectory, entries, selectionPairs, identity);
 
         // 包 presets\ 随同步进 DLSS5-Presets（启动路径 GameIniBootstrap 也会再做一次兜底）
         GameAddonPackUserContent.SyncPresets(packDirectory, addonsDirectory);

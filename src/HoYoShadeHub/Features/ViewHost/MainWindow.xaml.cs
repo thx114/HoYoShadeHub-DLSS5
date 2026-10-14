@@ -41,9 +41,9 @@ public sealed partial class MainWindow : WindowEx
 
 
     private bool _mainViewLoaded;
-    private ContentControl _currentPresenter = null!;
-    private ContentControl _nextPresenter = null!;
-    private CompositionScopedBatch? _activeTransitionBatch;
+    private readonly ContentTransitionController _viewTransitions;
+    private bool _closeRequestInProgress;
+    private bool _closeConfirmed;
 
     /// <summary>窗口可调宽高的下限（逻辑像素），再小内容就挤没了</summary>
     private const int MinWindowWidth = 960;
@@ -55,8 +55,12 @@ public sealed partial class MainWindow : WindowEx
         Current = this;
         MainWindowId = AppWindow.Id;
         this.InitializeComponent();
-        _currentPresenter = CurrentContentPresenter;
-        _nextPresenter = NextContentPresenter;
+        _viewTransitions = new(CurrentContentPresenter, NextContentPresenter, SetWizardBackgroundVisibility);
+        Closed += (_, _) =>
+        {
+            _viewTransitions.Dispose();
+            WeakReferenceMessenger.Default.UnregisterAll(this);
+        };
         InitializeMainWindow();
         LoadContentView();
         // 提权窗口收不到 OLE 拖放（UIPI），给窗口和它的 WinUI 子窗口挂上 shell 的 WM_DROPFILES 通道
@@ -151,150 +155,16 @@ public sealed partial class MainWindow : WindowEx
 
 
 
-    private static bool AreAnimationsEnabled()
-    {
-        try
-        {
-            return new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
-        }
-        catch
-        {
-            return true;
-        }
-    }
-
-
-
     private void NavigateToView(UIElement newContent, ViewTransitionType transitionType)
     {
         bool isWizardView = newContent is WelcomeView or HoYoShadeDownloadView or ReShadeDownloadView or QuickSetupView;
+        _viewTransitions.Navigate(newContent, transitionType, isWizardView);
+    }
 
-        if (transitionType == ViewTransitionType.None || !AreAnimationsEnabled() || _currentPresenter.Content == null)
-        {
-            _activeTransitionBatch = null;
-            _currentPresenter.Content = newContent;
-            _currentPresenter.Opacity = 1;
-            _currentPresenter.Visibility = Visibility.Visible;
-            _nextPresenter.Visibility = Visibility.Collapsed;
-            _nextPresenter.Content = null;
-
-            var currentVisual = ElementCompositionPreview.GetElementVisual(_currentPresenter);
-            currentVisual.Offset = Vector3.Zero;
-            currentVisual.Opacity = 1.0f;
-            currentVisual.Scale = Vector3.One;
-
-            WizardBackgroundImage.Visibility = isWizardView ? Visibility.Visible : Visibility.Collapsed;
-            WizardBackgroundMask.Visibility = isWizardView ? Visibility.Visible : Visibility.Collapsed;
-            return;
-        }
-
-        if (isWizardView)
-        {
-            WizardBackgroundImage.Visibility = Visibility.Visible;
-            WizardBackgroundMask.Visibility = Visibility.Visible;
-        }
-
-        var outgoingPresenter = _currentPresenter;
-        var incomingPresenter = _nextPresenter;
-
-        incomingPresenter.Content = newContent;
-        incomingPresenter.Visibility = Visibility.Visible;
-
-        var compositor = ElementCompositionPreview.GetElementVisual(this.Content).Compositor;
-        var outgoingVisual = ElementCompositionPreview.GetElementVisual(outgoingPresenter);
-        var incomingVisual = ElementCompositionPreview.GetElementVisual(incomingPresenter);
-
-        // Reset visual properties before starting animation
-        incomingVisual.Offset = Vector3.Zero;
-        incomingVisual.Opacity = 0f;
-        incomingVisual.Scale = Vector3.One;
-
-        var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
-        _activeTransitionBatch = batch;
-
-        var cubicEasing = compositor.CreateCubicBezierEasingFunction(new Vector2(0.1f, 0.9f), new Vector2(0.2f, 1.0f));
-
-        if (transitionType == ViewTransitionType.SlideFromRight)
-        {
-            // Incoming: start offset X = 60px, opacity = 0 -> offset X = 0, opacity = 1
-            incomingVisual.Offset = new Vector3(60f, 0f, 0f);
-
-            var inOffsetAnim = compositor.CreateVector3KeyFrameAnimation();
-            inOffsetAnim.Duration = TimeSpan.FromMilliseconds(350);
-            inOffsetAnim.InsertKeyFrame(1.0f, Vector3.Zero, cubicEasing);
-
-            var inOpacityAnim = compositor.CreateScalarKeyFrameAnimation();
-            inOpacityAnim.Duration = TimeSpan.FromMilliseconds(300);
-            inOpacityAnim.InsertKeyFrame(1.0f, 1.0f, cubicEasing);
-
-            // Outgoing: offset X = 0 -> -50px, opacity = 1 -> 0
-            var outOffsetAnim = compositor.CreateVector3KeyFrameAnimation();
-            outOffsetAnim.Duration = TimeSpan.FromMilliseconds(300);
-            outOffsetAnim.InsertKeyFrame(1.0f, new Vector3(-50f, 0f, 0f), cubicEasing);
-
-            var outOpacityAnim = compositor.CreateScalarKeyFrameAnimation();
-            outOpacityAnim.Duration = TimeSpan.FromMilliseconds(250);
-            outOpacityAnim.InsertKeyFrame(1.0f, 0f, cubicEasing);
-
-            incomingVisual.StartAnimation(nameof(Visual.Offset), inOffsetAnim);
-            incomingVisual.StartAnimation(nameof(Visual.Opacity), inOpacityAnim);
-            outgoingVisual.StartAnimation(nameof(Visual.Offset), outOffsetAnim);
-            outgoingVisual.StartAnimation(nameof(Visual.Opacity), outOpacityAnim);
-        }
-        else if (transitionType == ViewTransitionType.DrillIn)
-        {
-            // Incoming: scale 1.03 -> 1.0, opacity 0 -> 1
-            float width = (float)(AppWindow.Size.Width / UIScale);
-            float height = (float)(AppWindow.Size.Height / UIScale);
-            incomingVisual.CenterPoint = new Vector3(width / 2f, height / 2f, 0f);
-            incomingVisual.Scale = new Vector3(1.03f, 1.03f, 1.0f);
-
-            var inScaleAnim = compositor.CreateVector3KeyFrameAnimation();
-            inScaleAnim.Duration = TimeSpan.FromMilliseconds(450);
-            inScaleAnim.InsertKeyFrame(1.0f, Vector3.One, cubicEasing);
-
-            var inOpacityAnim = compositor.CreateScalarKeyFrameAnimation();
-            inOpacityAnim.Duration = TimeSpan.FromMilliseconds(400);
-            inOpacityAnim.InsertKeyFrame(1.0f, 1.0f, cubicEasing);
-
-            // Outgoing: opacity 1 -> 0
-            var outOpacityAnim = compositor.CreateScalarKeyFrameAnimation();
-            outOpacityAnim.Duration = TimeSpan.FromMilliseconds(250);
-            outOpacityAnim.InsertKeyFrame(1.0f, 0f, cubicEasing);
-
-            incomingVisual.StartAnimation(nameof(Visual.Scale), inScaleAnim);
-            incomingVisual.StartAnimation(nameof(Visual.Opacity), inOpacityAnim);
-            outgoingVisual.StartAnimation(nameof(Visual.Opacity), outOpacityAnim);
-        }
-
-        batch.Completed += (s, e) =>
-        {
-            if (_activeTransitionBatch == batch)
-            {
-                _activeTransitionBatch = null;
-            }
-
-            outgoingPresenter.Visibility = Visibility.Collapsed;
-            outgoingPresenter.Content = null;
-            outgoingVisual.Offset = Vector3.Zero;
-            outgoingVisual.Opacity = 1.0f;
-            outgoingVisual.Scale = Vector3.One;
-
-            incomingVisual.Offset = Vector3.Zero;
-            incomingVisual.Opacity = 1.0f;
-            incomingVisual.Scale = Vector3.One;
-
-            if (!isWizardView)
-            {
-                WizardBackgroundImage.Visibility = Visibility.Collapsed;
-                WizardBackgroundMask.Visibility = Visibility.Collapsed;
-            }
-
-            // Swap current and next presenters
-            (_currentPresenter, _nextPresenter) = (_nextPresenter, _currentPresenter);
-        };
-
-        batch.End();
+    private void SetWizardBackgroundVisibility(bool visible)
+    {
+        WizardBackgroundImage.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        WizardBackgroundMask.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
 
@@ -444,6 +314,10 @@ public sealed partial class MainWindow : WindowEx
 
     private async void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
+        if (_closeConfirmed) return;
+        args.Cancel = true;
+        if (_closeRequestInProgress) return;
+        _closeRequestInProgress = true;
         try
         {
             if (!_mainViewLoaded)
@@ -477,6 +351,7 @@ public sealed partial class MainWindow : WindowEx
             }
             if (option is MainWindowCloseOption.Exit)
             {
+                _closeConfirmed = true;
                 Close();
                 AppInstance.GetCurrent().UnregisterKey();
                 Task backupTask = Task.Run(DatabaseService.AutoBackupToAppDataLocal);
@@ -486,6 +361,7 @@ public sealed partial class MainWindow : WindowEx
             }
         }
         catch { }
+        finally { _closeRequestInProgress = false; }
     }
 
 

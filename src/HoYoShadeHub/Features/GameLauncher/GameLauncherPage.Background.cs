@@ -100,14 +100,24 @@ public sealed partial class GameLauncherPage : PageBase
 
     private async Task InitializeBackgameImageSwitcherAsync()
     {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _backgroundRequests.Begin();
+        if (!IsPageRequestCurrent(_backgroundRequests, request, gameId)) return;
+        var cancellationToken = PageCancellationToken;
         try
         {
             CanStopVideo = false;
-            BackgroundImages = await _backgroundService.GetGameBackgroundsAsync(CurrentGameId);
+            var images = await _backgroundService.GetGameBackgroundsAsync(gameId, cancellationToken);
+            if (!IsPageRequestCurrent(_backgroundRequests, request, gameId)) return;
+            GameBackground? currentBackground = images.Count > 1
+                ? await _backgroundService.GetSuggestedGameBackgroundAsync(gameId, cancellationToken) : null;
+            if (!IsPageRequestCurrent(_backgroundRequests, request, gameId)) return;
+            BackgroundImages = images;
+            currentBackgroundImageIndex = 0;
+            OnPropertyChanged(nameof(CurrentBackgroundImageIndex));
             if (BackgroundImages.Count > 1)
             {
                 Border_SwitchBackgroundImage.Visibility = Visibility.Visible;
-                GameBackground? currentBackground = await _backgroundService.GetSuggestedGameBackgroundAsync(CurrentGameId);
                 if (currentBackground != null && BackgroundImages.FirstOrDefault(x => x.Id == currentBackground.Id) is GameBackground current)
                 {
                     currentBackgroundImageIndex = Math.Clamp(BackgroundImages.IndexOf(current), 0, BackgroundImages.Count - 1);
@@ -127,7 +137,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Initialize background image switcher {GameBiz}", CurrentGameBiz);
+            if (ex is not OperationCanceledException) _logger.LogError(ex, "Initialize background image switcher {GameBiz}", CurrentGameBiz);
         }
     }
 
@@ -189,7 +199,7 @@ public sealed partial class GameLauncherPage : PageBase
         try
         {
             string? path = null;
-            GameBackground? background = AppBackground.Current.CurrentGameBackground;
+            GameBackground? background = AppBackground.Current?.CurrentGameBackground;
             if (background?.Type is GameBackground.BACKGROUND_TYPE_CUSTOM)
             {
                 path = background.Background.Url;
@@ -224,7 +234,7 @@ public sealed partial class GameLauncherPage : PageBase
         try
         {
             string? path = null;
-            GameBackground? background = AppBackground.Current.CurrentGameBackground;
+            GameBackground? background = AppBackground.Current?.CurrentGameBackground;
             if (background?.Type is GameBackground.BACKGROUND_TYPE_CUSTOM)
             {
                 path = background.Background.Url;

@@ -103,12 +103,20 @@ internal static class OptiScalerPresets
             }
 
             Directory.CreateDirectory(Root);
-            File.WriteAllText(PathOf(name), content);
+
+            // 内容一模一样就不动文件。游戏退出时的回写会被兜底轮询连着触发好几次，
+            // 每次都写只会让配置的时间戳白跳（内容没变本来也没什么可写的）。
+            string path = PathOf(name);
+            if (!File.Exists(path)
+                || !string.Equals(File.ReadAllText(path), content, StringComparison.Ordinal))
+            {
+                WriteTextAtomically(path, content);
+            }
 
             string meta = MetaPathOf(name);
             if (sources is { Count: > 0 })
             {
-                File.WriteAllText(meta, JsonSerializer.Serialize(new PresetMeta { Sources = [.. sources] }));
+                WriteTextAtomically(meta, JsonSerializer.Serialize(new PresetMeta { Sources = [.. sources] }));
             }
             else if (File.Exists(meta))
             {
@@ -224,9 +232,11 @@ internal static class OptiScalerPresets
                 return false;
             }
 
+            if (!CollectFromRuntimeChecked(buildDirectory).Succeeded) return false;
+
             string profile = OptiScalerProfiles.ProfilePath(buildDirectory, gameKey);
             Directory.CreateDirectory(Path.GetDirectoryName(profile)!);
-            File.WriteAllText(profile, content);
+            if (!OptiScalerProfiles.TryWriteProfile(buildDirectory, gameKey, content)) return false;
 
             // 立刻生效（否则要等下次启动游戏才 Activate）
             return OptiScalerProfiles.Activate(buildDirectory, gameKey);
@@ -250,8 +260,11 @@ internal static class OptiScalerPresets
                 return false;
             }
 
+            // 主 ini 里的 OptiDllPath 是 Hub 启动时按本机路径钉的，别让它跟着进配置
+            string content = OptiScalerRuntime.RestoreMachinePinnedKeys(File.ReadAllText(mainIni), Read(presetName));
+
             // 保留原有的分支限制（否则「保存当前」会把 sources 洗掉）
-            return Save(presetName, File.ReadAllText(mainIni), GetSources(presetName));
+            return Save(presetName, content, GetSources(presetName));
         }
         catch
         {
@@ -278,17 +291,23 @@ internal static class OptiScalerPresets
             }
 
             string destination = Path.Combine(Root, target + ".ini");
-            if (File.Exists(destination))
+            string oldMeta = MetaPathOf(oldName);
+            string newMeta = Path.Combine(Root, target + ".meta.json");
+            if (File.Exists(destination) || File.Exists(newMeta))
             {
                 return false;
             }
 
             File.Move(source, destination);
 
-            string oldMeta = MetaPathOf(oldName);
-            if (File.Exists(oldMeta))
+            try
             {
-                File.Move(oldMeta, Path.Combine(Root, target + ".meta.json"));
+                if (File.Exists(oldMeta)) File.Move(oldMeta, newMeta);
+            }
+            catch
+            {
+                File.Move(destination, source);
+                return false;
             }
 
             return true;
@@ -316,9 +335,9 @@ internal static class OptiScalerPresets
                 return null;
             }
 
-            string name = AppConfig.GetValue(string.Empty, FollowKey(gameKey));
-            if (string.IsNullOrWhiteSpace(name)
-                || string.Equals(name, CurrentLabel, StringComparison.Ordinal))
+            // 挂的是哪份配置：先看「游戏 + 构建」的下拉选择键，再退回按游戏记的 follow 键
+            string name = SelectedPreset(gameKey, buildDirectory);
+            if (name.Length == 0)
             {
                 return null;
             }
@@ -329,13 +348,154 @@ internal static class OptiScalerPresets
                 return null;
             }
 
+            // 回写的是运行时那份（里面的 OptiDllPath 已被 Hub 钉成本机绝对路径）：
+            // 把这些机器相关的键还原成配置自己那份，配置才还是用户写的样子。
+            string content = OptiScalerRuntime.RestoreMachinePinnedKeys(File.ReadAllText(source), Read(name));
+
             // 保留这份配置原有的分支限制（GetSources 里读的就是它自己的 .meta.json）
-            return Save(name, File.ReadAllText(source), GetSources(name)) ? name : null;
+            return Save(name, content, GetSources(name)) ? name : null;
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 收回上一次运行留在主 ini 里的改动：按记账存回它自己的 profile，再同步回挂着的「配置」。
+    ///
+    /// <para>
+    /// 火箭模式专用。Hub 在火箭模式下不启动游戏、也没有进程句柄，游戏退出时它不一定在场
+    /// （或者整场都没发现进程）；而下次准备时的 profile 激活会拿旧内容盖掉主 ini ——
+    /// 不先收一次，用户这次在游戏里改的就白改了（表现出来就是「改完再启动又回去了」）。
+    /// </para>
+    /// </summary>
+    /// <returns>同步到的配置名；没东西可收 / 失败返回 null</returns>
+    public static string? CollectFromRuntime(string buildDirectory)
+    {
+        var result = CollectFromRuntimeChecked(buildDirectory);
+        if (!result.Succeeded) throw new IOException("Runtime profile collection is blocked or failed.");
+        return result.PresetName;
+    }
+
+    public readonly record struct PreparationResult(bool Succeeded, string? PresetName, string? FailureReason = null);
+
+    public static PreparationResult CollectFromRuntimeChecked(string buildDirectory)
+    {
+        string pending = Path.Combine(buildDirectory, ".hub-preset-sync-pending");
+        try
+        {
+        if (File.Exists(pending))
+        {
+            string pendingOwner = File.ReadAllText(pending);
+            if (SelectedPreset(pendingOwner, buildDirectory).Length > 0
+                && Follow(buildDirectory, pendingOwner) is null)
+                return new(false, null, "无法将上次游戏配置保存回所选预设，请检查预设文件的写入权限。");
+            File.Delete(pending);
+        }
+        var collected = OptiScalerProfiles.CollectRuntimeChangesChecked(buildDirectory);
+        if (!collected.Succeeded)
+            return new(false, null, collected.Status == OptiScalerProfiles.CollectionStatus.Blocked
+                ? "主配置与游戏配置存在冲突，或上次配置事务尚未完成。请保留两份配置并检查冲突。"
+                : "无法读取或保存上次游戏配置，请检查配置文件的访问权限。");
+        if (collected.Status != OptiScalerProfiles.CollectionStatus.Collected || collected.Owner is null)
+            return new(true, null);
+        string selected = SelectedPreset(collected.Owner, buildDirectory);
+        if (selected.Length == 0) return new(true, null);
+        WriteTextAtomically(pending, collected.Owner);
+        string? followed = Follow(buildDirectory, collected.Owner);
+        if (followed is not null) File.Delete(pending);
+        return new(followed is not null, followed, followed is null
+            ? "无法将游戏配置保存回所选预设，请检查预设文件的写入权限。" : null);
+        }
+        catch { return new(false, null, "无法完成配置回收，请检查配置目录的访问权限。"); }
+    }
+
+    /// <summary>
+    /// 启动游戏前调用：把这个游戏挂着的「配置」重放成 <c>profiles\&lt;游戏&gt;.ini</c> 并立刻激活成主 ini。
+    ///
+    /// <para>
+    /// 链路是单向三层：<c>presets\&lt;名字&gt;.ini</c>（配置，OptiScaler 主目录）→
+    /// <c>profiles\&lt;游戏&gt;.ini</c>（这个游戏的最终配置）→ <c>OptiScaler.ini</c>（OptiScaler
+    /// 真正读写的活文件）。每次启动都从配置重放一遍，所以在页面里改配置、或用编辑器直接改配置
+    /// ini，下次启动游戏一定会生效；没挂命名配置时返回 null，由调用方的 Activate 保留 profile 自己那份。
+    /// </para>
+    /// </summary>
+    /// <returns>套用的配置名；没挂命名配置 / 失败返回 null</returns>
+    public static string? SyncIntoProfile(string buildDirectory, string gameKey)
+    {
+        var result = SyncIntoProfileChecked(buildDirectory, gameKey);
+        if (!result.Succeeded) throw new IOException("OptiScaler profile preparation is blocked or failed.");
+        return result.PresetName;
+    }
+
+    public static PreparationResult SyncIntoProfileChecked(string buildDirectory, string gameKey)
+    {
+        var collected = CollectFromRuntimeChecked(buildDirectory);
+        if (!collected.Succeeded) return collected;
+        string name = SelectedPreset(gameKey, buildDirectory);
+        if (name.Length == 0) return new(true, null);
+        bool applied = Apply(buildDirectory, gameKey, name);
+        return new(applied, name, applied ? null
+            : $"无法读取或套用预设「{name}」，请检查文件是否存在、被占用或无法写入。");
+    }
+
+    /// <summary>下拉选择键：按「游戏 + 构建」记，换构建不会串</summary>
+    public static string PresetKey(string gameKey, string buildId) => $"opti_preset_{gameKey}_{buildId}";
+
+    /// <summary>构建目录 → 构建 id（<c>来源/版本</c>，就是 OptiScaler 主目录下的相对路径）</summary>
+    public static string? BuildIdOf(string? buildDirectory)
+    {
+        try
+        {
+            string root = AppConfig.OptiScalerRootPath;
+            if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(buildDirectory))
+            {
+                return null;
+            }
+
+            string relative = Path.GetRelativePath(root, buildDirectory).Replace('\\', '/');
+            return relative.StartsWith("..", StringComparison.Ordinal) ? null : relative;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 这个游戏（这个构建）当前挂着的命名配置。先看下拉选择键，再退回按游戏记的 follow 键
+    /// —— 老安装里只有下拉键，会出现「页面显示挂着配置、退出却不回写」的鬼状态。
+    /// </summary>
+    /// <returns>配置名；空串 = 「当前配置（游戏内保存）」/ 没挂</returns>
+    public static string SelectedPreset(string gameKey, string? buildDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(gameKey))
+        {
+            return string.Empty;
+        }
+
+        string name = string.Empty;
+
+        if (BuildIdOf(buildDirectory) is { Length: > 0 } buildId)
+        {
+            name = AppConfig.GetValue(string.Empty, PresetKey(gameKey, buildId)) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = AppConfig.GetValue(string.Empty, FollowKey(gameKey)) ?? string.Empty;
+        }
+
+        name = (name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name)
+            || string.Equals(name, CurrentLabel, StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        // 更新或删除预设后，旧选择按当前游戏 profile 处理，避免阻断启动。
+        return File.Exists(PathOf(name)) ? name : string.Empty;
     }
 
     /// <summary>预设名只留安全文件名字符</summary>
@@ -349,5 +509,16 @@ internal static class OptiScalerPresets
         }
 
         return name.Replace('\\', '_').Replace('/', '_').Trim();
+    }
+
+    private static void WriteTextAtomically(string path, string content)
+    {
+        string staging = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(staging, content);
+            File.Move(staging, path, overwrite: true);
+        }
+        finally { if (File.Exists(staging)) File.Delete(staging); }
     }
 }

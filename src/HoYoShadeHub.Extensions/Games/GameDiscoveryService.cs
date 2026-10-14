@@ -176,17 +176,40 @@ public sealed class GameDiscoveryService
         return new AddCustomResult(entry, true, null);
     }
 
-    public bool RemoveCustom(string id)
+    public bool RemoveCustom(string id) => RemoveCustom(id, out _);
+
+    /// <summary>移除自定义游戏，并确认删除已经成功写回 games.json。</summary>
+    public bool RemoveCustom(string id, out string? error)
     {
+        error = null;
+
         GameEntryRecord? record = Store.Find(id);
         if (record is null || !record.IsCustom)
         {
+            error = "找不到这个自定义游戏。";
             return false;
         }
 
-        bool removed = Store.Remove(id);
-        Store.Save(StorePath);
-        return removed;
+        int index = Store.Games.IndexOf(record);
+        bool hadInjectMode = Store.InjectMode.TryGetValue(id, out bool useInjectMode);
+        bool hadSkipShadeInjector = Store.SkipShadeInjector.TryGetValue(id, out bool skipShadeInjector);
+
+        if (!Store.Remove(id))
+        {
+            error = "移除游戏记录失败。";
+            return false;
+        }
+
+        if (!Store.Save(StorePath, out error))
+        {
+            // 保存失败时保持本次操作原子性：调用方可能继续使用同一个 service。
+            Store.Games.Insert(index, record);
+            if (hadInjectMode) Store.SetUseInjectMode(id, useInjectMode);
+            if (hadSkipShadeInjector) Store.SetSkipShadeInjector(id, skipShadeInjector);
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>exe 变了（比如用户挪了游戏）时更新一条自定义记录</summary>

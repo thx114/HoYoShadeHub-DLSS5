@@ -139,12 +139,16 @@
                                 </StackPanel>
 
                                 <!--  修复按钮  -->
-                                <Button Grid.Column="2"
+                                <StackPanel Grid.Column="2" Spacing="4">
+                                <Button
                                         MinWidth="0"
                                         VerticalAlignment="Top"
                                         Click="Button_Fix_Click"
                                         Content="{x:Bind FixLabel, Mode=OneWay}"
                                         Visibility="{x:Bind FixVisibility, Mode=OneWay}" />
+                                <Button Content="{x:Bind AlternativeLabel}" Click="Button_AlternativeFix_Click" Visibility="{x:Bind AlternativeVisibility, Mode=OneWay}" />
+                                <Button Content="恢复 RTSS 原配置" Click="Button_RestoreFix_Click" Visibility="{x:Bind RestoreVisibility, Mode=OneWay}" />
+                                </StackPanel>
 
                                 <ProgressRing Grid.Column="2"
                                               Width="20"

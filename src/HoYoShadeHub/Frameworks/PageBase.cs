@@ -3,12 +3,18 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Services;
+using System.Threading;
 
 namespace HoYoShadeHub.Frameworks;
 
 [INotifyPropertyChanged]
 public abstract partial class PageBase : Page
 {
+    private readonly UiLifetime _lifetime = new();
+    protected CancellationToken PageCancellationToken => _lifetime.Token;
+    protected long PageGeneration => _lifetime.Generation;
+    protected bool IsPageGenerationCurrent(long generation) => _lifetime.IsCurrent(generation);
 
 
     public GameId CurrentGameId { get; protected set => SetProperty(ref field, value); }
@@ -28,15 +34,15 @@ public abstract partial class PageBase : Page
 
     private void PageEx_Loaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        OnLoaded();
+        if (!_lifetime.Enter()) return;
+        try { OnLoaded(); }
+        catch { _lifetime.Exit(); throw; }
     }
 
 
     private void PageEx_Unloaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
-        Loaded -= PageEx_Loaded;
-        Unloaded -= PageEx_Unloaded;
-        OnUnloaded();
+        if (_lifetime.Exit()) OnUnloaded();
     }
 
 
@@ -52,6 +58,11 @@ public abstract partial class PageBase : Page
         {
             CurrentGameBiz = biz;
             CurrentGameId = GameId.FromGameBiz(biz)!;
+        }
+        else
+        {
+            CurrentGameId = null!;
+            CurrentGameBiz = default;
         }
     }
 

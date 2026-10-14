@@ -63,7 +63,8 @@
             <!-- 0 顶部栏：一行搞定（不要大标题、不要第二行工具条） -->
             <Grid Grid.Row="0" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
-                    <!-- 0 搜索 / 1 实例 / 2 MI 目录 / 3-5 动作按钮 / 6 侧边栏开关 -->
+                    <!-- 0 搜索 / 1 后端 / 2 实例 / 3 目录 / 4-6 动作 / 7 筛选 -->
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -81,8 +82,16 @@
                                 TextChanged="TextBox_Search_TextChanged"
                                 ToolTipService.ToolTip="按名字 / 作者 / 编号搜索（重命名后中文也能搜到）" />
 
-                <ComboBox x:Name="ComboBox_Importer"
+                <ComboBox x:Name="ComboBox_Backend"
                           Grid.Column="1"
+                          MinWidth="105"
+                          SelectionChanged="ComboBox_Backend_SelectionChanged"
+                          ToolTipService.ToolTip="Mod 管理后端（不改变游戏启动方式）">
+                    <ComboBoxItem Content="XXMI" />
+                    <ComboBoxItem Content="Rocket" />
+                </ComboBox>
+                <ComboBox x:Name="ComboBox_Importer"
+                          Grid.Column="2"
                           MinWidth="150"
                           MaxWidth="240"
                           SelectionChanged="ComboBox_Importer_SelectionChanged"
@@ -96,23 +105,23 @@
                     </ComboBox.ItemTemplate>
                 </ComboBox>
                 <TextBox x:Name="TextBox_Instance"
-                         Grid.Column="2"
+                         Grid.Column="3"
                          IsReadOnly="True"
                          PlaceholderText="MI 目录"
                          ToolTipService.ToolTip="MI 目录（点右边「选择…」或「自动查找」）" />
-                <Button Grid.Column="3"
+                <Button x:Name="Button_AutoFind" Grid.Column="4"
                         Click="Button_AutoFind_Click"
                         Content="自动查找"
                         ToolTipService.ToolTip="手动指定 → %AppData%\XXMI Launcher → 开始菜单里的 XXMI 快捷方式 → 注册表卸载项 → 各盘浅层目录" />
-                <Button Grid.Column="4"
+                <Button x:Name="Button_Browse" Grid.Column="5"
                         Click="Button_Browse_Click"
                         Content="选择…" />
-                <Button Grid.Column="5"
+                <Button Grid.Column="6"
                         Click="Button_OpenInstance_Click"
                         Content="打开目录" />
                 <!-- 右侧侧边栏的开关；侧边栏本身是「筛选」，先做壳 -->
                 <ToggleButton x:Name="ToggleButton_Filter"
-                              Grid.Column="6"
+                              Grid.Column="7"
                               MinWidth="0"
                               Padding="10,5"
                               Click="ToggleButton_Filter_Click"
@@ -129,7 +138,7 @@
                       RightTapped="ModGrid_RightTapped">
                 <GridView.ContextFlyout>
                     <MenuFlyout>
-                        <MenuFlyoutItem Click="Button_LaunchXxmi_Click" Text="打开 XXMI Launcher">
+                        <MenuFlyoutItem x:Name="MenuFlyout_OpenXxmi" Click="Button_LaunchXxmi_Click" Text="打开 XXMI Launcher">
                             <MenuFlyoutItem.Icon>
                                 <FontIcon Glyph="&#xE768;" />
                             </MenuFlyoutItem.Icon>

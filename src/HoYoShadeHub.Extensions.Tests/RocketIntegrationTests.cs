@@ -39,8 +39,32 @@ internal static class RocketIntegrationTests
             {
                 bool rejected=false;try{RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(text),bridge);}catch(InvalidDataException){rejected=true;}Check(rejected,label);
             }
-            Reject(template.Replace("原神DLL路径 = old.dll\r\n",""),"缺路径键时不猜未知格式");
-            Reject(template.Replace("原神第三方DLL启用 = false\r\n",""),"缺启用键时拒绝写入");
+            // 火箭从没配置过 DLL 路径时配置项可能整条缺失：自动补全整条「键 = 值」，不再拒绝
+            string noPathKey=template.Replace("原神DLL路径 = old.dll\r\n","");
+            string noPathOut=Encoding.UTF8.GetString(RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(noPathKey),bridge));
+            Check(noPathOut.Contains("TOKEN = untouched-test-value\r\n原神DLL路径 = "+bridge+"\r\n[其他]"),"缺 原神DLL路径 键时整条补全到 [用户设置] 节末尾，不越节");
+            string noEnabledKey=template.Replace("原神第三方DLL启用 = false\r\n","");
+            string noEnabledOut=Encoding.UTF8.GetString(RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(noEnabledKey),bridge));
+            Check(noEnabledOut.Contains("原神加载滤镜 = false\r\n原神第三方DLL启用 = true\r\n[用户设置]"),"缺 原神第三方DLL启用 键时整条补全到 [注入设置] 节末尾，不越节");
+            string neither=template.Replace("原神DLL路径 = old.dll\r\n","").Replace("原神第三方DLL启用 = false\r\n","");
+            string neitherOut=Encoding.UTF8.GetString(RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(neither),bridge));
+            Check(neitherOut.Contains("原神DLL路径 = "+bridge)&&neitherOut.Contains("原神第三方DLL启用 = true"),"两个键都缺时一次补全两条");
+            Check(RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(neitherOut),bridge).SequenceEqual(Encoding.UTF8.GetBytes(neitherOut)),"补全后再次生成幂等");
+            string emptyPath=template.Replace("原神DLL路径 = old.dll","原神DLL路径 = ");
+            string emptyOut=Encoding.UTF8.GetString(RocketIntegration.BuildRocketConfiguration(Encoding.UTF8.GetBytes(emptyPath),bridge));
+            Check(emptyOut.Contains("原神DLL路径 = "+bridge+"\r\n")&&!emptyOut.Contains("old.dll"),"空值键直接填入桥路径（用户手动清空场景）");
+            // [注入设置] 的 <游戏名>第三方DLL启用 总开关：火箭只有它为 true 才注插件列表里的 DLL，缺失整条补全
+            string enableTemplate="; c\r\n[注入设置]\r\n原神主DLL注入模式 = 0\r\n[用户设置]\r\n软件主题 = 1\r\n[其他]\r\n第三方DLL启用 = must-not-touch\r\n";
+            byte[] enableBytes=RocketIntegration.BuildThirdPartyEnableConfiguration(Encoding.UTF8.GetBytes(enableTemplate),"崩坏：星穹铁道",true);
+            string enableText=Encoding.UTF8.GetString(enableBytes);
+            Check(enableText.Contains("原神主DLL注入模式 = 0\r\n崩坏：星穹铁道第三方DLL启用 = true\r\n[用户设置]"),"缺 崩坏：星穹铁道第三方DLL启用 键时整条补全到 [注入设置] 节末尾，不越节");
+            Check(enableText.Contains("[其他]\r\n第三方DLL启用 = must-not-touch"),"总开关：其他节里相似键名不动");
+            Check(RocketIntegration.BuildThirdPartyEnableConfiguration(enableBytes,"崩坏：星穹铁道",true).SequenceEqual(enableBytes),"总开关写入幂等");
+            Check(Encoding.UTF8.GetString(RocketIntegration.BuildThirdPartyEnableConfiguration(enableBytes,"崩坏：星穹铁道",false)).Contains("崩坏：星穹铁道第三方DLL启用 = false\r\n"),"总开关可按游戏写回 false");
+            bool enableNoSection=false;try{RocketIntegration.BuildThirdPartyEnableConfiguration(Encoding.UTF8.GetBytes("[用户设置]\r\n软件主题 = 1\r\n"),"绝区零",true);}catch(InvalidDataException){enableNoSection=true;}Check(enableNoSection,"缺 [注入设置] 节时总开关拒绝写入");
+
+            Reject(template.Replace("[注入设置]\r\n",""),"缺 [注入设置] 节仍拒绝（多半选错了 config.ini）");
+            Reject(template.Replace("[用户设置]\r\n","").Replace("原神DLL路径 = old.dll\r\n",""),"缺 [用户设置] 节仍拒绝");
             Reject(template.Replace("原神DLL路径 = old.dll","原神DLL路径 = old.dll\r\n原神DLL路径 = duplicate.dll"),"重复路径键拒绝歧义");
             Reject(template.Replace("原神第三方DLL启用 = false","原神第三方DLL启用 = false\r\n原神第三方DLL启用=true"),"重复启用键拒绝歧义");
             bool badEncoding=false;try{RocketIntegration.BuildRocketConfiguration([0xFF,0xFE,0],bridge);}catch(DecoderFallbackException){badEncoding=true;}Check(badEncoding,"非 UTF8 配置不静默损坏");
@@ -127,26 +151,107 @@ internal static class RocketIntegrationTests
             Check(RocketIntegration.SupportsGame("hk4e_cn")&&!RocketIntegration.SupportsGame("hkrpg_cn"),"SupportsGame 仍然只表示原神桥");
 
             // 插件 DLL 列表：<游戏名>插件DLL列表 / <游戏名>插件启用列表，| 分隔、顺序即注入顺序
-            string pluginTemplate="; keep\r\n[用户设置]\r\n仅显示有Mod角色 = true\r\n原神插件DLL列表 = old1|old2\r\n原神插件启用列表 = 0|0\r\n原神过滤授权 = true\r\n[其他]\r\n原神插件DLL列表 = must-not-touch\r\n";
+            string pluginTemplate="; keep\r\n[注入设置]\r\n原神第三方DLL启用 = false\r\n[用户设置]\r\n仅显示有Mod角色 = true\r\n原神插件DLL列表 = old1|old2\r\n原神插件启用列表 = 0|0\r\n原神过滤授权 = true\r\n[其他]\r\n原神插件DLL列表 = must-not-touch\r\n";
             string[] wanted=[bridge,opti,shade];
             byte[] pluginOut=RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(pluginTemplate),"原神",wanted);
             string pluginText=Encoding.UTF8.GetString(pluginOut);
             Check(pluginText.Contains("原神插件DLL列表 = "+string.Join('|',wanted.Select(Path.GetFullPath))),"插件 DLL 列表按顺序写成 | 分隔的绝对路径");
             Check(pluginText.Contains("原神插件启用列表 = 1|1|1"),"启用列表跟着列表长度写 1");
+            Check(pluginText.Contains("原神第三方DLL启用 = true"),"[注入设置] 注入总开关同步写成 true");
+
             Check(pluginText.Contains("[其他]\r\n原神插件DLL列表 = must-not-touch"),"别的节里同名键不动");
             Check(pluginText.Contains("; keep")&&pluginText.Contains("原神过滤授权 = true"),"注释与其他键逐字节保留");
             Check(RocketIntegration.BuildPluginListConfiguration(pluginOut,"原神",wanted).SequenceEqual(pluginOut),"插件列表写入幂等");
+            // 火箭从未配置过的占位值（多个「请填写DLL路径」形态）整体替换，不当成已配置
+            string placeholder="[注入设置]\r\n原神第三方DLL启用 = true\r\n[用户设置]\r\n原神插件DLL列表 = 请填写DLL路径1|请填写DLL路径2\r\n原神插件启用列表 = 1|1\r\n软件主题 = 1\r\n";
+            string placeholderOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(placeholder),"原神",[opti]));
+            Check(placeholderOut.Contains("原神插件DLL列表 = "+Path.GetFullPath(opti))&&placeholderOut.Contains("原神插件启用列表 = 1")
+                &&!placeholderOut.Contains("请填写DLL路径")&&!placeholderOut.Contains("1|1"),"火箭多占位值整体替换为所选 DLL");
+            // 插件列表 + 注入总开关一起补全（火箭没配置过这个游戏时两个键都可能整条缺失）
+            string bare2="[注入设置]\r\n原神主DLL注入模式 = 0\r\n[用户设置]\r\n软件主题 = 1\r\n";
+            string bare2Out=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare2),"绝区零",[opti]));
+            Check(bare2Out.Contains("原神主DLL注入模式 = 0\r\n绝区零第三方DLL启用 = true\r\n[用户设置]")
+                &&UserValue(bare2Out,"绝区零插件DLL列表")==Path.GetFullPath(opti),"插件列表与注入总开关一起补全，总开关插到 [注入设置] 节末尾");
+
+            // Regression: existing empty keys must never leave paths/enables on orphan lines.
+            string starRail="崩坏：星穹铁道";
+            string module=Path.Combine(root,"模块 with spaces","Extra Case #1.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(module)!);File.WriteAllBytes(module,[1,2,3]);
+            string[] starRailDlls=[extra2,module,opti,shade];
+            string starRailPaths=string.Join('|',starRailDlls.Select(Path.GetFullPath));
+            string? UserValue(string text,string key)
+            {
+                string section="";using var reader=new StringReader(text.TrimStart('\uFEFF'));
+                while(reader.ReadLine() is { } line)
+                {
+                    string trimmed=line.Trim();
+                    if(trimmed.StartsWith('[')&&trimmed.EndsWith(']')){section=trimmed[1..^1];continue;}
+                    if(section!="用户设置"||trimmed.StartsWith(';')||trimmed.StartsWith('#'))continue;
+                    int eq=line.IndexOf('=');if(eq>=0&&line[..eq].Trim()==key)return line[(eq+1)..].Trim(' ','\t');
+                }
+                return null;
+            }
+            foreach(string nl in new[]{"\r\n","\n"})
+            foreach(bool bom in new[]{false,true})
+            {
+                string label=$"{(nl.Length==2?"CRLF":"LF")}/{(bom?"BOM":"no BOM")}";
+                string emptyTemplate="[注入设置]"+nl+starRail+"第三方DLL启用 = true"+nl+"; keep comment"+nl+"[用户设置]"+nl
+                    +"# "+starRail+"插件DLL列表 = comment-only"+nl
+                    +starRail+"插件DLL列表 = \t"+nl+starRail+"插件启用列表 = \t"+nl
+                    +"empty = \t"+nl+"filter = original ; keep inline comment"+nl
+                    +"[其他]"+nl+starRail+"插件DLL列表 = must-not-touch"+nl;
+                byte[] emptyBytes=Encoding.UTF8.GetBytes(emptyTemplate);
+                if(bom)emptyBytes=Encoding.UTF8.GetPreamble().Concat(emptyBytes).ToArray();
+                byte[] filled=RocketIntegration.BuildPluginListConfiguration(emptyBytes,starRail,starRailDlls);
+                string filledText=Encoding.UTF8.GetString(filled);
+                string expectedFilled=emptyTemplate.Replace(starRail+"插件DLL列表 = \t"+nl,starRail+"插件DLL列表 = \t"+starRailPaths+nl)
+                    .Replace(starRail+"插件启用列表 = \t"+nl,starRail+"插件启用列表 = \t1|1|1|1"+nl);
+                byte[] expectedBytes=Encoding.UTF8.GetBytes(expectedFilled);
+                if(bom)expectedBytes=Encoding.UTF8.GetPreamble().Concat(expectedBytes).ToArray();
+                Check(filled.SequenceEqual(expectedBytes),label+" 空键同一行写值；换行/空白/注释/无关空值逐字节保留");
+                Check(UserValue(filledText,starRail+"插件DLL列表")==starRailPaths
+                    &&UserValue(filledText,starRail+"插件启用列表")=="1|1|1|1",label+" 语义读回精确模块路径/顺序/启用数");
+                Check(RocketIntegration.BuildPluginListConfiguration(filled,starRail,starRailDlls).SequenceEqual(filled),label+" 空键填充后再次生成幂等");
+                string pluginConfig=Path.Combine(root,$"plugin-{nl.Length}-{bom}.ini");File.WriteAllBytes(pluginConfig,emptyBytes);
+                var pluginPrepared=RocketIntegration.PreparePluginList(pluginConfig,starRail,starRailDlls);
+                Check(pluginPrepared.Success&&pluginPrepared.ConfigPath==Path.GetFullPath(pluginConfig)
+                    &&pluginPrepared.BackupPath is { } bp&&File.ReadAllBytes(bp).SequenceEqual(emptyBytes),label+" PreparePluginList 语义回读成功且备份精确");
+                Check(File.ReadAllBytes(pluginConfig).SequenceEqual(filled),label+" 落盘与语义校验过的输出一致");
+                var pluginAgain=RocketIntegration.PreparePluginList(pluginConfig,starRail,starRailDlls);
+                Check(pluginAgain.Success&&pluginAgain.BackupPath is null&&File.ReadAllBytes(pluginConfig).SequenceEqual(filled),label+" 重复 Prepare 不改字节/不新建备份");
+                byte[] emptyAgain=RocketIntegration.BuildClearedPluginListConfiguration(filled,starRail);
+                Check(emptyAgain.SequenceEqual(emptyBytes),label+" 清空精确还原两个空值并保留注释");
+            }
+            foreach(string nl in new[]{"\r\n","\n"})
+            {
+                string partial="[注入设置]"+nl+starRail+"第三方DLL启用 = true"+nl+"[用户设置]"+nl+starRail+"插件DLL列表 = old"+nl+"[其他]"+nl+"keep = yes"+nl;
+                string partialOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(partial),starRail,starRailDlls));
+                Check(UserValue(partialOut,starRail+"插件DLL列表")==starRailPaths&&UserValue(partialOut,starRail+"插件启用列表")=="1|1|1|1"
+                    &&partialOut.Contains("[其他]"+nl+"keep = yes"+nl),"单个缺键：插入位置按修改后的行长度计算，不切坏 DLL 值");
+                string emptySection="[注入设置]"+nl+starRail+"第三方DLL启用 = true"+nl+"[用户设置]"+nl+"[其他]"+nl+"keep = yes"+nl;
+                string sectionOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(emptySection),starRail,starRailDlls));
+                Check(UserValue(sectionOut,starRail+"插件DLL列表")==starRailPaths&&UserValue(sectionOut,starRail+"插件启用列表")=="1|1|1|1", "空 [用户设置] 插新键不越节");
+            }
+            string noFinalNewline="[注入设置]\n"+starRail+"第三方DLL启用 = true\n[用户设置]\n"+starRail+"插件DLL列表 = old";
+            string noFinalOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(noFinalNewline),starRail,starRailDlls));
+            Check(UserValue(noFinalOut,starRail+"插件DLL列表")==starRailPaths&&UserValue(noFinalOut,starRail+"插件启用列表")=="1|1|1|1","EOF 无换行且缺启用键时补分隔换行");
+            string orphan="[注入设置]\n"+starRail+"第三方DLL启用 = true\n[用户设置]\n"+starRail+"插件DLL列表 = \n"+starRailPaths+"\n"+starRail+"插件启用列表 = \n1|1|1|1\n";
+            string orphanConfig=Path.Combine(root,"orphan.ini");File.WriteAllText(orphanConfig,orphan);
+            byte[] orphanBytes=File.ReadAllBytes(orphanConfig);
+            var orphanResult=RocketIntegration.PreparePluginList(orphanConfig,starRail,starRailDlls);
+            Check(!orphanResult.Success&&orphanResult.BackupPath is null&&File.ReadAllBytes(orphanConfig).SequenceEqual(orphanBytes),"历史孤立值格式拒绝准备，不猜删除或写坏原文件");
 
             // 键不存在时插到 [用户设置] 节末尾，不越到下一个节
-            string bare="[原神]\r\n原神包名 = YuanShen.exe\r\n\r\n[用户设置]\r\n软件主题 = 1\r\n\r\n[用户选择]\r\n游戏选择 = 3\r\n";
+            string bare="[注入设置]\r\n鸣潮第三方DLL启用 = true\r\n[原神]\r\n原神包名 = YuanShen.exe\r\n\r\n[用户设置]\r\n软件主题 = 1\r\n\r\n[用户选择]\r\n游戏选择 = 3\r\n";
             string bareOut=Encoding.UTF8.GetString(RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮",[opti]));
             Check(bareOut.Contains("[用户设置]\r\n软件主题 = 1\r\n鸣潮插件DLL列表 = "+Path.GetFullPath(opti)+"\r\n鸣潮插件启用列表 = 1\r\n\r\n[用户选择]"),"缺键时插到 [用户设置] 节末尾，不越节");
             void RejectPlugin(string text,string label)
             {
                 bool rejected=false;try{RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(text),"原神",[bridge]);}catch(InvalidDataException){rejected=true;}Check(rejected,label);
             }
-            RejectPlugin("[原神]\r\n原神包名 = a\r\n","没有 [用户设置] 节时拒绝写入");
-            RejectPlugin("[用户设置]\r\n原神插件DLL列表 = a\r\n原神插件DLL列表 = b\r\n","重复插件列表键拒绝歧义");
+            RejectPlugin("[注入设置]\r\n原神第三方DLL启用 = true\r\n[原神]\r\n原神包名 = a\r\n","没有 [用户设置] 节时拒绝写入");
+            RejectPlugin("[注入设置]\r\n原神第三方DLL启用 = true\r\n[用户设置]\r\n原神插件DLL列表 = a\r\n原神插件DLL列表 = b\r\n","重复插件列表键拒绝歧义");
+            RejectPlugin("[注入设置]\n原神第三方DLL启用 = true\n[用户设置]\n原神插件DLL列表 = a\n原神插件启用列表 = 0\n原神插件启用列表 = 1\n","重复启用列表键拒绝歧义");
             bool missingDll=false;
             try{RocketIntegration.BuildPluginListConfiguration(Encoding.UTF8.GetBytes(bare),"鸣潮",[Path.Combine(root,"nope.dll")]);}catch(FileNotFoundException){missingDll=true;}
             Check(missingDll,"列表里的 DLL 不存在时拒绝写入");

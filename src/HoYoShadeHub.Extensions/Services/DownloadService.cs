@@ -105,7 +105,8 @@ public sealed class DownloadService
         }
 
         long existing = allowResume && File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
-        string? knownETag = allowResume ? ReadSidecarETag(metaPath) : null;
+        DownloadResumeMetadata? metadata = allowResume ? ReadSidecar(metaPath) : null;
+        string? knownETag = DownloadResumePolicy.CanResume(metadata, appliedUrl) ? metadata!.ETag : null;
 
         long received;
         bool completed;
@@ -160,6 +161,7 @@ public sealed class DownloadService
         }
 
         // Only publish the file once it is complete and verified.
+        cancellationToken.ThrowIfCancellationRequested();
         File.Move(partPath, targetFile, overwrite: true);
         DeleteQuietly(metaPath);
 
@@ -198,10 +200,9 @@ public sealed class DownloadService
 
             if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
             {
-                // 416：带 If-Range 才敢下「已经拿全」的结论 —— 服务器明确说 bytes=received- 要不到，
-                // 即已有的字节覆盖到（或超过）全长。全长反而更大的话是服务器行为不对劲，别把半截当完整。
-                long? fullLength = response.Content.Headers.ContentRange?.Length;
-                if (fullLength is null or <= 0 || received >= fullLength)
+                // A 416 is complete only with the same strong validator and exact full length.
+                if (DownloadResumePolicy.IsCompleteRangeRejection(received,
+                    response.Content.Headers.ContentRange, knownETag!, response.Headers.ETag?.ToString()))
                 {
                     return received;
                 }
@@ -223,7 +224,11 @@ public sealed class DownloadService
                 return -1;
             }
 
-            long? total = response.Content.Headers.ContentRange?.Length;
+            var range = response.Content.Headers.ContentRange;
+            if (!DownloadResumePolicy.IsValidPartialRange(received, range, response.Content.Headers.ContentLength))
+                return -1;
+            long? total = range!.Length;
+            long expectedEnd = range.To!.Value + 1;
 
             await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken))
             await using (var destination = new FileStream(partPath, FileMode.Append, FileAccess.Write, FileShare.None, BufferSize, useAsync: true))
@@ -231,8 +236,9 @@ public sealed class DownloadService
                 received = await PumpAsync(source, destination, received, total, progress, cancellationToken, pauseToken);
             }
 
-            // 一段 206 不够（服务器截短了）就接着要下一段；total 拿不到就靠下一轮的 416 收口。
-            if (total is > 0 && received >= total.Value)
+            // Each segment must contain exactly the advertised bytes before requesting the next one.
+            if (received != expectedEnd) return -1;
+            if (received == total)
             {
                 return received;
             }
@@ -253,9 +259,11 @@ public sealed class DownloadService
         using HttpResponseMessage response = await _httpClient.GetAsync(
             appliedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new InvalidDataException("A fresh download requires a complete HTTP 200 response.");
 
         long? total = response.Content.Headers.ContentLength;
-        WriteSidecar(metaPath, response.Headers.ETag?.ToString());
+        WriteSidecar(metaPath, appliedUrl, response.Headers.ETag?.ToString());
 
         long received = 0;
         await using (Stream source = await response.Content.ReadAsStreamAsync(cancellationToken))
@@ -264,6 +272,8 @@ public sealed class DownloadService
             received = await PumpAsync(source, destination, 0, total, progress, cancellationToken, pauseToken);
         }
 
+        if (total is not null && received != total.Value)
+            throw new InvalidDataException("Download body length does not match Content-Length.");
         return received;
     }
 
@@ -295,11 +305,11 @@ public sealed class DownloadService
         return received;
     }
 
-    private static void WriteSidecar(string metaPath, string? etag)
+    private static void WriteSidecar(string metaPath, string url, string? etag)
     {
         try
         {
-            File.WriteAllText(metaPath, $"{{\"etag\":{(etag is null ? "null" : "\"" + etag.Replace("\"", "\\\"") + "\"")}}}");
+            File.WriteAllText(metaPath, JsonSerializer.Serialize(new DownloadResumeMetadata(url, etag)));
         }
         catch
         {
@@ -307,7 +317,7 @@ public sealed class DownloadService
         }
     }
 
-    private static string? ReadSidecarETag(string metaPath)
+    private static DownloadResumeMetadata? ReadSidecar(string metaPath)
     {
         try
         {
@@ -320,14 +330,16 @@ public sealed class DownloadService
             // 而 ETag 本来就带引号（GitHub / S3 形如 "abc"），写进 JSON 变成 \"abc\" ——
             // 手工解析取到的是一截反斜杠，If-Range 发的是垃圾，服务器回 200，续传报废。
             using var document = JsonDocument.Parse(File.ReadAllText(metaPath));
-            if (!document.RootElement.TryGetProperty("etag", out JsonElement value)
+            if (!document.RootElement.TryGetProperty("Url", out JsonElement url)
+                || url.ValueKind != JsonValueKind.String
+                || !document.RootElement.TryGetProperty("ETag", out JsonElement value)
                 || value.ValueKind != JsonValueKind.String)
             {
                 return null;
             }
 
             string etag = value.GetString() ?? string.Empty;
-            return etag.Length == 0 ? null : etag;
+            return new DownloadResumeMetadata(url.GetString()!, etag.Length == 0 ? null : etag);
         }
         catch
         {

@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
 using Microsoft.Extensions.Logging;
@@ -51,7 +51,7 @@ public sealed partial class GameLauncherPage : PageBase
 
 
 
-    private Timer processTimer;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? processTimer;
 
 
     [ObservableProperty]
@@ -63,10 +63,13 @@ public sealed partial class GameLauncherPage : PageBase
     partial void OnGameProcessChanged(Process? oldValue, Process? newValue)
     {
         processTimer?.Stop();
+        if (!_isLauncherPageLoaded) return;
         if (processTimer is null)
         {
-            processTimer = new(1000);
-            processTimer.Elapsed += (_, _) => CheckGameExited();
+            processTimer = DispatcherQueue.CreateTimer();
+            processTimer.Interval = TimeSpan.FromSeconds(1);
+            long generation = PageGeneration;
+            processTimer.Tick += (_, _) => { if (IsPageGenerationCurrent(generation)) CheckGameExited(); };
         }
         if (newValue != null)
         {
@@ -301,9 +304,18 @@ public sealed partial class GameLauncherPage : PageBase
 
     private async Task<bool> CheckGameRunningAsync()
     {
+        if (SnapshotGameId() is not { } gameId) return false;
+        long request = _runningRequests.Begin();
+        if (!IsPageRequestCurrent(_runningRequests, request, gameId)) return false;
         try
         {
-            GameProcess = await _gameLauncherService.GetGameProcessAsync(CurrentGameId);
+            var detectedProcess = await _gameLauncherService.GetGameProcessAsync(gameId);
+            if (!IsPageRequestCurrent(_runningRequests, request, gameId))
+            {
+                detectedProcess?.Dispose();
+                return false;
+            }
+            GameProcess = detectedProcess;
             if (GameProcess != null)
             {
                 IsRocketMode = false;
@@ -315,7 +327,6 @@ public sealed partial class GameLauncherPage : PageBase
                 // 同一个 pid 重复调用只会建一个会话（见 GameSessionLogCollector），Hub 自己启动
                 // 那条路径先建过就直接复用；建会话要扫目录 + 写快照，扔后台别压 UI 线程。
                 Process detected = GameProcess;
-                GameId? gameId = CurrentGameId;
                 _ = Task.Run(() => GameSessionLogCollector.Begin(
                     gameId, detected.Id, detected.ProcessName, process: detected));
 
@@ -354,7 +365,11 @@ public sealed partial class GameLauncherPage : PageBase
         _externalGameWatch.Start();
     }
 
-    private void StopExternalGameWatch() => _externalGameWatch?.Stop();
+    private void StopExternalGameWatch()
+    {
+        _externalGameWatch?.Stop();
+        if (_externalGameWatch is not null) _externalGameWatch.Tick -= ExternalGameWatchTick;
+    }
 
     private async void ExternalGameWatchTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
@@ -433,6 +448,7 @@ public sealed partial class GameLauncherPage : PageBase
 
     private void CheckGameExited()
     {
+        if (!_isLauncherPageLoaded) return;
         try
         {
             if (GameProcess != null)
@@ -440,11 +456,11 @@ public sealed partial class GameLauncherPage : PageBase
                 if (GameProcess.HasExited)
                 {
                     StoreCurrentOptiScalerProfileOnExit("process-poll");
-                    DispatcherQueue.TryEnqueue(CheckGameVersion);
                     GameProcess = null;
                     StopFpsUnlocker();
                     // 游戏没了：让背景（含视频）回来
                     WeakReferenceMessenger.Default.Send(new GameExitedMessage());
+                    CheckGameVersion();
                 }
             }
         }
@@ -520,11 +536,8 @@ public sealed partial class GameLauncherPage : PageBase
                 process.EnableRaisingEvents = true;
                 process.Exited += (_, _) => DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (_injectorProcess is { } current && current.Id == process.Id)
-                    {
-                        _injectorProcess = null;
-                    }
-
+                    if (!ReferenceEquals(_injectorProcess, process)) return;
+                    _injectorProcess = null;
                     CloseInjectorToast();
                 });
             }
@@ -741,7 +754,7 @@ public sealed partial class GameLauncherPage : PageBase
     /// inject.exe 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll，排最前注入；
     /// null 表示走正常 inject.exe 路径，不由这里注 shade。
     /// </param>
-    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0, bool includeGameExtras = true, int? targetProcessId = null)
+    private void StartExtraDllInjection(string processName, string? shadeReShadeDll = null, string? shadeName = null, string? shadeWaitForModule = null, int shadeDelaySeconds = 0, bool includeGameExtras = true, int? targetProcessId = null, bool preserveFsrBridgeChain = false)
     {
         List<InjectDllSpec> specs = [];
 
@@ -797,11 +810,22 @@ public sealed partial class GameLauncherPage : PageBase
         bool optiScalerWanted = includeGameExtras && UseOptiScaler
                                 && CurrentGameId is { } wantedOptiGame
                                 && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(wantedOptiGame));
-        if (bridgeSpecForCleanup is not null
-            && OptiScalerRuntime.EnsureFsrBridgeRenderScale(Path.GetDirectoryName(bridgeSpecForCleanup.Path), 0.6f))
+        if (bridgeSpecForCleanup is not null && CurrentGameId is { } bridgeScaleGame
+            && OptiScalerRuntime.EnsureFsrBridgeRenderScale(Path.GetDirectoryName(bridgeSpecForCleanup.Path),
+                AppConfig.GetGenshinBridgeRenderScale(bridgeScaleGame)))
         {
-            _logger.LogInformation("原神 FSR Bridge 渲染精度已固定为 0.6：{Directory}",
+            _logger.LogInformation("原神 FSR Bridge 渲染精度已应用为 {Scale}：{Directory}",
+                AppConfig.GetGenshinBridgeRenderScale(bridgeScaleGame),
                 Path.GetDirectoryName(bridgeSpecForCleanup.Path));
+        }
+
+        if (bridgeSpecForCleanup is not null && !preserveFsrBridgeChain
+            && OptiScalerRuntime.RemoveFsrBridgeChain(
+                Path.GetDirectoryName(bridgeSpecForCleanup.Path), out string? duplicateChainBackup))
+        {
+            _logger.LogInformation(
+                "非链式启动已撤走 FSR Bridge 旧 chain 清单，避免 Bridge 重复加载：备份 {Backup}",
+                duplicateChainBackup);
         }
 
         if (bridgeSpecForCleanup is not null
@@ -839,17 +863,30 @@ public sealed partial class GameLauncherPage : PageBase
                 // 启动前先把挂着的「配置」重放一遍（配置 → profiles\<游戏>.ini → 主 ini），
                 // 这样在页面里改配置 / 直接改配置 ini，下次启动游戏就会生效
                 if (buildDirectory is not null
-                    && OptiScalerPresets.SyncIntoProfile(buildDirectory, gameKey) is { } launchPreset)
+                    && ApplyLaunchPresetChecked(buildDirectory, gameKey) is { } launchPreset)
                 {
                     _logger.LogInformation("OptiScaler config applied on launch: {Config} ({Game})", launchPreset, gameKey);
                 }
 
                 // ini 按游戏分离：注入前把这个游戏的那份激活为主 ini（首次从当前主 ini 继承）。
                 // 必须先 Activate 再钉 OptiDllPath，否则旧 profile（auto）会把修正覆盖掉
-                if (buildDirectory is not null
-                    && OptiScalerProfiles.Activate(buildDirectory, gameKey))
+                if (buildDirectory is not null)
                 {
+                    if (!OptiScalerProfiles.Activate(buildDirectory, gameKey))
+                        throw new IOException("OptiScaler profile activation failed; game launch stopped.");
                     _logger.LogInformation("OptiScaler ini profile activated: {Game} ({Build})", gameKey, buildDirectory);
+                }
+
+                // 崩铁 profile 会覆盖构建目录主 ini；在激活之后重新钉 DX11-only 输入路线，
+                // 并只把该键回写到崩铁 profile，避免下次启动被旧 profile 改回 false。
+                if (GameLauncherService.UsesStarRailFinalDx12(optiGameId) && buildDirectory is not null)
+                {
+                    if (!OptiScalerRuntime.EnsureStarRailDx11InputRoute(buildDirectory, gameKey))
+                    {
+                        InAppToast.MainWindow?.Error("崩铁 DX11 输入", "无法将 Dx11ReShadeOnly=true 写入当前配置及崩铁 profile。", 10000);
+                        throw new IOException("StarRail input configuration failed; game launch stopped.");
+                    }
+                    _logger.LogInformation("StarRail DX11-only input route enforced after profile activation: {Game}", gameKey);
                 }
 
                 if (isGenshin && buildDirectory is not null
@@ -996,14 +1033,16 @@ public sealed partial class GameLauncherPage : PageBase
         // 无条件先停掉上一次武装的注入任务：开关全关的启动（空 specs）也必须清掉残留，
         // 否则上一个带 shade 的任务会继续跨启动注入（20 分钟预算 + 3 次重试）
         _extraInjectCts?.Cancel();
+        _extraInjectCts = null;
 
         if (specs.Count == 0)
         {
             return;
         }
 
-        _extraInjectCts = new System.Threading.CancellationTokenSource();
-        System.Threading.CancellationToken token = _extraInjectCts.Token;
+        var operation = new System.Threading.CancellationTokenSource();
+        _extraInjectCts = operation;
+        System.Threading.CancellationToken token = operation.Token;
 
         foreach (InjectDllSpec spec in specs)
         {
@@ -1023,16 +1062,22 @@ public sealed partial class GameLauncherPage : PageBase
             }
             finally
             {
-                DispatcherQueue.TryEnqueue(() =>
+                if (!DispatcherQueue.TryEnqueue(() =>
                 {
-                    IsWaitProcessMode = false;
-
-                    // 没勾 shade 时这条常驻提示就是「等进程」用的，注入一结束就收掉
-                    if (IsWaitProcessOnlyMode)
+                    try
                     {
-                        CloseInjectorToast();
+                        if (!ReferenceEquals(_extraInjectCts, operation)) return;
+                        _extraInjectCts = null;
+                        if (!_isLauncherPageLoaded) return;
+                        IsWaitProcessMode = false;
+                        if (IsWaitProcessOnlyMode) CloseInjectorToast();
                     }
-                });
+                    finally { operation.Dispose(); }
+                }))
+                {
+                    System.Threading.Interlocked.CompareExchange(ref _extraInjectCts, null, operation);
+                    operation.Dispose();
+                }
             }
         });
     }
@@ -1878,41 +1923,47 @@ public sealed partial class GameLauncherPage : PageBase
 
     /// <summary>
     /// 覆盖包 auto.json 里标了 <c>runOnLaunch</c> 的自定义动作：启动 / 注入前自动执行（不弹窗，结果进日志）。
-    /// 失败不挡启动 —— 动作是增强，不是门槛。
+    /// pending/partial/未知身份阻断动作批次及后续启动；无同意时只跳过包动作。
     /// </summary>
-    private async Task RunPackAutoActionsOnLaunchAsync()
+    private async Task<bool> RunPackAutoActionsOnLaunchAsync()
     {
+        bool unloaded = false;
+        Microsoft.UI.Xaml.RoutedEventHandler onUnloaded = (_, _) => unloaded = true;
+        Unloaded += onUnloaded;
         try
         {
             if (CurrentGameId is not { } gameId)
             {
-                return;
+                return true;
             }
 
             string packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
 
             // 没同意过（或 auto.json 内容变了还没重新确认）→ 一律不跑；已同意但被用户单独禁用的动作也跳过
-            string consentHash = PackActionConsent.ComputeHash(packRoot);
+            PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
+            if (snapshot is null) return true; // 无可授权动作；不 dispatch。
+            string consentHash = snapshot.Hash;
             if (!PackActionConsent.IsConsented(gameId.GameBiz.Value, consentHash))
             {
-                return;
+                return true;
             }
 
             HashSet<string> disabled = PackActionConsent.DisabledActions(gameId.GameBiz.Value, consentHash);
-            List<PackAutoAction> actions = [.. PackAutoActionFile.Load(packRoot)
+            List<PackAutoAction> actions = [.. snapshot.LoadActions()
                 .Where(a => a.RunOnLaunch && !disabled.Contains(a.Name))];
             if (actions.Count == 0)
             {
-                return;
+                return true;
             }
 
+            GameEntry? capturedEntry = _currentGameEntry;
             ShadeHost? host = PluginHostLocator.Resolve(out _);
             GamePluginService? plugins = null;
-            if (_currentGameEntry is not null)
+            if (capturedEntry is not null)
             {
                 try
                 {
-                    plugins = GamePluginServiceFactory.Create(_currentGameEntry, host);
+                    plugins = GamePluginServiceFactory.Create(capturedEntry, host);
                 }
                 catch
                 {
@@ -1923,28 +1974,37 @@ public sealed partial class GameLauncherPage : PageBase
             ILogger logger = AppConfig.GetLogger<GameLauncherPage>();
             var context = new LauncherActionContext
             {
-                GameId = CurrentGameId,
-                GameBiz = CurrentGameBiz,
-                Entry = _currentGameEntry,
+                GameId = gameId,
+                GameBiz = gameId.GameBiz,
+                Entry = capturedEntry,
                 Host = host,
                 Plugins = plugins,
-                LauncherPage = this,
+                LauncherPage = null,
                 PackRoot = packRoot,
+                PackSnapshot = snapshot,
+                ExpectedPackHash = consentHash,
                 XamlRoot = XamlRoot,
                 Interactive = false,
+                IsContextCurrent = () => !unloaded && IsLoaded
+                    && CurrentGameId?.GameBiz.Value == gameId.GameBiz.Value,
                 Report = text => logger.LogInformation("{Text}", text),
             };
 
             foreach (PackAutoAction action in actions)
             {
-                string summary = await LauncherActionRunner.RunAsync(action, context);
-                logger.LogInformation("runOnLaunch「{Name}」：{Summary}", action.Name, summary);
+                var result = await LauncherActionRunner.RunResultAsync(action, context, isPackAction: true);
+                logger.LogInformation("runOnLaunch「{Name}」：{Summary} blocked={Blocked} reason={Reason}",
+                    action.Name, result.Summary, result.Blocked, result.Reason);
+                if (result.Blocked) return false;
             }
+            return true;
         }
         catch (Exception ex)
         {
-            AppConfig.GetLogger<GameLauncherPage>().LogWarning(ex, "Run pack auto actions on launch");
+            AppConfig.GetLogger<GameLauncherPage>().LogWarning(ex, "Run pack auto actions on launch blocked");
+            return false;
         }
+        finally { Unloaded -= onUnloaded; }
     }
 
     /// <summary>Observe optional model injection without holding up the graphics launch pipeline.</summary>
@@ -1975,7 +2035,65 @@ public sealed partial class GameLauncherPage : PageBase
         }
     }
 
+    private GameLaunchReservation? _pageLaunchReservation;
+    private System.Threading.CancellationTokenSource? _pageLaunchCts;
+
+    private string? ApplyLaunchPresetChecked(string buildDirectory, string gameKey)
+    {
+        var preparation = OptiScalerPresets.SyncIntoProfileChecked(buildDirectory, gameKey);
+        if (!preparation.Succeeded)
+        {
+            string detail = preparation.FailureReason ?? "OptiScaler 配置准备失败，请检查配置文件。";
+            InAppToast.MainWindow?.Error("启动配置准备失败", detail, 10000);
+            throw new IOException($"OptiScaler profile preparation was blocked or failed: {gameKey}; {detail}; build={buildDirectory}");
+        }
+        return preparation.PresetName;
+    }
+
+    private GameLaunchReservation ValidatePageLaunch()
+    {
+        if (!_isLauncherPageLoaded || _pageLaunchReservation is null || _pageLaunchCts is null)
+            throw new OperationCanceledException("Launcher page is no longer active.");
+        _pageLaunchReservation.Validate(CurrentGameBiz.ToString(), _pageLaunchCts.Token);
+        return _pageLaunchReservation;
+    }
+
+    private Task<Process?> StartReservedCurrentGameAsync(GameId gameId, string? installPath = null) =>
+        _gameLauncherService.StartReservedGameAsync(gameId, ValidatePageLaunch(), installPath, _pageLaunchCts!.Token);
+
     private async Task StartGameAsync()
+    {
+        using var cancellation = new System.Threading.CancellationTokenSource();
+        GameLaunchReservation? reservation = null;
+        try
+        {
+            if (!_isLauncherPageLoaded) return;
+            if (_pageLaunchReservation is not null)
+                throw new InvalidOperationException("Game launch already in progress on this page.");
+            if (SnapshotGameId() is not { } gameId) return;
+            reservation = GameLaunchReservation.Acquire(gameId.GameBiz.ToString(), cancellation.Token);
+            _pageLaunchReservation = reservation;
+            _pageLaunchCts = cancellation;
+            await StartGameCoreAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Game launch reservation/preparation failed");
+            InAppToast.MainWindow?.Error("启动已停止", ex.Message, 8000);
+        }
+        finally
+        {
+            if (ReferenceEquals(_pageLaunchReservation, reservation))
+            {
+                _pageLaunchReservation = null;
+                _pageLaunchCts = null;
+            }
+            reservation?.Dispose();
+        }
+    }
+
+    private async Task StartGameCoreAsync()
     {
         // Rocket owns process creation and GIMI. Exit before all Hub launch,
         // injector, automatic pack action, driver setting and chain-cleanup code.
@@ -2026,7 +2144,16 @@ public sealed partial class GameLauncherPage : PageBase
             }
 
             // Apply imported module/build selections before checking dependencies.
-            await RunPackAutoActionsOnLaunchAsync();
+            if (!await RunPackAutoActionsOnLaunchAsync())
+            {
+                _logger.LogWarning("覆盖包动作 blocked；后续启动准备已停止，需显式核验迁移。");
+                return;
+            }
+
+            await OptiSmoothMotionInterlock.EnsureAsync(CurrentGameId, _currentGameEntry?.ExePath,
+                CurrentGameId is { } optGame && AppConfig.GetUseOptiScalerLaunchOption(optGame));
+            ValidatePageLaunch();
+            LoadSmoothMotionForCurrentClient();
 
             // OptiScaler + 原神：先确保 FSR Bridge 模块存在并加入本游戏，Bridge 会再按当前 Opti 构建写 autoload。
             if (!await ConfirmGenshinFsrBridgeForOptiAsync())
@@ -2171,15 +2298,17 @@ public sealed partial class GameLauncherPage : PageBase
 
                     // This prepares profiles, runtime paths and Bridge autoload before
                     // the official launcher starts its game, never a second Hub process.
-                    StartExtraDllInjection(processName);
+                    // Official XXMI intentionally owns its prewritten chain.txt path.
+                    StartExtraDllInjection(processName, preserveFsrBridgeChain: true);
                     Process? target;
                     if (manualXxmi)
                     {
                         _logger.LogInformation("XXMI 模式=手动：一秒交接与 Hub 注入器准备完成，游戏由 Hub 创建");
-                        target = await _gameLauncherService.StartGameAsync(officialGame, GameInstallPath);
+                        target = await StartReservedCurrentGameAsync(officialGame, GameInstallPath);
                     }
                     else
                     {
+                        ValidatePageLaunch();
                         var launch = XxmiInjector.LaunchOfficialBaseline(officialGame, _currentGameEntry?.DisplayName, exe);
                         AppConfig.XxmiLastLaunch = launch.Message;
                         if (!launch.Started)
@@ -2218,7 +2347,7 @@ public sealed partial class GameLauncherPage : PageBase
                 string? pairedOpt = EnsureNamedOptiScalerDll(AppConfig.GetSelectedOptiScalerDll(pairedGame), AppConfig.GetOptiScalerDllName(pairedGame));
                 string? pairedBuild = pairedOpt is null ? null : Path.GetDirectoryName(pairedOpt);
                 if (pairedBuild is not null
-                    && OptiScalerPresets.SyncIntoProfile(pairedBuild, pairedGame.GameBiz.Value) is { } pairedPreset)
+                    && ApplyLaunchPresetChecked(pairedBuild, pairedGame.GameBiz.Value) is { } pairedPreset)
                 {
                     _logger.LogInformation("崩铁 SRMI 配套启动：已按配置「{Config}」重放游戏配置", pairedPreset);
                 }
@@ -2244,7 +2373,15 @@ public sealed partial class GameLauncherPage : PageBase
                 string pairedArguments = AppConfig.GetStartArgument(pairedGame.GameBiz)?.Trim() ?? string.Empty;
                 if (AppConfig.GetUsePopupWindow(pairedGame.GameBiz)) pairedArguments += " -popupwindow";
                 _gameLauncherService.EnsureGameIniReady(pairedGame);
+                // 崩铁当前是 DX11 source-only 单 runtime：OptiScaler 必须同步保留 source 输入窗口，
+                // 否则 ReShade/ImGui 会绑定隐藏输入窗口，鼠标坐标会变成异常大值而无法点击。
+                if (!OptiScalerRuntime.SetDx11ReShadeOnly(pairedBuild, true))
+                {
+                    InAppToast.MainWindow?.Error("SRMI 配套启动", "无法写入 OptiScaler 的 Dx11ReShadeOnly=true；已阻止启动以避免 Home 鼠标失效。", 10000);
+                    return;
+                }
                 _logger.LogInformation("崩铁 SRMI-first：无模块/Bridge；挂起启动，SRMI→OptiScaler→ReShade；不唤起 XXMI Launcher（{Loader}）", pairedSrmiLoader);
+                ValidatePageLaunch();
                 var pairedLaunch = XxmiInjector.Launch(pairedGame, pairedExe, _currentGameEntry?.DisplayName, pairedArguments.Trim(),
                     StarRailXxmiLaunchRouting.GraphicsLibraries(pairedOpt!, pairedShade), pairedGraphicsStack: true);
                 AppConfig.XxmiLastLaunch = pairedLaunch.Message;
@@ -2296,7 +2433,7 @@ public sealed partial class GameLauncherPage : PageBase
 
                     // 启动前先把挂着的「配置」重放一遍（配置 → profiles\<游戏>.ini → 主 ini）
                     if (buildDirectory is not null
-                        && OptiScalerPresets.SyncIntoProfile(buildDirectory, earlyGenshin.GameBiz.Value) is { } earlyPreset)
+                        && ApplyLaunchPresetChecked(buildDirectory, earlyGenshin.GameBiz.Value) is { } earlyPreset)
                     {
                         _logger.LogInformation("原神早期启动：已按配置「{Config}」重放游戏配置", earlyPreset);
                     }
@@ -2311,11 +2448,18 @@ public sealed partial class GameLauncherPage : PageBase
                     }
                     string bridgeDirectory = Path.GetDirectoryName(bridgePath)!;
                     OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
-                    OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, 0.6f);
-                    OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, optiPath);
+                    OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory,
+                        AppConfig.GetGenshinBridgeRenderScale(earlyGenshin));
+                    // This early-start branch injects either Bridge-only (Rocket/XXMI chain) or the
+                    // complete ordered EXE batch below. Never leave an autoload entry that could
+                    // make the Bridge load a second OptiScaler.
+                    if (OptiScalerRuntime.RemoveFsrBridgeAutoload(bridgeDirectory, out string? staleAutoload))
+                    {
+                        _logger.LogInformation("原神 early-launch 已撤销旧 Bridge autoload（OptiScaler 由本次 chain/batch 唯一负责）：{Backup}", staleAutoload);
+                    }
                     _logger.LogInformation("原神早期配置已准备：profile={Game}，OptiDllPath={Runtime}；随后才创建进程并注入",
                         earlyGenshin.GameBiz.Value, Path.Combine(buildDirectory, "OptiScaler"));
-                    _logger.LogInformation("原神：Bridge/OptiScaler 早期加载，ReShade 后置注入");
+                    _logger.LogInformation("原神普通启动：Bridge/额外模块/FFX12/OptiScaler/ReShade 按序早期批注入");
 
                     string? ffx12Path = Path.GetFullPath(Path.Combine(
                         Path.GetDirectoryName(bridgePath) ?? string.Empty, "..", "AMD",
@@ -2352,6 +2496,16 @@ public sealed partial class GameLauncherPage : PageBase
                     // 这里用 migoto 步让桥在游戏进程内加载 GIMI，所以上面必须把 XXMI 注入模式设成 SKIP，
                     // 否则会出现两份 d3d11 抢顺序。
                     bool chainOwnsStack = false;
+                    List<string> exeInjectionExtras = [];
+                    bool genshinExeInjection = GenshinLaunchRouting.CanUseGenshinExeInjection(
+                        isGenshin: ModuleRegistry.IsGenshin(earlyGenshin),
+                        injectMode: UseInjectMode,
+                        starward: UseStarwardLauncher,
+                        xxmiEnabled: UseXxmiInject,
+                        optiScalerEnabled: UseOptiScaler,
+                        bridgeAvailable: !string.IsNullOrWhiteSpace(bridgePath) && File.Exists(bridgePath),
+                        optiScalerAvailable: !string.IsNullOrWhiteSpace(optiPath) && File.Exists(optiPath),
+                        gameInstallPath: GameInstallPath);
                     if (orderedInjectChain)
                     {
                         var chainSteps = new List<OptiScalerRuntime.FsrBridgeChainStep>
@@ -2444,36 +2598,67 @@ public sealed partial class GameLauncherPage : PageBase
                             _logger.LogWarning(ex, "读覆写链清单失败；用内置顺序");
                         }
 
-                        string[]? chainLines = OptiScalerRuntime.WriteFsrBridgeChain(bridgeDirectory, chainSteps);
-                        if (chainLines is not null)
+                        // Manual XXMI only: the old wait-swapchain gate loaded both main hook DLLs
+                        // after creation in PID34300 (DLL Init, but no runtime/FG evidence). Candidate
+                        // moves that gate behind FFX12/Opti/ReShade. Ordinary/Rocket/Official are untouched.
+                        try
                         {
+                            if (File.Exists(Path.Combine(bridgeDirectory, OptiScalerRuntime.FsrBridgeAutoloadName)))
+                                throw new InvalidOperationException("XXMI chain 与旧 autoload 同时存在；无法确认唯一 OptiScaler owner。");
+                            chainSteps = XxmiInjector.PrepareManualMainStack(
+                                earlyGenshin, bridgePath, optiPath, earlyShadeDll, ffx12Path, chainSteps);
+                            string[]? chainLines = XxmiInjectionPreparation.WriteManualChain(bridgeDirectory, chainSteps, out string? chainBackup);
+                            if (chainBackup is not null)
+                                _logger.LogInformation("XXMI Manual 原链在写入主组件候选前已备份：{Backup}", chainBackup);
+                            var readback = OptiScalerRuntime.ParseFsrBridgeChain(File.ReadAllText(
+                                Path.Combine(bridgeDirectory, OptiScalerRuntime.FsrBridgeChainName)));
+                            if (chainLines is null || !XxmiInjectionPreparation.ReadbackMatches(chainSteps, readback))
+                                throw new IOException("XXMI 主组件链写入或读回验证失败。");
                             chainOwnsStack = true;
-                            _logger.LogInformation("原神有序注入链已写入 {Count} 步：{Steps}",
+                            _logger.LogInformation("原神 XXMI Manual 主组件候选链已写入并读回 {Count} 步（owner=Bridge；不等于 runtime/FG 生效）：{Steps}",
                                 chainLines.Length, string.Join(" | ", chainLines));
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            _logger.LogWarning("原神有序注入链写入失败（{Directory}）；退回旧的批量注入路线", bridgeDirectory);
+                            _logger.LogError(ex, "原神 XXMI Manual 主组件准备失败；尚未创建游戏，不降级批注入 ({Directory})", bridgeDirectory);
+                            InAppToast.MainWindow?.Error("XXMI 主组件准备失败", ex.Message, 12000);
+                            return;
+                        }
+                    }
+                    else if (genshinExeInjection)
+                    {
+                        // 普通原神由 Hub 自己创建 EXE：不再写 chain，旧 chain 必须撤走，否则
+                        // Bridge 注入后还会在进程内重复加载 OptiScaler/ReShade。
+                        if (OptiScalerRuntime.RemoveFsrBridgeChain(bridgeDirectory, out string? staleChain))
+                        {
+                            _logger.LogInformation("普通原神 EXE 批注入：已撤走旧 Bridge chain {Path}", staleChain);
+                        }
+
+                        // ResolveInjectionDlls 已应用全局启用 ∩ 本游戏勾选；这里把额外模块按用户顺序
+                        // 插在 Bridge 后、FFX12/OptiScaler 前。
+                        exeInjectionExtras = BridgeChainModules.Resolve(
+                            earlyGenshin, bridgePath, optiPath, earlyShadeDll, ffx12Path);
+                        if (exeInjectionExtras.Count != 0)
+                        {
+                            _logger.LogInformation("普通原神 EXE 批注入：额外模块 {Count} 个排在 Bridge 后、OptiScaler 前：{Modules}",
+                                exeInjectionExtras.Count, string.Join(" | ", exeInjectionExtras.Select(Path.GetFileName)));
                         }
                     }
                     else
                     {
-                        // 非链式路径（含「关闭 XXMI」）：这一局由 Hub 按老路线自己批量注入 OptiScaler/ReShade，
-                        // 但**桥永远优先读链文件**。上一局走链时留在模块目录里的清单会被原样执行 ——
-                        // 实测：留下的 migoto 步骤照样把 GIMI 拉进进程，游戏 5 秒后 0xC0000005 退出，
-                        // 用户体感就是「关了 XXMI 也启动不了」。所以这里必须清掉，回落到 autoload。
+                        // 非适用链路：清掉上次 Genshin chain，随后由本次显式批注入拥有 OptiScaler。
                         if (OptiScalerRuntime.RemoveFsrBridgeChain(bridgeDirectory, out string? staleChain))
                         {
-                            _logger.LogInformation(
-                                "非有序注入链路径：已清除上一次留下的链清单 {Path}，桥回落到 autoload", staleChain);
+                            _logger.LogInformation("原神非 chain 路径：已清除旧 chain {Path}", staleChain);
                         }
                     }
 
                     // 早期 CreateProcess 路线绕过 StartGameAsync，也必须在创建进程前配置两份 ini。
                     _gameLauncherService.EnsureGameIniReady(earlyGenshin);
+                    ValidatePageLaunch();
                     GenshinEarlyLaunch.Result early = await GenshinEarlyLaunch.StartAsync(
                         earlyExe, earlyArguments.Trim(), GameInstallPath!, bridgePath, ffx12Path, optiPath, earlyShadeDll,
-                        text => _logger.LogInformation("{Text}", text), chainOwnsStack);
+                        text => _logger.LogInformation("{Text}", text), chainOwnsStack, exeInjectionExtras);
                     if (early.Process is null)
                     {
                         _logger.LogError("原神早期启动失败：{Error}", early.Error);
@@ -2725,7 +2910,7 @@ public sealed partial class GameLauncherPage : PageBase
             }
             else
             {
-                process = await _gameLauncherService.StartGameAsync(CurrentGameId);
+                process = await StartReservedCurrentGameAsync(CurrentGameId);
             }
 
             if (process is not null)
@@ -3025,6 +3210,7 @@ public sealed partial class GameLauncherPage : PageBase
 
             ShadePathAlignResult align = ShadePathAligner.Align(gameIni, host);
             GameIniBootstrap.Ensure(_currentGameEntry, host, GameLauncherService.UsesGenshinFinalDx12(CurrentGameId), GameLauncherService.UsesStarRailFinalDx12(CurrentGameId));
+            if (CurrentGameId is { } settingsGameId) ReShadeLauncherSettings.Apply(settingsGameId, gameIni);
             if (!align.Changed)
             {
                 return;
@@ -3120,6 +3306,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
         if (UseXxmiInject && !manualXxmi)
         {
+            ValidatePageLaunch();
             var launch = XxmiInjector.LaunchOfficialBaseline(game, _currentGameEntry.DisplayName, clientExe);
             if (!launch.Started)
             {
@@ -3147,6 +3334,7 @@ public sealed partial class GameLauncherPage : PageBase
             string arguments = AppConfig.GetEnableDX12(CurrentGameBiz) ? "-dx12" : "";
             _logger.LogInformation("Launching custom game: {Exe} (args: {Args})", exe, arguments);
 
+            ValidatePageLaunch();
             Process? process = Process.Start(new ProcessStartInfo(exe)
             {
                 Arguments = arguments,
@@ -3384,7 +3572,7 @@ public sealed partial class GameLauncherPage : PageBase
                         : "在 HoYoShade 注入器黑名单里",
                     shadeName);
 
-                var bypassProcess = await _gameLauncherService.StartGameAsync(CurrentGameId, gameInstallPath);
+                var bypassProcess = await StartReservedCurrentGameAsync(CurrentGameId, gameInstallPath);
                 if (bypassProcess is null)
                 {
                     InAppToast.MainWindow?.Error(Lang.GameLauncher_GameLaunchFailed);
@@ -3423,7 +3611,7 @@ public sealed partial class GameLauncherPage : PageBase
             _logger.LogInformation("{ShadeName} injector is ready, launching game...", shadeName);
 
             // Injector is ready and waiting for game process - now launch the game
-            var gameProcess = await _gameLauncherService.StartGameAsync(CurrentGameId, gameInstallPath);
+            var gameProcess = await StartReservedCurrentGameAsync(CurrentGameId, gameInstallPath);
 
             if (gameProcess != null)
             {

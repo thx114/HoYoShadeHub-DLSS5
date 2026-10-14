@@ -43,6 +43,10 @@ public sealed class IniDocument
 
     public static IniDocument CreateEmpty() => new([], hadBom: false);
 
+    /// <summary>从文本直接构造（不写盘；测试和内存编辑用）。BOM 按无处理。</summary>
+    public static IniDocument LoadFromText(string text)
+        => new([.. SplitLines(text)], hadBom: false);
+
     private static IEnumerable<string> SplitLines(string text)
     {
         // 统一到 \n 处理，回写时再用当前平台换行；ReShade 自己写的是 \r\n

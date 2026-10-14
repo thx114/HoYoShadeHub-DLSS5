@@ -62,6 +62,11 @@ public sealed partial class GameLauncherPage : PageBase
         get => _useSmoothMotion;
         set
         {
+            if (value && OptiSmoothMotionInterlock.IsBlocked(CurrentGameId, UseOptiScaler))
+            {
+                OnPropertyChanged(nameof(UseSmoothMotion));
+                return;
+            }
             if (!SetProperty(ref _useSmoothMotion, value))
             {
                 return;
@@ -83,7 +88,7 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>没拿到 exe / 读不了驱动配置时置 false，开关禁用（整块隐藏）。</summary>
-    public bool CanUseSmoothMotion => _canUseSmoothMotion;
+    public bool CanUseSmoothMotion => _canUseSmoothMotion && !OptiSmoothMotionInterlock.IsBlocked(CurrentGameId, UseOptiScaler);
 
     /// <summary>AI 插帧按钮整块的可见性：定位到游戏 exe 且能读驱动配置才显示。</summary>
     public Microsoft.UI.Xaml.Visibility IsSmoothMotionVisible =>
@@ -94,6 +99,8 @@ public sealed partial class GameLauncherPage : PageBase
     {
         get
         {
+            if (OptiSmoothMotionInterlock.IsBlocked(CurrentGameId, UseOptiScaler))
+                return "此游戏已启用 OptiScaler，AI 插帧（NVIDIA Smooth Motion）自动关闭且不可同时启用。关闭 Opti 不会自动重新开启 AI 插帧。";
             string tail = string.IsNullOrWhiteSpace(_smoothMotionUnavailableReason)
                 ? "勾上 = 开（低延迟会设为 Ultra），重启游戏生效。"
                 : "　当前不可用：" + _smoothMotionUnavailableReason;
@@ -125,11 +132,14 @@ public sealed partial class GameLauncherPage : PageBase
         }
 
         string exeName = Path.GetFileName(exePath);
-        _ = Task.Run(() =>
+        var game = CurrentGameId is { } selected ? new HoYoShadeHub.Core.HoYoPlay.GameId { Id = selected.Id, GameBiz = selected.GameBiz } : null;
+        _ = Task.Run(async () =>
         {
             try
             {
-                NvDrsInterop.State state = NvDrsInterop.ReadSmoothMotionEnable(exeName);
+                await OptiSmoothMotionInterlock.EnsureAsync(game, exePath,
+                    game is not null && AppConfig.GetUseOptiScalerLaunchOption(game));
+                NvDrsInterop.State state = await OptiSmoothMotionInterlock.RunSerializedAsync(() => NvDrsInterop.ReadSmoothMotionEnable(exeName));
                 _ = DispatcherQueue?.TryEnqueue(() =>
                 {
                     if (generation != _smoothMotionLoadGeneration)
@@ -152,6 +162,13 @@ public sealed partial class GameLauncherPage : PageBase
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Load smooth motion state for {Exe}", exeName);
+                _ = DispatcherQueue?.TryEnqueue(() =>
+                {
+                    if (generation != _smoothMotionLoadGeneration) return;
+                    _smoothMotionUnavailableReason = ex.Message;
+                    OnPropertyChanged(nameof(SmoothMotionToolTip));
+                    InAppToast.MainWindow?.Error("AI 插帧状态未确认", ex.Message, 12000);
+                });
             }
         });
     }
@@ -166,9 +183,13 @@ public sealed partial class GameLauncherPage : PageBase
             string latencyKey = $"smooth_motion_latency_{exeName}";
             string latencyCplKey = $"smooth_motion_latency_cpl_{exeName}";
             string profileTitle = $"HoYoShadeHub - {gameTitle}";
+            var game = CurrentGameId is { } selected ? new GameId { Id = selected.Id, GameBiz = selected.GameBiz } : null;
 
-            (NvDrsInterop.State State, string? LatencyNote) result = await Task.Run(() =>
+            (NvDrsInterop.State State, string? LatencyNote) result = await OptiSmoothMotionInterlock.RunSerializedAsync(() =>
             {
+                if (enable && OptiSmoothMotionInterlock.IsBlocked(game,
+                        game is not null && AppConfig.GetUseOptiScalerLaunchOption(game)))
+                    return (new NvDrsInterop.State(false, false, 0, "", "此游戏已启用 OptiScaler，不能同时开启 AI 插帧。"), (string?)null);
                 // 先把 Smooth Motion 总开关写进去：顺带保证驱动里有这个游戏的条目，
                 // 低延迟那两项就不用再依赖「这台机器以前配过这个游戏」。
                 NvDrsInterop.State write = NvDrsInterop.WriteSmoothMotionEnable(exeName, enable, profileTitle, gameTitle);
@@ -213,11 +234,9 @@ public sealed partial class GameLauncherPage : PageBase
             else
             {
                 InAppToast.MainWindow?.Error("AI 插帧", result.State.Error ?? "写入失败", 12000);
-                _isApplyingSmoothMotionState = true;
-                _useSmoothMotion = !enable;
-                _isApplyingSmoothMotionState = false;
-                OnPropertyChanged(nameof(UseSmoothMotion));
             }
+            if (string.Equals(_currentGameEntry?.ExePath, exePath, StringComparison.OrdinalIgnoreCase))
+                LoadSmoothMotionForCurrentClient();
         }
         catch (Exception ex)
         {

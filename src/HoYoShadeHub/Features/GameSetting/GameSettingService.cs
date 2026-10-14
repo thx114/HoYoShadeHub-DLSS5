@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using HoYoShadeHub.Core;
+using HoYoShadeHub.Extensions.Games;
 using System;
 using System.Text;
 using System.Text.Json;
@@ -245,6 +246,25 @@ internal static class GameSettingService
     }
 
 
+
+    public static (int RenderScaleIndex, int AntiAliasingIndex) GetGenshinGraphicsSettings(GameBiz biz)
+    {
+        if (biz.Game is not GameBiz.hk4e)
+            return (-1, -1);
+        return GenshinGraphicsSettings.Read(Registry.GetValue(biz.GetGameRegistryKey(),
+            GENERAL_DATA_h2389025596, null) as byte[]);
+    }
+
+    public static void SetGenshinGraphicsSettings(GameBiz biz, int? renderScaleIndex, int? antiAliasingIndex)
+    {
+        if (biz.Game is not GameBiz.hk4e || (renderScaleIndex is null && antiAliasingIndex is null))
+            return;
+        string key = biz.GetGameRegistryKey();
+        if (Registry.GetValue(key, GENERAL_DATA_h2389025596, null) is not byte[] data)
+            throw new InvalidOperationException("原神图形配置尚未生成，请先启动游戏并保存一次图形设置。");
+        byte[] updated = GenshinGraphicsSettings.Apply(data, renderScaleIndex, antiAliasingIndex);
+        Registry.SetValue(key, GENERAL_DATA_h2389025596, updated, RegistryValueKind.Binary);
+    }
 
     public static void SetGenshinEnableHDR(GameBiz biz, bool enableHDR)
     {

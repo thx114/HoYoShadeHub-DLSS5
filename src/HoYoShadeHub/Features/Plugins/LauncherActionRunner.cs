@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.Messaging;
+﻿using CommunityToolkit.Mvvm.Messaging;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Dlls;
@@ -30,6 +30,8 @@ namespace HoYoShadeHub.Features.Plugins;
 /// <summary>执行 auto.json 自定义动作（或内置动作）时的上下文：当前游戏 / 宿主 / 插件服务 / 页面</summary>
 public sealed class LauncherActionContext
 {
+    public PackAutoActionSnapshot? PackSnapshot { get; init; }
+    public string? ExpectedPackHash { get; init; }
     public required GameId? GameId { get; init; }
 
     public required GameBiz? GameBiz { get; init; }
@@ -54,59 +56,63 @@ public sealed class LauncherActionContext
 
     /// <summary>进度汇报（写状态栏 / 日志）</summary>
     public Action<string>? Report { get; init; }
+
+    /// <summary>捕获的页面/包同意上下文仍有效；切页后禁止后续步骤。</summary>
+    public Func<bool>? IsContextCurrent { get; init; }
 }
 
 /// <summary>
 /// auto.json 自定义动作的执行器：把每个步骤翻译成**现有的启动器接口**调用。
-/// 一个步骤失败不中断后续步骤（✗ 记在返回的摘要里）。
-/// 所有接口名大小写不敏感；参数缺失 / 上下文不够时该步骤报 ✗ 跳过。
+/// pending、未知身份、失败/partial 或上下文失效立即返回结构化 blocked，停止动作与外层批次。
+/// 所有接口名大小写不敏感；手动内置开关仍是独立可重复操作。
 /// </summary>
 public static class LauncherActionRunner
 {
     private static readonly ILogger _logger = AppConfig.GetLogger<GamePluginPage>();
 
-    public static async Task<string> RunAsync(PackAutoAction action, LauncherActionContext context)
+    // 保留 CLI 的字符串 API；生产批次调用结构化 API，不从摘要文字猜 blocked。
+    public static async Task<string> RunAsync(PackAutoAction action, LauncherActionContext context, bool? isPackAction = null)
+        => (await RunResultAsync(action, context, isPackAction)).Summary;
+
+    public static async Task<PackActionOncePolicy.ExecutionResult> RunResultAsync(
+        PackAutoAction action, LauncherActionContext context, bool? isPackAction = null)
     {
-        var results = new List<string>();
-        foreach (PackActionStep step in action.Steps)
+        if (!PackActionOncePolicy.TryBindSnapshot(action, isPackAction, context.PackRoot,
+            context.PackSnapshot, context.ExpectedPackHash, out bool fromPack, out var snapshot, out var boundAction))
+            return PackActionOncePolicy.Block("✗ 覆盖包动作内容已变化，请显式重新确认；动作批次已阻断。", PackActionOncePolicy.BlockReason.ContextChanged);
+        action = boundAction;
+        string hash = fromPack ? snapshot!.Hash : string.Empty;
+        bool Current() => (context.IsContextCurrent?.Invoke() ?? true)
+            && (!fromPack || (context.GameBiz is { } biz && PackActionConsent.IsConsented(biz.Value, hash)
+                && !PackActionConsent.DisabledActions(biz.Value, hash).Contains(action.Name)));
+        if (!Current()) return PackActionOncePolicy.Block("✗ 未获同意、已禁用或上下文已变化；动作批次已阻断。", PackActionOncePolicy.BlockReason.ContextChanged);
+        if (fromPack)
+            return await PackActionOncePolicy.RunSnapshotAsync(action, snapshot!, context.PackRoot!, Current,
+                step => DispatchStepAsync(step, context), context.Report);
+        bool needsLedger = action.Steps.Any(step => PackActionOncePolicy.RequiresOnce(fromPack, step));
+        PackOnceLedger.Session? ledger = null;
+        try
         {
-            try
+            if (needsLedger)
             {
-                string outcome = await RunStepAsync(step, context);
-                results.Add(outcome);
-                context.Report?.Invoke($"[{action.Name}] {outcome}");
+                if (string.IsNullOrWhiteSpace(context.PackRoot))
+                    return PackActionOncePolicy.Block("✗ once 动作缺少包根账本；动作批次已阻断。", PackActionOncePolicy.BlockReason.LedgerUnavailable);
+                ledger = await PackOnceLedger.OpenAsync(context.PackRoot);
+                if (!Current()) return PackActionOncePolicy.Block("✗ 锁等待中上下文已变化；动作批次已阻断。", PackActionOncePolicy.BlockReason.ContextChanged);
+                var plan = ledger.RegisterPlan(PackActionOncePolicy.PlanKeys(new[] { action }));
+                // 有历史但无 plan 的旧账仍允许 exact raw / exact stable success 迁移；未知步骤由 Reserve 阻断。
+                if (plan == PackOnceLedger.PlanRegistration.NeedsMigration && ledger.HasPlan)
+                    return PackActionOncePolicy.Block("✗ 包出现未获权逻辑身份（换序/新 onceId/别名/新步骤）；普通 hash 同意不扩 plan，需显式迁移，批次已阻断。", PackActionOncePolicy.BlockReason.NeedsMigration);
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Action step {Action} failed", step.Action);
-                results.Add($"✗ {step.Action}：{ex.Message}");
-            }
+            return await PackActionOncePolicy.RunStepsAsync(action, fromPack, ledger,
+                step => DispatchStepAsync(step, context), Current, context.Report);
         }
-
-        return string.Join("；", results);
-    }
-
-    private static async Task<string> RunStepAsync(PackActionStep step, LauncherActionContext context)
-    {
-        // once=true：按动作名 + 步骤内容哈希在包根 .hysx_once.json 记账，只执行一次。
-        // 导入覆盖包"改一次就放手"的通用修饰符；改了步骤内容哈希变，会自动重新执行一次。
-        bool once = step.GetBool("once") == true;
-        if (once && !string.IsNullOrWhiteSpace(context.PackRoot) && OnceMarker.Has(context.PackRoot, step))
+        catch (Exception ex)
         {
-            return $"{step.Action}（once）：已执行过，跳过";
+            _logger.LogWarning(ex, "Pack action blocked");
+            return PackActionOncePolicy.Block($"✗ once 账本或上下文不可用；动作批次已阻断：{ex.Message}", PackActionOncePolicy.BlockReason.LedgerUnavailable);
         }
-
-        string outcome = await DispatchStepAsync(step, context);
-
-        // Failed setup must not become a permanent once marker: missing ini,
-        // preset or dependency may become available on the next launch.
-        if (once && !string.IsNullOrWhiteSpace(context.PackRoot)
-            && HoYoShadeHub.Extensions.ReShade.PackActionOutcome.ShouldMarkOnce(outcome))
-        {
-            OnceMarker.Mark(context.PackRoot, step);
-        }
-
-        return outcome;
+        finally { ledger?.Dispose(); }
     }
 
     private static async Task<string> DispatchStepAsync(PackActionStep step, LauncherActionContext context)
@@ -772,67 +778,6 @@ public static class LauncherActionRunner
                + (changed ? string.Empty : "（值相同，无改动）");
     }
 
-    /// <summary>once 步骤记账：包根 .hysx_once.json，键 = 动作名 + 步骤内容哈希。</summary>
-    private static class OnceMarker
-    {
-        private const string FileName = ".hysx_once.json";
-
-        private static string HashOf(PackActionStep step)
-        {
-            byte[] bytes = Encoding.UTF8.GetBytes(step.Action.Trim().ToLowerInvariant() + (char)10 + step.Raw.GetRawText());
-            byte[] hash = System.Security.Cryptography.SHA256.HashData(bytes);
-            return Convert.ToHexString(hash).ToLowerInvariant()[..16];
-        }
-
-        public static bool Has(string packRoot, PackActionStep step)
-        {
-            try
-            {
-                string path = Path.Combine(packRoot, FileName);
-                if (!File.Exists(path))
-                {
-                    return false;
-                }
-
-                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
-                return document.RootElement.ValueKind == JsonValueKind.Object
-                       && document.RootElement.TryGetProperty(HashOf(step), out JsonElement value)
-                       && value.ValueKind == JsonValueKind.True;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        public static void Mark(string packRoot, PackActionStep step)
-        {
-            try
-            {
-                string path = Path.Combine(packRoot, FileName);
-                Dictionary<string, bool> map = [];
-                if (File.Exists(path))
-                {
-                    try
-                    {
-                        map = JsonSerializer.Deserialize<Dictionary<string, bool>>(File.ReadAllText(path)) ?? [];
-                    }
-                    catch
-                    {
-                        map = [];
-                    }
-                }
-
-                map[HashOf(step)] = true;
-                File.WriteAllText(path, JsonSerializer.Serialize(map));
-            }
-            catch
-            {
-                // 记账失败不影响主流程（下次还会执行一次，幂等）
-            }
-        }
-    }
-
     // ==================== 启动选项 ====================
 
     private static string SetDx12(PackActionStep step, LauncherActionContext context)
@@ -853,6 +798,13 @@ public static class LauncherActionRunner
             return "✗ set_smooth_motion 需要 enabled 参数";
         }
 
+        if (enabled && OptiSmoothMotionInterlock.IsBlocked(context.GameId,
+                context.GameId is { } selected && AppConfig.GetUseOptiScalerLaunchOption(selected)))
+        {
+            await OptiSmoothMotionInterlock.EnsureAsync(context.GameId, context.Entry?.ExePath, true);
+            return "此游戏已启用 OptiScaler，禁止同时开启 AI 插帧。";
+        }
+
         // 启动器页在上下文里：走页面属性（连带低延迟 Ultra / 还原那一套）
         if (context.LauncherPage is not null)
         {
@@ -869,7 +821,13 @@ public static class LauncherActionRunner
             return "✗ 不知道这个游戏的主程序名";
         }
 
-        NvDrsInterop.State state = await Task.Run(() => NvDrsInterop.WriteSmoothMotionEnable(exeName, enabled));
+        NvDrsInterop.State state = await OptiSmoothMotionInterlock.RunSerializedAsync(() =>
+        {
+            if (enabled && OptiSmoothMotionInterlock.IsBlocked(context.GameId,
+                    context.GameId is { } game && AppConfig.GetUseOptiScalerLaunchOption(game)))
+                return new NvDrsInterop.State(false, false, 0, "", "OptiScaler 与 AI 插帧不可同时启用。");
+            return NvDrsInterop.WriteSmoothMotionEnable(exeName, enabled);
+        });
         return state.Ok
             ? (enabled ? "已开启 AI 插帧（重启游戏生效）" : "已关闭 AI 插帧")
             : "✗ 写驱动配置失败：" + (state.Error ?? "未知原因");
@@ -1433,7 +1391,12 @@ public static class LauncherActionRunner
             return $"✗ 不知道{(target == "launcher" ? "启动器" : "游戏")}目录在哪";
         }
 
+        string source = context.PackRoot is null ? string.Empty : Path.Combine(context.PackRoot, folder);
+        int expected = Directory.Exists(source)
+            ? Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).Count() : 0;
         int copied = GameAddonPackUserContent.OverlayFiles(context.PackRoot, folder, targetRoot);
+        if (copied != expected)
+            return $"✗ 覆盖文件可能部分完成（{copied}/{expected}）；once 保留 pending，禁止自动重试。";
         return copied > 0 ? $"已覆盖 {copied} 个文件到{target switch { "game" => "游戏", "launcher" => "启动器", _ => target }}目录"
             : "✗ 没有可覆盖的文件（包里没有 " + folder + "\\）";
     }
@@ -1519,7 +1482,7 @@ public static class LauncherActionRunner
         }
 
         string fxName = name!.EndsWith(".fx", StringComparison.OrdinalIgnoreCase) ? name! : name! + ".fx";
-        int deleted = 0;
+        int deleted = 0, failed = 0;
         string shaders = HostShadersDirectory(context);
         if (shaders.Length > 0 && Directory.Exists(shaders))
         {
@@ -1532,7 +1495,7 @@ public static class LauncherActionRunner
                 }
                 catch
                 {
-                    // 占用中就跳过
+                    failed++;
                 }
             }
         }
@@ -1558,12 +1521,13 @@ public static class LauncherActionRunner
                 }
                 catch
                 {
-                    // 预设写不动就算了
+                    failed++;
                 }
             }
         }
 
-        return deleted > 0 ? $"已删除滤镜 {fxName}{presetNote}" : $"✗ reshade-shaders 里没有 {fxName}";
+        return failed > 0 ? $"✗ 删除滤镜可能部分完成（已删除 {deleted}，失败 {failed}）；禁止自动重试。"
+            : deleted > 0 ? $"已删除滤镜 {fxName}{presetNote}" : $"✗ reshade-shaders 里没有 {fxName}";
     }
 
     private static bool EnableTechnique(IniDocument preset, string technique)

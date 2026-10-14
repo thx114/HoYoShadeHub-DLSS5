@@ -65,6 +65,26 @@ public sealed partial class AdvancedSetting : PageBase
 
     private async void Button_CheckFpsUnlockUpdate_Click(object sender, RoutedEventArgs e)
     {
+        if (IsCheckingFpsUnlockUpdate)
+            return;
+        IsCheckingFpsUnlockUpdate = true;
+        try
+        {
+            await CheckFpsUnlockUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Manual fps unlock data check failed");
+            FpsUnlockStatusText = "检查失败，请确认网络/代理后重试";
+        }
+        finally
+        {
+            IsCheckingFpsUnlockUpdate = false;
+        }
+    }
+
+    private async Task CheckFpsUnlockUpdateAsync()
+    {
         GameId gameId = GameId.FromGameBiz(GameBiz.hk4e_cn)
                        ?? GameId.FromGameBiz(GameBiz.hk4e_global);
 
@@ -85,7 +105,6 @@ public sealed partial class AdvancedSetting : PageBase
             _logger.LogWarning(ex, "Read game version for manual fps unlock check");
         }
 
-        IsCheckingFpsUnlockUpdate = true;
         FpsUnlockStatusText = "正在拉取上游数据…";
 
         FpsUnlockDataService.UpdateResult result;
@@ -99,8 +118,6 @@ public sealed partial class AdvancedSetting : PageBase
             _logger.LogWarning(ex, "Manual fps unlock data check failed");
             result = FpsUnlockDataService.UpdateResult.Failed;
         }
-
-        IsCheckingFpsUnlockUpdate = false;
 
         FpsUnlockStatusText = result switch
         {

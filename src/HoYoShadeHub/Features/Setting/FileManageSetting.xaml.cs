@@ -217,10 +217,20 @@ public sealed partial class FileManageSetting : PageBase
             var result = await dialog.ShowAsync();
             if (result is ContentDialogResult.Primary)
             {
+                string previousFolder = AppConfig.UserDataFolder;
                 AppConfig.UserDataFolder = null!;
-                AppConfig.SaveConfiguration();
+                if (!AppConfig.TrySaveConfiguration())
+                {
+                    AppConfig.UserDataFolder = previousFolder;
+                    InAppToast.MainWindow?.Error((string?)null, "保存数据目录设置失败，请检查配置文件权限后重试。");
+                    return;
+                }
                 AppInstance.GetCurrent().UnregisterKey();
-                Process.Start(AppConfig.HoYoShadeHubExecutePath);
+                Process.Start(new ProcessStartInfo(AppConfig.HoYoShadeHubExecutePath)
+                {
+                    Arguments = LauncherCommandLine.BuildRestartArguments(),
+                    UseShellExecute = true,
+                });
                 App.Current.Exit();
             }
         }

@@ -1,10 +1,14 @@
 using System.Text.Json;
+using System.Text;
+using System.Security.Cryptography;
 
 namespace HoYoShadeHub.Extensions.ReShade;
 
 /// <summary>auto.json 里的一个动作（一串步骤，UI 上是一个按钮）</summary>
 public sealed class PackAutoAction
 {
+    // Load 的来源不可由 Hub/CLI 调用方改写；auto drift 不能把包动作降级成 builtin。
+    public PackAutoActionSnapshot? OriginSnapshot { get; internal set; }
     /// <summary>显示名（按钮文本）</summary>
     public string Name { get; set; } = string.Empty;
 
@@ -107,28 +111,7 @@ public sealed class PackActionStep
 public static class PackAutoActionFile
 {
     public static List<PackAutoAction> Load(string? packRoot)
-    {
-        if (packRoot is null)
-        {
-            return [];
-        }
-
-        string path = Path.Combine(packRoot, GameAddonPackUserContent.AutoActionFileName);
-        if (!File.Exists(path))
-        {
-            return [];
-        }
-
-        try
-        {
-            return Parse(File.ReadAllText(path));
-        }
-        catch
-        {
-            // 写坏了就当没有动作
-            return [];
-        }
-    }
+        => PackAutoActionSnapshot.TryLoad(packRoot)?.LoadActions() ?? [];
 
     /// <summary>
     /// 从 JSON 文本解析动作列表。支持三种形态：
@@ -218,4 +201,65 @@ public static class PackAutoActionFile
             result.Add(action);
         }
     }
+}
+
+/// <summary>一次字节读取同时派生 hash、动作和完整 plan；不暴露可变的内部动作集合。</summary>
+public sealed class PackAutoActionSnapshot
+{
+    private readonly string _json;
+    public string PackRoot { get; }
+    public string Hash { get; }
+
+    private PackAutoActionSnapshot(string root, string json, string hash)
+        => (PackRoot, _json, Hash) = (root, json, hash);
+
+    // 与旧 PackActionConsent.ComputeHash 完全相同：原字节（含 BOM）的完整大写 SHA256。
+    public static string ComputeHash(ReadOnlySpan<byte> bytes)
+        => Convert.ToHexString(SHA256.HashData(bytes));
+
+    public static PackAutoActionSnapshot? TryLoad(string? packRoot, Func<string, byte[]>? readBytes = null)
+    {
+        if (string.IsNullOrWhiteSpace(packRoot)) return null;
+        try
+        {
+            string root = Path.GetFullPath(packRoot);
+            byte[] bytes = (readBytes ?? File.ReadAllBytes)(Path.Combine(root, GameAddonPackUserContent.AutoActionFileName));
+            // 保持 File.ReadAllText 的 BOM 检测语义；hash 不经过文本解码/JSON normalization。
+            using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8, true);
+            string json = reader.ReadToEnd();
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement value = document.RootElement;
+            JsonElement[] actions = value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().ToArray()
+                : value.ValueKind == JsonValueKind.Object && value.TryGetProperty("actions", out var list)
+                    ? list.ValueKind == JsonValueKind.Array ? list.EnumerateArray().ToArray() : []
+                    : [value];
+            // 不接受旧 Parse 的“跳过坏 step 后执行剩余步骤”降级。
+            if (actions.Length == 0 || actions.Any(action => action.ValueKind != JsonValueKind.Object
+                || !action.TryGetProperty("steps", out var steps) || steps.ValueKind != JsonValueKind.Array
+                || steps.GetArrayLength() == 0 || steps.EnumerateArray().Any(step => step.ValueKind != JsonValueKind.Object
+                    || !step.TryGetProperty("action", out var type) || type.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(type.GetString())))) return null;
+            return new(root, json, ComputeHash(bytes));
+        }
+        catch { return null; } // 解析/空/IO 失败没有可授权的快照。
+    }
+
+    public List<PackAutoAction> LoadActions()
+    {
+        var actions = PackAutoActionFile.Parse(_json);
+        foreach (var action in actions) action.OriginSnapshot = this;
+        return actions;
+    }
+
+    public bool IsCurrent(string? root, Func<string, byte[]>? readBytes = null)
+        => MatchesRoot(root) && TryLoad(root, readBytes)?.Hash == Hash;
+
+    public bool MatchesRoot(string? root)
+    {
+        try { return root is not null && string.Equals(PackRoot, Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    public PackAutoAction? CaptureAction(PackAutoAction action)
+        => LoadActions().FirstOrDefault(candidate => PackActionOncePolicy.IsPackAction(action, new[] { candidate }));
 }

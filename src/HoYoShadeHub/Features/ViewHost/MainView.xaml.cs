@@ -9,6 +9,7 @@ using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoShade;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.GameSetting;
 using HoYoShadeHub.Features.Modules;
@@ -37,6 +38,11 @@ public sealed partial class MainView : UserControl
 
 
     private readonly ILogger<MainView> _logger = AppConfig.GetLogger<MainView>();
+    private readonly UiLifetime _lifetime = new();
+    private bool _startupChecksStarted;
+    private bool _navigationQueued;
+    private (Type? Page, object? Parameter, NavigationTransitionInfo? Transition)? _pendingNavigation;
+    private (Type Page, string? Id, string? Biz)? _lastNavigation;
 
 
     public GameId? CurrentGameId { get; private set => SetProperty(ref field, value); }
@@ -53,6 +59,7 @@ public sealed partial class MainView : UserControl
     public MainView()
     {
         this.InitializeComponent();
+        MainView_Frame.IsNavigationStackEnabled = false;
         Current = this;
         InitializeMainView();
     }
@@ -67,6 +74,7 @@ public sealed partial class MainView : UserControl
     private void InitializeMainView()
     {
         this.Loaded += MainView_Loaded;
+        this.Unloaded += MainView_Unloaded;
         GameId? gameId = GameSelector.CurrentGameId;
         if (gameId?.GameBiz == GameBiz.bh3_global)
         {
@@ -79,9 +87,6 @@ public sealed partial class MainView : UserControl
         CurrentGameId = gameId;
         CurrentGameFeatureConfig = GameFeatureConfig.FromGameId(CurrentGameId);
         UpdateNavigationView();
-        WeakReferenceMessenger.Default.Register<MainViewNavigateMessage>(this, OnMainViewNavigateMessageReceived);
-        WeakReferenceMessenger.Default.Register<BH3GlobalGameServerChangedMessage>(this, OnBH3GlobalGameServerChanged);
-        WeakReferenceMessenger.Default.Register<LanguageChangedMessage>(this, (_, _) => this.DispatcherQueue.TryEnqueue(() => this.Bindings.Update()));
     }
 
 
@@ -89,21 +94,50 @@ public sealed partial class MainView : UserControl
 
     private void MainView_Loaded(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
+        if (!_lifetime.Enter()) return;
+        Current = this;
+        WeakReferenceMessenger.Default.Register<MainViewNavigateMessage>(this, OnMainViewNavigateMessageReceived);
+        WeakReferenceMessenger.Default.Register<BH3GlobalGameServerChangedMessage>(this, OnBH3GlobalGameServerChanged);
+        WeakReferenceMessenger.Default.Register<LanguageChangedMessage>(this, (_, _) =>
+        {
+            long generation = _lifetime.Generation;
+            DispatcherQueue.TryEnqueue(() => { if (_lifetime.IsCurrent(generation)) Bindings.Update(); });
+        });
+        UpdateNavigationView();
+        if (_startupChecksStarted) return;
+        _startupChecksStarted = true;
         // 版本更新引导：窗口已经显示之后**直接弹**（不能再放到插件页导航里，那样会把页面卡死）
         _ = CacheMigrationService.PromptIfNeededAsync(XamlRoot, _logger);
-        CheckSystemProxy();
+        CheckSystemProxy(_lifetime.Token);
         // 「显示主窗口」全局快捷键按用户要求删掉了（不再注册；设置页里那个输入框也隐藏了）
         // HotkeyManager.InitializeHotkey(this.XamlRoot.GetWindowHandle());
-        _ = CheckUpdateOrShowRecentUpdateContentAsync();
-        _ = CheckFrameworkUpdatesOnStartupAsync();
+        _ = CheckUpdateOrShowRecentUpdateContentAsync(_lifetime.Token);
+        _ = CheckFrameworkUpdatesOnStartupAsync(_lifetime.Token);
         AppConfig.GetService<RpcService>().TrySetEnviromentAsync();
+    }
+
+    private void MainView_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_lifetime.Exit()) return;
+        WeakReferenceMessenger.Default.UnregisterAll(this);
+        _navigationQueued = false;
+        _pendingNavigation = null;
+        if (ReferenceEquals(Current, this)) Current = null;
     }
 
 
 
 
-    private void GameSelector_CurrentGameChanged(object? sender, (GameId, bool DoubleTapped) e)
+    private void GameSelector_CurrentGameChanged(object? sender, (GameId?, bool DoubleTapped) e)
     {
+        if (e.Item1 is null)
+        {
+            CurrentGameId = null;
+            CurrentGameFeatureConfig = GameFeatureConfig.FromGameId(null);
+            UpdateNavigationView();
+            return;
+        }
+
         if (e.Item1.GameBiz == GameBiz.bh3_global)
         {
             // 崩坏3国际服区服
@@ -117,14 +151,10 @@ public sealed partial class MainView : UserControl
         CurrentGameFeatureConfig = GameFeatureConfig.FromGameId(CurrentGameId);
         UpdateNavigationView();
 
-        // DLSS5 Feed 的效果开关写在（可能多个游戏共用的）ReShade 预设里，
-        // 切游戏时按当前游戏重新同步一次 —— 别让上一个游戏的效果留在别的游戏上。
-        GameId? switchedGameId = CurrentGameId;
-        _ = Task.Run(() => GameCatalog.SyncDlss5FeedPreset(switchedGameId));
     }
 
 
-    private async Task CheckFrameworkUpdatesOnStartupAsync()
+    private async Task CheckFrameworkUpdatesOnStartupAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -137,7 +167,7 @@ public sealed partial class MainView : UserControl
             return;
 #endif
 #pragma warning disable CS0162
-            await Task.Delay(800);
+            await Task.Delay(800, cancellationToken);
 #pragma warning restore CS0162
 
             var versionService = new HoYoShadeVersionService(AppConfig.UserDataFolder);
@@ -151,12 +181,14 @@ public sealed partial class MainView : UserControl
             }
 
             var hoYoShadeRelease = await updateService.CheckHoYoShadeUpdateAsync(AppConfig.EnableHoYoShadePreviewChannel, proxyUrl);
+            cancellationToken.ThrowIfCancellationRequested();
             if (hoYoShadeRelease != null)
             {
                 InAppToast.MainWindow?.Information("HoYoShade", string.Format(GetLangString("FileSettingPage_NewVersionAvailableFormat", "New version available: {0}"), hoYoShadeRelease.TagName), 8000);
             }
 
             var openHoYoShadeRelease = await updateService.CheckOpenHoYoShadeUpdateAsync(AppConfig.EnableHoYoShadePreviewChannel, proxyUrl);
+            cancellationToken.ThrowIfCancellationRequested();
             if (openHoYoShadeRelease != null)
             {
                 InAppToast.MainWindow?.Information("OpenHoYoShade", string.Format(GetLangString("FileSettingPage_NewVersionAvailableFormat", "New version available: {0}"), openHoYoShadeRelease.TagName), 8000);
@@ -164,7 +196,7 @@ public sealed partial class MainView : UserControl
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Check framework updates on startup");
+            if (ex is not OperationCanceledException) _logger.LogError(ex, "Check framework updates on startup");
         }
     }
 
@@ -178,6 +210,12 @@ public sealed partial class MainView : UserControl
 
     private void OnBH3GlobalGameServerChanged(object _, BH3GlobalGameServerChangedMessage message)
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            long generation = _lifetime.Generation;
+            DispatcherQueue.TryEnqueue(() => { if (_lifetime.IsCurrent(generation)) OnBH3GlobalGameServerChanged(_, message); });
+            return;
+        }
         if (CurrentGameId?.GameBiz == GameBiz.bh3_global)
         {
             CurrentGameId.Id = message.GameId;
@@ -206,7 +244,7 @@ public sealed partial class MainView : UserControl
             : Features.Plugins.GameCatalog.GetOrCreate(Features.Plugins.GameCatalog.CreateService(), CurrentGameId);
         string? gameName = gameEntry?.DisplayName;
         string? importer = CurrentGameId is null ? null : Features.Xxmi.XxmiLocator.ImporterForGame(CurrentGameId.GameBiz, gameName);
-        TextBlock_XxmiNav.Text = importer is null ? "模型替换" : $"模型替换（{importer}）";
+        TextBlock_XxmiNav.Text = "Mod";
 
         MaybePromptVanillaReShade(gameEntry);
 
@@ -223,15 +261,7 @@ public sealed partial class MainView : UserControl
     /// <summary>问过「要不要装原版 ReShade」的游戏 id，一个游戏只问一次（选了「不用」不再烦）</summary>
     private static readonly HashSet<string> _vanillaPrompted = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// 切到鸣潮（WWMI 那条识别的自定义游戏）时提示装原版 ReShade：
-    /// 鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通，原版 ReShade 至少能用滤镜 / 插件。
-    /// <para>
-    /// 目标目录是<b>本体进程目录</b>（<see cref="VanillaReShade.ResolveTargetDirectory"/>）：鸣潮注册 exe 只是
-    /// 启动器壳，装到根目录的 dxgi.dll 不会被游戏本体加载（旧版本正是装在根目录，等于没装）。
-    /// </para>
-    /// 本体目录里已经有 dxgi.dll（不管谁装的）就不问。
-    /// </summary>
+    /// <summary>鸣潮只准备 Hub 缓存中的 ReShade 注入 DLL，不在游戏目录部署代理。</summary>
     private async void MaybePromptVanillaReShade(GameEntry? entry)
     {
         try
@@ -246,21 +276,13 @@ public sealed partial class MainView : UserControl
             string? target = VanillaReShade.ResolveTargetDirectory(entry, entry.GameDirectory);
 
             if (string.IsNullOrWhiteSpace(target) || !Directory.Exists(target)
-                || VanillaReShade.HasProxyDll(target))
+                || VanillaReShade.IsInjectionInstalled(target) || VanillaReShade.HasProxyDll(target))
             {
                 return;
             }
 
-            // 旧版本装在注册根目录（壳进程旁边）：那份不生效，提示纠正
-            bool misplaced = !string.Equals(target, entry.GameDirectory, StringComparison.OrdinalIgnoreCase)
-                             && VanillaReShade.HasProxyDll(entry.GameDirectory);
-
-            string body = misplaced
-                ? $"之前那份原版 ReShade 装在了 {entry.GameDirectory}（注册目录放的是启动器壳）——" +
-                  "那儿的 dxgi.dll 游戏本体不会加载，等于没装。\n\n" +
-                  $"要装到本体目录 {target} 吗？装完按 Home 键开覆盖层。"
-                : "鸣潮不在 HoYoShade 的支持列表里，DLSS5 插件那条路走不通。\n\n" +
-                  $"要不要下载官方「可加载插件」版原版 ReShade，装到 {target}？装完按 Home 键开覆盖层。";
+            string body = "是否下载原版 ReShade 到 Hub 缓存，用于鸣潮客户端直接注入？\n\n" +
+                          "不会往游戏目录安装 dxgi.dll，也不会调用 inject.exe。注入可能被游戏保护拒绝，不保证兼容。";
 
             ContentDialog dialog = new()
             {
@@ -278,8 +300,8 @@ public sealed partial class MainView : UserControl
             }
 
             InAppToast.MainWindow?.Information("原版 ReShade", "开始下载…", 4000);
-            string installed = await VanillaReShade.InstallToGameAsync(target, null, CancellationToken.None);
-            InAppToast.MainWindow?.Success("原版 ReShade", $"已装进 {installed}（dxgi.dll），进游戏按 Home 开覆盖层。", 8000);
+            string installed = await VanillaReShade.InstallForInjectionAsync(target, CancellationToken.None);
+            InAppToast.MainWindow?.Success("原版 ReShade", $"ReShade 注入副本已准备：{installed}。启动器中可切换注入开关。", 8000);
         }
         catch (OperationCanceledException)
         {
@@ -343,6 +365,30 @@ public sealed partial class MainView : UserControl
 
     private void NavigateTo(Type? page, object? param = null, NavigationTransitionInfo? infoOverride = null)
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            long generation = _lifetime.Generation;
+            DispatcherQueue.TryEnqueue(() => { if (_lifetime.IsCurrent(generation)) NavigateTo(page, param, infoOverride); });
+            return;
+        }
+        _pendingNavigation = (page, param, infoOverride);
+        if (!_lifetime.IsActive || _navigationQueued) return;
+        _navigationQueued = true;
+        long attachment = _lifetime.Generation;
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_lifetime.IsCurrent(attachment)) return;
+            _navigationQueued = false;
+            var request = _pendingNavigation;
+            _pendingNavigation = null;
+            if (request is null) return;
+            try { ExecuteNavigation(request.Value.Page, request.Value.Parameter, request.Value.Transition); }
+            catch (Exception ex) { _logger.LogError(ex, "Navigate main frame"); }
+        })) _navigationQueued = false;
+    }
+
+    private void ExecuteNavigation(Type? page, object? param, NavigationTransitionInfo? infoOverride)
+    {
         page ??= typeof(GameLauncherPage);
         if (page.Name is nameof(BlankPage) && CurrentGameId is null)
         {
@@ -358,6 +404,10 @@ public sealed partial class MainView : UserControl
                  && !CurrentGameFeatureConfig.SupportedPages.Contains(page.Name))
         {
             page = typeof(GameLauncherPage);
+        }
+        if (page == typeof(GameLauncherPage) && param is null && CurrentGameId is null)
+        {
+            page = typeof(BlankPage);
         }
         // 帧内跳转（消息 / 齿轮按钮那种）也要把左侧导航栏的选中项跟上，
         // 不然页面换了、导航栏还停在旧项，用户回不去主界面（帧率解锁跳游戏设置报过这个）
@@ -375,11 +425,17 @@ public sealed partial class MainView : UserControl
             nameof(SettingPage) => MainView_NavigationView.SettingsItem,
             _ => null,
         };
+        object? parameter = param ?? CurrentGameId;
+        var game = parameter as GameId;
+        var key = (page, game?.Id, game?.GameBiz.Value);
+        if (_lastNavigation == key && MainView_Frame.SourcePageType == page) return;
+        if (!ContentTransitionController.AnimationsEnabled()) infoOverride = new SuppressNavigationTransitionInfo();
+        if (!MainView_Frame.Navigate(page, parameter, infoOverride)) return;
+        _lastNavigation = key;
         if (selected is not null && (selected is not NavigationViewItem item || item.Visibility == Visibility.Visible))
         {
             MainView_NavigationView.SelectedItem = selected;
         }
-        MainView_Frame.Navigate(page, param ?? CurrentGameId, infoOverride);
         if (page.Name is nameof(BlankPage) or nameof(GameLauncherPage))
         {
             Border_OverlayMask.Opacity = 0;
@@ -405,7 +461,7 @@ public sealed partial class MainView : UserControl
 
 
 
-    private async Task CheckUpdateOrShowRecentUpdateContentAsync()
+    private async Task CheckUpdateOrShowRecentUpdateContentAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -413,7 +469,7 @@ public sealed partial class MainView : UserControl
             return;
 #endif
 #pragma warning disable CS0162 // 检测到无法访问的代码
-            await Task.Delay(500);
+            await Task.Delay(500, cancellationToken);
 #pragma warning restore CS0162 // 检测到无法访问的代码
             
             // Check if there's a pending framework update to show changelog for
@@ -478,11 +534,12 @@ public sealed partial class MainView : UserControl
             // 上游版本号比我们高，会一路劝用户换成上游包。官方渠道才走 RPC 元数据。
             if (AppConfig.UpdateChannel == 1)
             {
-                await CheckGithubUpdateAsync();
+                await CheckGithubUpdateAsync(cancellationToken);
                 return;
             }
 
             var release = await AppConfig.GetService<UpdateService>().CheckUpdateAsync(false);
+            cancellationToken.ThrowIfCancellationRequested();
             AppConfig.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
 
             if (release != null)
@@ -492,7 +549,7 @@ public sealed partial class MainView : UserControl
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Check update");
+            if (ex is not OperationCanceledException) _logger.LogError(ex, "Check update");
         }
     }
 
@@ -503,11 +560,12 @@ public sealed partial class MainView : UserControl
     /// GitHub 渠道的启动检查：查本仓库的 release，有比当前新的就提示一句，
     /// 一键更新/退回在「设置 → 关于 → 更新渠道（GitHub）」里（那条路已经有版本列表和安装器）。
     /// </summary>
-    private async Task CheckGithubUpdateAsync()
+    private async Task CheckGithubUpdateAsync(CancellationToken cancellationToken)
     {
         try
         {
             List<GithubVersionInfo> versions = await new GithubUpdateService().ListVersionsAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             AppConfig.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
 
             GithubVersionInfo? newer = versions.FirstOrDefault(v => v.Note.Contains("比当前新", StringComparison.Ordinal));
@@ -522,15 +580,15 @@ public sealed partial class MainView : UserControl
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Check GitHub update");
+            if (ex is not OperationCanceledException) _logger.LogWarning(ex, "Check GitHub update");
         }
     }
 
-    private async void CheckSystemProxy()
+    private async void CheckSystemProxy(CancellationToken cancellationToken)
     {
         try
         {
-            await Task.Delay(1500);
+            await Task.Delay(1500, cancellationToken);
             Uri? proxy = HttpClient.DefaultProxy.GetProxy(new Uri("https://hoyosha.de/"));
             if (proxy is not null)
             {

@@ -1,4 +1,4 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
@@ -61,6 +61,13 @@ public static class GameLaunchPipeline
         Action<string>? report = null,
         CancellationToken ct = default)
     {
+        using var reservation = GameLaunchReservation.Acquire(gameId.GameBiz.ToString(), ct);
+        return await LaunchReservedAsync(gameId, entry, blockForInjection, report, ct, reservation);
+    }
+
+    private static async Task<Process?> LaunchReservedAsync(GameId gameId, GameEntry? entry,
+        bool blockForInjection, Action<string>? report, CancellationToken ct, GameLaunchReservation reservation)
+    {
         if (MultiplayerGameGuard.IsActive)
         {
             AppConfig.GetLogger<PipelineLogToken>().LogWarning("{Reason}", MultiplayerGameGuard.BlockReason());
@@ -82,13 +89,17 @@ public static class GameLaunchPipeline
 
         // 和启动页同一步骤：覆盖包 auto.json 里标了 runOnLaunch 的动作（含文件覆盖层）先跑。
         // 没同意过 / 被单独禁用的不跑 —— 与页面行为一致（CLI 不替用户做同意决定）。
-        await RunPackAutoActionsOnLaunchAsync(gameId, entry, report, ct);
+        if (!await RunPackAutoActionsOnLaunchAsync(gameId, entry, report, ct))
+            throw new InvalidOperationException("覆盖包动作 blocked；后续启动准备已停止，需显式核验迁移。");
 
         bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(gameId);
+        var aiInterlock = await OptiSmoothMotionInterlock.EnsureAsync(gameId, entry?.ExePath, useOptiScaler);
+        if (!string.IsNullOrWhiteSpace(aiInterlock.Note)) report?.Invoke(aiInterlock.Note);
         EnsureGameDlssgForMfg(gameId, entry, useOptiScaler);
         // 原神 Bridge 必须在 ini 路线判定和任何进程创建之前准备好。
+        List<InjectSpec>? preparedSpecs = null;
         if (ModuleRegistry.IsGenshin(gameId))
-            _ = BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
+            preparedSpecs = BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
 
         bool useHoYoShade = AppConfig.GetUseHoYoShadeLaunchOption(gameId);
         bool useOpenHoYoShade = AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
@@ -137,11 +148,16 @@ public static class GameLaunchPipeline
         }
         async Task<Process?> StartSelectedGameAsync(string? installPath = null)
         {
-            if (!useXxmi || manualXxmi) return await service.StartGameAsync(gameId, installPath);
+            reservation.Validate(gameId.GameBiz.ToString(), ct);
+            preparedSpecs ??= BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
+            reservation.Validate(gameId.GameBiz.ToString(), ct);
+            if (!useXxmi || manualXxmi) return await service.StartReservedGameAsync(gameId, reservation, installPath, ct);
             if (string.IsNullOrWhiteSpace(xxmiTarget) || !File.Exists(xxmiTarget))
             { report?.Invoke("XXMI 官方模式：找不到游戏主程序"); return null; }
             // Prepare selected Opt runtime paths/autoload before official game creation.
-            _ = BuildSpecs(gameId, useOptiScaler, waitForShadeModule: null);
+            if (await service.GetGameProcessAsync(gameId) is { } existing)
+                throw new InvalidOperationException($"Game is running: {existing.ProcessName}.exe ({existing.Id}).");
+            reservation.Validate(gameId.GameBiz.ToString(), ct);
             var launch = XxmiInjector.LaunchOfficialBaseline(gameId, entry?.DisplayName, xxmiTarget);
             report?.Invoke(launch.Message);
             if (!launch.Started) return null;
@@ -179,7 +195,7 @@ public static class GameLaunchPipeline
             // 黑名单进程不走 inject.exe（它硬编码拒注，退 1002）：游戏启动后由第④步 Hub 自己的
             // DllInjector 注 ReShade64.dll（同 OptiScaler 那套外部注入，没有黑名单）。
             // 启动选项里勾了「不用 HoYoShade 注入器」也走这条。
-            bool shadeViaOwnInjector = ShadeBlacklistBypass.IsBlacklisted(gameExeName) || entry.SkipShadeInjector;
+            bool shadeViaOwnInjector = ShadeBlacklistBypass.IsBlacklisted(gameExeName) || entry?.SkipShadeInjector == true;
 
             if (shadeViaOwnInjector)
             {
@@ -190,7 +206,7 @@ public static class GameLaunchPipeline
                     return null;
                 }
 
-                report?.Invoke(entry.SkipShadeInjector && !ShadeBlacklistBypass.IsBlacklisted(gameExeName)
+                report?.Invoke(entry?.SkipShadeInjector == true && !ShadeBlacklistBypass.IsBlacklisted(gameExeName)
                     ? $"按启动选项跳过 inject.exe —— 改由 Hub 注入 {shadeName} 的 ReShade64.dll"
                     : $"{gameExeName} 在 {shadeName} 注入器黑名单里 —— 跳过 inject.exe，改由 Hub 注入 ReShade64.dll");
 
@@ -224,6 +240,7 @@ public static class GameLaunchPipeline
             {
                 report?.Invoke($"启动 {shadeName} 注入器（等就绪信号）…");
 
+                ct.ThrowIfCancellationRequested();
                 var (success, exitCode, injectorProcess) = await InjectorHelper.StartAndWaitForReadyAsync(
                     Path.Combine(shadePath, "inject.exe"), gameExeName, shadePath, _logger, shadeName);
 
@@ -237,13 +254,22 @@ public static class GameLaunchPipeline
                     return null;
                 }
 
-                report?.Invoke("注入器就绪，启动游戏…");
-                process = await StartSelectedGameAsync(installPath);
-                if (process is null)
+                bool handedOff = false;
+                try
                 {
-                    try { injectorProcess?.Kill(); }
-                    catch { }
-                    return null;
+                    report?.Invoke("注入器就绪，启动游戏…");
+                    process = await StartSelectedGameAsync(installPath);
+                    handedOff = process is not null;
+                    if (process is null) return null;
+                }
+                finally
+                {
+                    if (!handedOff)
+                    {
+                        try { injectorProcess?.Kill(); }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Cleanup this launch's injector"); }
+                        injectorProcess?.Dispose();
+                    }
                 }
             }
         }
@@ -263,10 +289,13 @@ public static class GameLaunchPipeline
         // shade 走 inject.exe 时（正常路径，非黑名单绕行 / 跳过注入器），OptiScaler 排在
         // ReShade64 之后注 —— 等模块表出现 ReShade64.dll。shadeViaOwnInjector 时 ReShade64
         // 是 specs[0] 顺序已保证，不用等。
-        List<InjectSpec> specs = BuildSpecs(gameId, useOptiScaler,
-            waitForShadeModule: (useHoYoShade || useOpenHoYoShade) && shadeReShadeDll is null
-                ? "ReShade64.dll"
-                : null);
+        List<InjectSpec> specs = preparedSpecs!;
+        if (!ModuleRegistry.IsGenshin(gameId) && (useHoYoShade || useOpenHoYoShade) && shadeReShadeDll is null)
+        {
+            for (int i = 0; i < specs.Count; i++)
+                if (specs[i].Label == "OptiScaler")
+                    specs[i] = specs[i] with { WaitForModule = "ReShade64.dll" };
+        }
 
         // 黑名单绕行（鸣潮）：shade 本体的 ReShade64.dll 补进 specs 最前，随第④步一起注
         if (shadeReShadeDll is not null
@@ -281,7 +310,7 @@ public static class GameLaunchPipeline
         {
             if (blockForInjection)
             {
-                await InjectLoopAsync(gameId, processName, specs, TimeSpan.FromMinutes(5), report, ct);
+                await InjectLoopAsync(gameId, processName, process, specs, TimeSpan.FromMinutes(5), report, ct);
             }
             else
             {
@@ -289,7 +318,7 @@ public static class GameLaunchPipeline
                 {
                     try
                     {
-                        await InjectLoopAsync(gameId, processName, specs, TimeSpan.FromMinutes(20), null, CancellationToken.None);
+                        await InjectLoopAsync(gameId, processName, process, specs, TimeSpan.FromMinutes(20), null, ct);
                     }
                     catch (Exception ex)
                     {
@@ -302,7 +331,7 @@ public static class GameLaunchPipeline
         // ⑤ 帧率解锁（fire-and-forget：等游戏稳了再 patch，CLI 不需要等它）
         if (AppConfig.GetUseFpsUnlockLaunchOption(gameId))
         {
-            _ = Task.Run(() => FpsUnlockAsync(gameId, service, ct));
+            _ = Task.Run(() => FpsUnlockAsync(gameId, service, process, ct));
         }
 
         return process;
@@ -333,7 +362,7 @@ public static class GameLaunchPipeline
 
     // ==================== ①' 覆盖包 runOnLaunch 动作（页面 RunPackAutoActionsOnLaunchAsync 的 headless 版）====================
 
-    private static async Task RunPackAutoActionsOnLaunchAsync(
+    private static async Task<bool> RunPackAutoActionsOnLaunchAsync(
         GameId gameId, GameEntry? entry, Action<string>? report, CancellationToken ct)
     {
         try
@@ -342,18 +371,20 @@ public static class GameLaunchPipeline
             string packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
 
             // 与页面一致：没同意过（或 auto.json 变了还没重新确认）一律不跑；被单独禁用的跳过
-            string consentHash = PackActionConsent.ComputeHash(packRoot);
+            PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
+            if (snapshot is null) return true; // 无可授权动作；不 dispatch。
+            string consentHash = snapshot.Hash;
             if (!PackActionConsent.IsConsented(gameId.GameBiz.Value, consentHash))
             {
-                return;
+                return true;
             }
 
             HashSet<string> disabled = PackActionConsent.DisabledActions(gameId.GameBiz.Value, consentHash);
-            List<PackAutoAction> actions = [.. PackAutoActionFile.Load(packRoot)
+            List<PackAutoAction> actions = [.. snapshot.LoadActions()
                 .Where(a => a.RunOnLaunch && !disabled.Contains(a.Name))];
             if (actions.Count == 0)
             {
-                return;
+                return true;
             }
 
             ShadeHost? host = PluginHostLocator.Resolve(out _);
@@ -379,17 +410,23 @@ public static class GameLaunchPipeline
                 Plugins = plugins,
                 LauncherPage = null,
                 PackRoot = packRoot,
+                PackSnapshot = snapshot,
+                ExpectedPackHash = consentHash,
                 XamlRoot = null,
                 Interactive = false,
+                IsContextCurrent = () => !ct.IsCancellationRequested,
                 Report = report ?? (text => _logger.LogInformation("{Text}", text)),
             };
 
             foreach (PackAutoAction action in actions)
             {
                 ct.ThrowIfCancellationRequested();
-                string summary = await LauncherActionRunner.RunAsync(action, context);
-                _logger.LogInformation("runOnLaunch「{Name}」：{Summary}", action.Name, summary);
+                var result = await LauncherActionRunner.RunResultAsync(action, context, isPackAction: true);
+                _logger.LogInformation("runOnLaunch「{Name}」：{Summary} blocked={Blocked} reason={Reason}",
+                    action.Name, result.Summary, result.Blocked, result.Reason);
+                if (result.Blocked) return false;
             }
+            return true;
         }
         catch (OperationCanceledException)
         {
@@ -397,7 +434,8 @@ public static class GameLaunchPipeline
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Run pack auto actions on launch (pipeline)");
+            _logger.LogWarning(ex, "Run pack auto actions on launch blocked (pipeline)");
+            return false;
         }
     }
 
@@ -475,6 +513,7 @@ public static class GameLaunchPipeline
 
             ShadePathAlignResult align = ShadePathAligner.Align(gameIni, host);
             GameIniBootstrap.Ensure(entry, host, GameLauncherService.UsesGenshinFinalDx12(gameId), GameLauncherService.UsesStarRailFinalDx12(gameId));
+            ReShadeLauncherSettings.Apply(gameId, gameIni);
             if (align.Changed)
             {
                 _logger.LogInformation("ReShade.ini paths re-pointed from {Old} to {New}: {Keys}",
@@ -536,6 +575,9 @@ public static class GameLaunchPipeline
 
         // ①' 桥在场但这次不用 OptiScaler：撤走 autoload 清单（否则桥会把 OptiScaler 又拉回去）
         InjectSpec? bridgeSpec = specs.FirstOrDefault(s => ModuleRegistry.IsGenshinFsrBridgeDll(s.Path));
+        if (isGenshin && bridgeSpec is not null)
+            OptiScalerRuntime.EnsureFsrBridgeRenderScale(Path.GetDirectoryName(bridgeSpec.Path),
+                AppConfig.GetGenshinBridgeRenderScale(gameId));
         if (bridgeSpec is not null
             && !optiScalerWanted
             && OptiScalerRuntime.RemoveFsrBridgeAutoload(Path.GetDirectoryName(bridgeSpec.Path), out _))
@@ -569,13 +611,24 @@ public static class GameLaunchPipeline
 
                 // 启动前先把挂着的「配置」重放一遍：配置 → profiles\<游戏>.ini → 主 ini。
                 // 以前只在切换下拉时才套用，所以改了配置 / 直接改了 ini，下次启动会被旧 profile 覆盖
-                if (OptiScalerPresets.SyncIntoProfile(buildDirectory, gameKey) is { } launchPreset)
+                var preparation = OptiScalerPresets.SyncIntoProfileChecked(buildDirectory, gameKey);
+                if (!preparation.Succeeded)
+                    throw new IOException("OptiScaler config preparation was blocked; game launch stopped.");
+                if (preparation.PresetName is { } launchPreset)
                 {
                     _logger.LogInformation("OptiScaler config applied on launch: {Config} ({Game})", launchPreset, gameKey);
                 }
 
-                OptiScalerProfiles.Activate(buildDirectory, gameKey);
-                OptiScalerRuntime.EnsureConfigDllPath(buildDirectory);
+                if (!OptiScalerProfiles.Activate(buildDirectory, gameKey))
+                    throw new IOException("OptiScaler profile activation failed; game launch stopped.");
+                if (GameLauncherService.UsesStarRailFinalDx12(gameId))
+                {
+                    if (!OptiScalerRuntime.EnsureStarRailDx11InputRoute(buildDirectory, gameKey))
+                        throw new InvalidOperationException("无法将 Dx11ReShadeOnly=true 写入崩铁 OptiScaler 配置及 profile。");
+                    _logger.LogInformation("StarRail DX11-only input route enforced after profile activation: {Game}", gameKey);
+                }
+                if (!OptiScalerRuntime.EnsureConfigDllPath(buildDirectory))
+                    throw new IOException("OptiScaler runtime path preparation failed; game launch stopped.");
                 if (!isGenshin)
                 {
                     string? dlssg = OptiScalerRuntime.EnsureDlssgForUnlock(buildDirectory,
@@ -725,21 +778,19 @@ public static class GameLaunchPipeline
         }
     }
 
-    /// <summary>等进程 → 按「注入时机」预热 → VirtualAllocEx 注入 → 桥就绪再注后面的。</summary>
+    /// <summary>本轮进程预热 → VirtualAllocEx 注入 → 桥就绪再注后面的。</summary>
     private static async Task InjectLoopAsync(
         GameId gameId,
         string processName,
+        Process target,
         IReadOnlyList<InjectSpec> specs,
         TimeSpan budget,
         Action<string>? report,
         CancellationToken ct)
     {
-        const int maxAttempts = 3;
         TimeSpan survivalCheck = TimeSpan.FromSeconds(8);
         DateTime deadline = DateTime.UtcNow + budget;
-        var injectedPids = new HashSet<int>();
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             TimeSpan remaining = deadline - DateTime.UtcNow;
             if (remaining <= TimeSpan.Zero)
@@ -748,25 +799,24 @@ public static class GameLaunchPipeline
                 return;
             }
 
-            Process? target = await DllInjector.WaitForProcessAsync(processName, remaining, ct, injectedPids);
-            if (target is null)
+            ct.ThrowIfCancellationRequested();
+            if (target.HasExited)
             {
                 report?.Invoke($"✗ 没等到 {processName} 进程");
                 return;
             }
 
             int pid = target.Id;
-            injectedPids.Add(pid);
             report?.Invoke($"等 {processName}（pid {pid}）预热…");
 
             bool warmupLost = false;
             foreach (InjectSpec spec in specs)
             {
-                // 预热：按配置的「注入时机」等进程稳一稳（进程中途退了 → 换新 pid 重试）
+                // Keep this launch's process handle so a later instance cannot inherit its injection task.
                 DateTime steadyUntil = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Max(0, spec.DelaySeconds));
                 while (DateTime.UtcNow < steadyUntil)
                 {
-                    if (!DllInjector.IsProcessAlive(pid))
+                    if (target.HasExited)
                     {
                         warmupLost = true;
                         break;
@@ -802,6 +852,8 @@ public static class GameLaunchPipeline
                     }
                 }
 
+                ct.ThrowIfCancellationRequested();
+                if (target.HasExited) return;
                 bool ok = DllInjector.Inject(pid, spec.Path, out string error);
                 report?.Invoke(ok
                     ? $"已注入 {spec.Label} → {processName}（pid {pid}）"
@@ -822,21 +874,19 @@ public static class GameLaunchPipeline
 
             if (warmupLost)
             {
-                report?.Invoke($"{processName}（pid {pid}）预热中就退了，等新进程重试（{attempt}/{maxAttempts}）");
-                continue;
+                report?.Invoke($"{processName}（pid {pid}）预热中退出，本次注入停止");
+                return;
             }
 
             await Task.Delay(survivalCheck, ct);
-            if (DllInjector.IsProcessAlive(pid))
+            if (!target.HasExited)
             {
                 HookInjectedTarget(target, processName, pid, specs, gameId);
                 return;
             }
 
-            report?.Invoke($"{processName}（pid {pid}）注入后立刻退出，等新进程重试（{attempt}/{maxAttempts}）");
+            report?.Invoke($"{processName}（pid {pid}）注入后退出，本次注入停止");
         }
-
-        report?.Invoke($"✗ {processName} 连续 {maxAttempts} 次都是壳进程 / 中途退出，注入放弃");
     }
 
     /// <summary>桥就绪标记：日志里出现 <c>Dx11FsrBridge active pid=&lt;pid&gt;</c>（或 hook 就绪行）。</summary>
@@ -921,7 +971,7 @@ public static class GameLaunchPipeline
 
     // ==================== ⑤ 帧率解锁（页面 StartFpsUnlockAsync 的移植）====================
 
-    private static async Task FpsUnlockAsync(GameId gameId, GameLauncherService service, CancellationToken ct)
+    private static async Task FpsUnlockAsync(GameId gameId, GameLauncherService service, Process game, CancellationToken ct)
     {
         try
         {
@@ -975,8 +1025,8 @@ public static class GameLaunchPipeline
                     [true, true, false, false, false, false, true, false, true, true]);
             }
 
-            Process? game = await service.GetGameProcessAsync(gameId, TimeSpan.FromMinutes(2));
-            if (game is null)
+            ct.ThrowIfCancellationRequested();
+            if (game.HasExited)
             {
                 _logger.LogWarning("FPS unlock: game process not found, skipped");
                 return;

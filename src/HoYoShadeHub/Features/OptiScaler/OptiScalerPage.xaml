@@ -92,10 +92,16 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
                         <!--  单选圈：只显示状态，不吃点击（点击交给整张卡片）  -->
                         <RadioButton Grid.Column="0"
+                                     Grid.Row="0"
                                      MinWidth="0"
                                      Padding="0,0,4,0"
                                      VerticalAlignment="Center"
@@ -103,7 +109,7 @@
                                      IsChecked="{x:Bind IsInUse, Mode=OneWay}"
                                      IsHitTestVisible="False" />
 
-                        <StackPanel Grid.Column="1" Spacing="6">
+                        <StackPanel Grid.Column="1" Grid.Row="0" Spacing="6">
                             <!--  第一行：来源 + 版本 + 标签 + 「使用中」  -->
                             <StackPanel Orientation="Horizontal" Spacing="6">
                                 <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}"
@@ -154,9 +160,95 @@
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="{x:Bind CurrentProfileText}"
                                            TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
                             </StackPanel>
-                        </StackPanel>
-                    </Grid>
+
+                            <!--  展开 / 收起「扩展配置」。按钮内容不能挂 x:Bind（XamlCompiler 会崩），
+                                  拆成两个静态字形按钮、靠 Visibility 切换（和插件卡片同款）。  -->
+                            <Button Grid.Column="2"
+                                    Grid.Row="0"
+                                    MinWidth="32"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Click="Button_ExpandQuick_Click"
+                                    Tag="{x:Bind}"
+                                    ToolTipService.ToolTip="展开扩展配置（FG / NR / Hook 等 20 项快捷开关）"
+                                    Visibility="{x:Bind ExpandButtonVisibility, Mode=OneWay}">
+                                <FontIcon FontSize="12" Glyph="&#xE70D;" />
+                            </Button>
+                            <Button Grid.Column="2"
+                                    Grid.Row="0"
+                                    MinWidth="32"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Click="Button_ExpandQuick_Click"
+                                    Tag="{x:Bind}"
+                                    ToolTipService.ToolTip="缩回去"
+                                    Visibility="{x:Bind CollapseButtonVisibility, Mode=OneWay}">
+                                <FontIcon FontSize="12" Glyph="&#xE70E;" />
+                            </Button>
+
+                            <!--  扩展配置：20 项快捷开关，写进当前配置（或 profile）  -->
+                            <StackPanel x:Name="OptiQuickConfig" Grid.Row="1"
+                                        Grid.ColumnSpan="3"
+                                        Margin="0,6,0,0"
+                                        Spacing="6"
+                                        Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}">
+                                <MenuFlyoutSeparator />
+                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="扩展配置（写进当前生效的 OptiScaler 配置；auto = 跟随默认）"
+                                           TextWrapping="Wrap" />
+                                <ItemsControl ItemsSource="{x:Bind QuickItems, Mode=OneWay}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:OptiQuickItemViewModel">
+                                            <Grid ColumnSpacing="8" Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="210" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0"
+                                                           VerticalAlignment="Center"
+                                                           Text="{x:Bind Label, Mode=OneWay}"
+                                                           TextWrapping="Wrap"
+                                                           ToolTipService.ToolTip="{x:Bind ToolTip, Mode=OneWay}" />
+                                                <!--  三态：auto / 开 / 关  -->
+                                                <ComboBox Grid.Column="1"
+                                                          MinWidth="170"
+                                                          SelectedIndex="{x:Bind TriIndex, Mode=TwoWay}"
+                                                          Visibility="{x:Bind TriVisibility, Mode=OneWay}">
+                                                    <ComboBoxItem Content="auto（默认）" />
+                                                    <ComboBoxItem Content="开" />
+                                                    <ComboBoxItem Content="关" />
+                                                </ComboBox>
+                                                <!--  选项：从给定取值里选  -->
+                                                <ComboBox Grid.Column="1"
+                                                          MinWidth="170"
+                                                          DisplayMemberPath="Label"
+                                                          ItemsSource="{x:Bind Choices, Mode=OneWay}"
+                                                          SelectedIndex="{x:Bind OptionIndex, Mode=TwoWay}"
+                                                          Visibility="{x:Bind OptionVisibility, Mode=OneWay}" />
+                                                <!--  数字  -->
+                                                <NumberBox Grid.Column="1"
+                                                           MinWidth="170"
+                                                           Maximum="{x:Bind NumberMaximum}"
+                                                           Minimum="{x:Bind NumberMinimum}"
+                                                           SpinButtonPlacementMode="Compact"
+                                                           PlaceholderText="auto"
+                                                           Value="{x:Bind NumberValue, Mode=TwoWay}"
+                                                           Visibility="{x:Bind NumberVisibility, Mode=OneWay}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Grid>
                     </Border>
                 </DataTemplate>
             </ItemsControl.ItemTemplate>

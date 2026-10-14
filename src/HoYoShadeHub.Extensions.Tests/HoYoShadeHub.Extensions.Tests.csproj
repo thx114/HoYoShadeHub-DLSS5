@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HoYoShadeHub.Extensions\HoYoShadeHub.Extensions.csproj" />
+    <Compile Include="..\HoYoShadeHub\Features\OptiScaler\OptiScalerPresets.cs" Link="OptiScalerPresets.cs" />
   </ItemGroup>
 
 </Project>

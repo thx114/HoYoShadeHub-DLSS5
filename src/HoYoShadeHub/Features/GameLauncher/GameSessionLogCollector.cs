@@ -1,7 +1,9 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Diagnostics;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Services;
+using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Features.Modules;
 using Microsoft.Extensions.Logging;
 using System;
@@ -96,6 +98,12 @@ internal sealed class GameSessionLogCollector
         bool manual = false)
     {
         _pid = pid;
+        // Injection may finish after OptiScaler opens its log; use the process launch window.
+        if (!manual && process is not null)
+        {
+            try { _startedAt = new DateTimeOffset(process.StartTime); }
+            catch { /* Keep collector start when process metadata is unavailable. */ }
+        }
         _manual = manual;
         _processName = string.IsNullOrWhiteSpace(processName) ? $"pid{pid}" : processName.Trim();
         _commandLine = commandLine;
@@ -125,6 +133,21 @@ internal sealed class GameSessionLogCollector
                     : _processName + ".exe";
                 resolvedExe = Path.Combine(install, name);
             }
+        }
+
+        if (_processName.Equals(WutheringLaunchPaths.ClientProcessName, StringComparison.OrdinalIgnoreCase)
+            || _processName.Equals(WutheringLaunchPaths.ClientProcessName + ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                string? actual = process?.MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(actual)) resolvedExe = actual;
+            }
+            catch { /* Fall back to registered shell directory below. */ }
+            string? clientDirectory = WutheringLaunchPaths.ResolveClientDirectory(
+                string.IsNullOrWhiteSpace(resolvedExe) ? null : Path.GetDirectoryName(resolvedExe));
+            if (clientDirectory is not null)
+                resolvedExe = Path.Combine(clientDirectory, WutheringLaunchPaths.ClientProcessName + ".exe");
         }
 
         _exePath = resolvedExe ?? "(未知)";
@@ -272,6 +295,7 @@ internal sealed class GameSessionLogCollector
             foreach (SnapshotSource source in _logs)
             {
                 string copied = Path.Combine(SessionDirectory, source.Name);
+                if (source.OptiLog is not null && !File.Exists(copied)) continue;
                 sources.Add(new LogDigest.Source(source.Name, File.Exists(copied) ? copied : source.Path));
             }
 
@@ -413,8 +437,13 @@ internal sealed class GameSessionLogCollector
             {
                 try
                 {
-                    var info = new FileInfo(entry.SourcePath);
-                    observations.Add(new SessionLogManifest.Observation(entry.Id, info.Exists, info.Exists ? info.Length : 0));
+                    SnapshotSource? source = _logs.FirstOrDefault(s => s.Name == entry.Name);
+                    string? observedPath = source?.OptiLog is { } opti
+                        ? opti.FindCurrent(_startedAt.UtcDateTime, DateTime.UtcNow)
+                        : entry.SourcePath;
+                    var info = new FileInfo(observedPath ?? entry.SourcePath);
+                    bool current = source?.OptiLog is null || observedPath is not null;
+                    observations.Add(new SessionLogManifest.Observation(entry.Id, current && info.Exists, current && info.Exists ? info.Length : 0));
                 }
                 catch
                 {
@@ -438,7 +467,11 @@ internal sealed class GameSessionLogCollector
     {
         try
         {
-            var info = new FileInfo(source.Path);
+            string? path = source.OptiLog is { } opti
+                ? opti.FindCurrent(_startedAt.UtcDateTime, DateTime.UtcNow)
+                : source.Path;
+            if (path is null) return;
+            var info = new FileInfo(path);
             if (!info.Exists)
             {
                 // 缺失会由清单里的 miss 标记体现，这里不用重复写一行
@@ -446,6 +479,11 @@ internal sealed class GameSessionLogCollector
             }
 
             CopyWithRetry(info, Path.Combine(SessionDirectory, source.Name));
+            if (source.OptiLog is not null)
+            {
+                lock (_writeGate)
+                    _manifest.AppendSection("OptiScaler log source", $"alias={source.Name} path={info.FullName} lastWriteUtc={info.LastWriteTimeUtc:O}");
+            }
         }
         catch (Exception ex)
         {
@@ -629,6 +667,12 @@ internal sealed class GameSessionLogCollector
             }
         }
 
+        if (_processName.Equals(WutheringLaunchPaths.ClientProcessName, StringComparison.OrdinalIgnoreCase)
+            || _processName.Equals(WutheringLaunchPaths.ClientProcessName + ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            gameDirectory = WutheringLaunchPaths.ResolveClientDirectory(gameDirectory) ?? gameDirectory;
+        }
+
         // ① 游戏目录：ReShade / RenoDX 的日志与 ini
         if (!string.IsNullOrWhiteSpace(gameDirectory))
         {
@@ -700,6 +744,14 @@ internal sealed class GameSessionLogCollector
             string? buildDirectory = string.IsNullOrWhiteSpace(optiDll) ? null : Path.GetDirectoryName(optiDll);
             if (!string.IsNullOrWhiteSpace(buildDirectory))
             {
+                var selectedLog = OptiScalerSessionLogPath.Load(buildDirectory);
+                bool defaultFixed = !selectedLog.Multiple && string.Equals(selectedLog.Path,
+                    Path.GetFullPath(Path.Combine(buildDirectory, "OptiScaler.log")), StringComparison.OrdinalIgnoreCase);
+                string alias = defaultFixed ? $"opti-{FolderTag(buildDirectory)}-OptiScaler.log"
+                    : $"opti-configured-{FolderTag(buildDirectory)}-OptiScaler.log";
+                logs.Add(new SnapshotSource(alias, selectedLog.Path, selectedLog));
+                // Reserve the configured path before fallback discovery, preserving its distinct alias.
+                seen.Add(selectedLog.Path);
                 AddDirectory(optiDirectories, buildDirectory);
                 AddDirectory(optiDirectories, Path.GetDirectoryName(buildDirectory));
             }
@@ -731,7 +783,10 @@ internal sealed class GameSessionLogCollector
         foreach (string directory in optiDirectories)
         {
             string tag = FolderTag(directory);
-            Add(logs, $"opti-{tag}-OptiScaler.log", Path.Combine(directory, "OptiScaler.log"));
+            string fixedPath = Path.GetFullPath(Path.Combine(directory, "OptiScaler.log"));
+            if (seen.Add(fixedPath))
+                logs.Add(new SnapshotSource(UniqueName(logs, $"opti-{tag}-OptiScaler.log"), fixedPath,
+                    new OptiScalerSessionLogPath(fixedPath, false)));
             Add(configs, $"cfg-{tag}-OptiScaler.ini", Path.Combine(directory, "OptiScaler.ini"));
             Add(configs, $"cfg-{tag}-build.json", Path.Combine(directory, "build.json"));
         }
@@ -927,5 +982,46 @@ internal sealed class GameSessionLogCollector
         }
     }
 
-    private sealed record SnapshotSource(string Name, string Path);
+    private sealed record SnapshotSource(string Name, string Path, OptiScalerSessionLogPath? OptiLog = null);
+}
+
+// Pure path policy kept with the collector so the console regression can compile it without App/UI.
+internal sealed record OptiScalerSessionLogPath(string Path, bool Multiple)
+{
+    internal static OptiScalerSessionLogPath Load(string buildDirectory)
+    {
+        string iniPath = System.IO.Path.Combine(buildDirectory, "OptiScaler.ini");
+        var ini = File.Exists(iniPath) ? IniDocument.Load(iniPath) : IniDocument.CreateEmpty();
+        string configured = ini.GetValue("Log", "LogFileName")?.Trim().Trim('"') ?? "";
+        if (configured.Length == 0 || configured.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            configured = "OptiScaler.log";
+        string full = System.IO.Path.GetFullPath(System.IO.Path.IsPathRooted(configured)
+            ? configured : System.IO.Path.Combine(buildDirectory, configured));
+        bool multiple = string.Equals(ini.GetValue("Log", "SingleFile")?.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+        return new OptiScalerSessionLogPath(full, multiple);
+    }
+
+    internal string? FindCurrent(DateTime startedUtc, DateTime nowUtc)
+    {
+        bool Current(string path)
+        {
+            var info = new FileInfo(path);
+            return info.Exists && info.LastWriteTimeUtc >= startedUtc && info.LastWriteTimeUtc <= nowUtc;
+        }
+        if (!Multiple) return Current(Path) ? Path : null;
+        string directory = System.IO.Path.GetDirectoryName(Path)!;
+        if (!Directory.Exists(directory)) return null;
+        string stem = System.IO.Path.GetFileNameWithoutExtension(Path);
+        // Only inspect this directory; GetTicks() emits a numeric suffix, not arbitrary wildcard matches.
+        return Directory.EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly)
+            .Where(p => {
+                string name = System.IO.Path.GetFileNameWithoutExtension(p);
+                return name.StartsWith(stem + "_", StringComparison.OrdinalIgnoreCase)
+                    && name.Length > stem.Length + 1
+                    && name[(stem.Length + 1)..].All(c => c >= '0' && c <= '9') && Current(p);
+            })
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .ThenByDescending(p => p, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
 }

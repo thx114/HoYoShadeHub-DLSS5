@@ -6,6 +6,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using HoYoShadeHub.Extensions.Games;
 
 namespace HoYoShadeHub.Features.GameLauncher;
 
@@ -24,10 +25,15 @@ namespace HoYoShadeHub.Features.GameLauncher;
 /// </para>
 ///
 /// <para>
-/// <paramref name="chainOwnsStack"/> 为 true 时只注桥这一个 DLL：其余各层由桥在游戏进程内
+/// 普通原神由 Hub 自己创建 EXE 时，<paramref name="chainOwnsStack"/> 为 false：
+/// 使用 <see cref="GenshinLaunchRouting.BuildExeInjectionPlan"/> 生成有序 DLL 清单，
+/// 通过同一个 CreateProcess 句柄逐个 <c>LoadLibraryW</c> 注入 Bridge → 额外模块 → FFX12 → OptiScaler → ReShade。
+/// </para>
+///
+/// <para>
+/// Rocket/XXMI 的链模式仍传 true，只注桥这一个 DLL：其余各层由桥在游戏进程内
 /// 按 <c>Dx11FsrBridge.chain.txt</c> 的行序 <c>LoadLibraryW</c>（见
-/// <c>OptiScalerRuntime.WriteFsrBridgeChain</c>）。这样外部只做一次注入，顺序是数据而不是
-/// 抢时间，也不怕游戏在 0.5 秒就把 D3D11 设备建好。链里含 3DMigoto（GIMI 由桥在游戏进程内加载，所以 XXMI 注入模式要设成 SKIP）。
+/// <c>OptiScalerRuntime.WriteFsrBridgeChain</c>）。
 /// </para>
 /// </summary>
 internal static class GenshinEarlyLaunch
@@ -36,13 +42,14 @@ internal static class GenshinEarlyLaunch
 
     public static Task<Result> StartAsync(string exePath, string arguments, string workingDirectory,
         string bridgeDll, string? ffx12Dll, string optiDll, string? shadeDll = null, Action<string>? report = null,
-        bool chainOwnsStack = false)
+        bool chainOwnsStack = false, IReadOnlyList<string>? extraDlls = null)
     {
-        return Task.Run(() => Start(exePath, arguments, workingDirectory, bridgeDll, ffx12Dll, optiDll, shadeDll, report, chainOwnsStack));
+        return Task.Run(() => Start(exePath, arguments, workingDirectory, bridgeDll, ffx12Dll, optiDll, shadeDll, report, chainOwnsStack, extraDlls));
     }
 
     private static Result Start(string exePath, string arguments, string workingDirectory,
-        string bridgeDll, string? ffx12Dll, string optiDll, string? shadeDll, Action<string>? report, bool chainOwnsStack)
+        string bridgeDll, string? ffx12Dll, string optiDll, string? shadeDll, Action<string>? report, bool chainOwnsStack,
+        IReadOnlyList<string>? extraDlls)
     {
         if (!File.Exists(exePath))
             return new(null, "找不到原神主程序：" + exePath);
@@ -60,28 +67,19 @@ internal static class GenshinEarlyLaunch
         try
         {
             report?.Invoke($"CreateProcess 后由父句柄立即注入图形栈（pid {pi.dwProcessId}）");
-            List<string> dlls = [bridgeDll];
+            List<string> dlls = chainOwnsStack
+                ? [bridgeDll]
+                : GenshinLaunchRouting.BuildExeInjectionPlan(bridgeDll, ffx12Dll, optiDll, shadeDll, extraDlls);
 
             if (chainOwnsStack)
             {
-                // 有序注入链：外部只注桥一个，OptiScaler/ReShade 等由桥在游戏进程内按清单顺序
-                // LoadLibraryW。少一次外部注入、顺序固定，也不跟反作弊那不到 1 秒的窗口赛跑。
-                // （链里含 3DMigoto：GIMI 由桥在游戏进程内按清单加载，XXMI 那边设成 SKIP 避免两份）
+                // Rocket/XXMI 有序注入链：外部只注桥一个，OptiScaler/ReShade 等由桥在游戏进程内
+                // 按清单顺序 LoadLibraryW；XXMI 注入模式由上层设置成 SKIP 避免两份 GIMI。
                 report?.Invoke("有序注入链模式：外部只注桥，OptiScaler/ReShade 由桥在游戏进程内按清单顺序加载");
             }
             else
             {
-                if (!string.IsNullOrWhiteSpace(ffx12Dll) && File.Exists(ffx12Dll))
-                {
-                    dlls.Add(ffx12Dll);
-                    report?.Invoke("Bridge 后预加载 FFX12 SDK，再注入 OptiScaler");
-                }
-                dlls.Add(optiDll);
-                if (!string.IsNullOrWhiteSpace(shadeDll) && File.Exists(shadeDll))
-                {
-                    dlls.Add(shadeDll);
-                    report?.Invoke($"OptiScaler 后预加载 {Path.GetFileName(shadeDll)}");
-                }
+                report?.Invoke("EXE 早期批注入顺序：" + string.Join(" → ", dlls));
             }
 
             if (!DllInjector.InjectIntoHandle(pi.hProcess, dlls, out string injectError))

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using HoYoShadeHub.Helpers;
 
 namespace HoYoShadeHub.PortableLauncher;
 
@@ -13,7 +14,7 @@ namespace HoYoShadeHub.PortableLauncher;
 /// <list type="number">
 /// <item>读同目录 <c>version.ini</c> 里的 <c>exe_path</c>，把参数原样传给它跑起来；</item>
 /// <item>没有 version.ini 就扫 <c>app-*</c> 子目录，挑最新那个 <c>HoYoShadeHub.exe</c>；</item>
-/// <item>起来之后把其它 <c>app-*</c> 目录删掉（旧版本残留）——**正在跑的那份跳过**（见 <see cref="CleanupOldAppFolders"/>）；</item>
+/// <item>保留其它 <c>app-*</c> 目录供回退；启动不承担旧版本清理。</item>
 /// <item>什么都找不到 → 弹窗问要不要去下载。</item>
 /// </list>
 ///
@@ -56,14 +57,16 @@ internal static class Program
 
         // 命令行动词：启动壳不能直接 fire-and-forget —— 调用方等的是退出码和进度输出。
         // 挂到父控制台，把子进程的 stdout/stderr 原样泵过来，等它跑完回传退出码。
-        bool cliMode = args.Length > 0 && IsCliVerb(args[0]);
-        if (cliMode && !AttachConsole(unchecked((uint)-1)))
+        bool cliMode = args.Length > 0 && LauncherCommandLine.IsCliVerb(args[0]);
+        if (cliMode && !Console.IsOutputRedirected && !AttachConsole(unchecked((uint)-1)))
         {
             AllocConsole();
         }
 
         try
         {
+            args = LauncherCommandLine.WaitForParentExit(args);
+            cliMode = args.Length > 0 && LauncherCommandLine.IsCliVerb(args[0]);
             string baseFolder = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
             EnsureConfigIni(baseFolder);
@@ -86,7 +89,7 @@ internal static class Program
                 return 1;
             }
 
-            string arguments = BuildArguments(args);
+            string arguments = LauncherCommandLine.BuildArguments(args);
             Log(trace, $"arg: {arguments}");
 
             string? workDirectory = Path.GetDirectoryName(targetExe);
@@ -105,11 +108,6 @@ internal static class Program
 
             Log(trace, $"Process started ({process?.Id.ToString() ?? "failed"})");
 
-            if (process is not null)
-            {
-                CleanupOldAppFolders(baseFolder, Path.GetFileName(workDirectory), trace);
-            }
-
             return process is null ? 1 : 0;
         }
         catch (Exception ex)
@@ -118,11 +116,6 @@ internal static class Program
             return 1;
         }
     }
-
-
-    /// <summary>命令行动词（和 App 的 Program.Main 分发保持一致）。</summary>
-    private static bool IsCliVerb(string arg) => arg.ToLowerInvariant() is
-        "run" or "auto" or "action" or "stopgame" or "killgame" or "startgame" or "testgame" or "test-game" or "selftest";
 
 
     /// <summary>
@@ -217,44 +210,15 @@ internal static class Program
 
         try
         {
-            foreach (string raw in File.ReadAllLines(iniPath, Encoding.UTF8))
-            {
-                string line = raw.Trim();
-                if (line.Length == 0 || line.StartsWith(';') || line.StartsWith('#') || line.StartsWith('['))
-                {
-                    continue;
-                }
-
-                int separator = line.IndexOf('=');
-                if (separator <= 0)
-                {
-                    continue;
-                }
-
-                if (!line[..separator].Trim().Equals("exe_path", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                string relative = line[(separator + 1)..].Trim().Trim('"');
-                if (relative.Length == 0)
-                {
-                    continue;
-                }
-
-                string candidate = Path.GetFullPath(Path.Combine(baseFolder, relative));
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
+            string candidate = PortableUpdatePolicy.ReadVersionTarget(baseFolder, File.ReadAllText(iniPath, Encoding.UTF8));
+            return File.Exists(candidate) ? candidate : null;
         }
         catch
         {
             // ini 坏了就走下面的兜底
+            return null;
         }
 
-        return null;
     }
 
     /// <summary>兜底：扫 app-* 子目录，挑 exe 修改时间最新的那个</summary>
@@ -267,7 +231,7 @@ internal static class Program
 
             foreach (string folder in Directory.EnumerateDirectories(baseFolder, "app-*"))
             {
-                string exe = Path.Combine(folder, "HoYoShadeHub.exe");
+                string exe = PortableUpdatePolicy.GetArchiveTarget(baseFolder, Path.GetFileName(folder) + "/HoYoShadeHub.exe");
                 if (!File.Exists(exe))
                 {
                     continue;
@@ -286,137 +250,6 @@ internal static class Program
         catch
         {
             return null;
-        }
-    }
-
-    /// <summary>把参数原样传下去（含空格/引号的按 Win32 规则加引号转义，免得 JSON 被拆开）</summary>
-    private static string BuildArguments(string[] args) =>
-        args.Length == 0 ? string.Empty : string.Join(' ', args.Select(QuoteArg));
-
-    private static string QuoteArg(string a)
-    {
-        if (a.Length == 0)
-        {
-            return "\"\"";
-        }
-
-        if (!a.Any(c => c is ' ' or '"' or '\t'))
-        {
-            return a;
-        }
-
-        var sb = new StringBuilder(a.Length + 2);
-        sb.Append('"');
-        int backslashes = 0;
-        foreach (char c in a)
-        {
-            if (c == '\\')
-            {
-                backslashes++;
-                continue;
-            }
-
-            if (c == '"')
-            {
-                sb.Append('\\', backslashes * 2 + 1);
-                sb.Append('"');
-                backslashes = 0;
-                continue;
-            }
-
-            sb.Append('\\', backslashes);
-            backslashes = 0;
-            sb.Append(c);
-        }
-
-        sb.Append('\\', backslashes * 2);
-        sb.Append('"');
-        return sb.ToString();
-    }
-
-    /// <summary>启动之后把其它 app-* 目录删掉（上游也是这么清旧版本的）</summary>
-    private static void CleanupOldAppFolders(string baseFolder, string? currentFolderName, bool trace)
-    {
-        if (string.IsNullOrWhiteSpace(currentFolderName))
-        {
-            return;
-        }
-
-        try
-        {
-            foreach (string folder in Directory.EnumerateDirectories(baseFolder, "app-*"))
-            {
-                string name = Path.GetFileName(folder);
-                if (name.Equals(currentFolderName, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                // ⚠ 别删「正在跑的那一份」。
-                //
-                // 用户（或更新器）在旧实例还开着的时候又启动了一次：版本目录改成新的 app-X，
-                // 而旧实例仍在 app-Y 里跑。这时把 app-Y 删掉，旧实例后续**懒加载**的程序集
-                // 就全部找不到（System.Threading.Thread / Microsoft.Extensions.* 之类），
-                // 表现是「打开目录」报 FileNotFoundException、OptiScaler 页怎么点都没反应；
-                // 而且删除只会删掉**当时没被加载**的那部分文件 —— 留下一个残包
-                //（之前那个只剩 150 个文件的 app-1.3.7-z1i 就是这么来的）。
-                if (IsInUse(folder))
-                {
-                    Log(trace, $"Skip in-use version: {name}");
-                    continue;
-                }
-
-                Log(trace, $"Removing old version: {name}");
-
-                try
-                {
-                    Directory.Delete(folder, recursive: true);
-                }
-                catch
-                {
-                    // 正在被占用就算了，下次启动再说
-                }
-            }
-        }
-        catch
-        {
-            // ignore
-        }
-    }
-
-    /// <summary>
-    /// 这个 app-* 目录里是不是有实例正在跑。
-    ///
-    /// <para>
-    /// 办法就是试着**独占读写**它的主 exe：进程映像的文件是以只读方式映射的，
-    /// 还开着的时候独占打开必然 SharingViolation。比查进程列表靠谱 ——
-    /// 旧实例可能是提权跑的，普通权限读不到它的可执行路径。
-    /// </para>
-    /// </summary>
-    private static bool IsInUse(string folder)
-    {
-        try
-        {
-            string exe = Path.Combine(folder, "HoYoShadeHub.exe");
-            if (!File.Exists(exe))
-            {
-                return false;
-            }
-
-            using FileStream _ = new(exe, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            return false;
-        }
-        catch (IOException)
-        {
-            return true;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return true;
-        }
-        catch
-        {
-            return false;
         }
     }
 

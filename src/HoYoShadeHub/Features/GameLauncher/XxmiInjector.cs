@@ -37,6 +37,24 @@ namespace HoYoShadeHub.Features.GameLauncher;
 internal sealed class XxmiInjector
 {
     private static readonly ILogger Logger = AppConfig.GetLogger<XxmiInjector>();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, HoYoShadeHub.Extensions.Games.XxmiOwnedLauncher> OwnedLaunchers = new();
+    private static readonly SemaphoreSlim HookGate = new(1, 1);
+
+    /// <summary>Manual Genshin candidate: install main DLL hooks before the first swapchain; not a runtime/FG success claim.</summary>
+    public static List<HoYoShadeHub.Extensions.Services.OptiScalerRuntime.FsrBridgeChainStep> PrepareManualMainStack(
+        GameId gameId, string bridgeDll, string optiDll, string? shadeDll, string? ffx12Dll,
+        IReadOnlyList<HoYoShadeHub.Extensions.Services.OptiScalerRuntime.FsrBridgeChainStep> finalSteps)
+    {
+        bool opti = AppConfig.GetUseOptiScalerLaunchOption(gameId);
+        bool shade = AppConfig.GetUseHoYoShadeLaunchOption(gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
+        var result = HoYoShadeHub.Extensions.Games.XxmiInjectionPreparation.PrepareManualMainStack(
+            gameId.GameBiz.Value, AppConfig.GetUseXxmiInjectLaunchOption(gameId),
+            AppConfig.GetXxmiLaunchMode(gameId) == HoYoShadeHub.Extensions.Games.XxmiLaunchMode.Manual,
+            orderedChain: true, opti, shade, bridgeDll, optiDll, shadeDll, ffx12Dll, finalSteps);
+        Logger.LogInformation("XXMI Manual main-stack candidate: owner=bridge-chain, game={Game}, optSelected={Opt}, shadeSelected={Shade}, optDll={OptDll}, shadeDll={ShadeDll}, plan={Steps}; DLL init/runtime/menu/FG still require same-PID evidence",
+            gameId.GameBiz.Value, opti, shade, optiDll, shadeDll, string.Join(" | ", result.Select(s => s.Verb + " " + s.Argument)));
+        return result;
+    }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
     private delegate int HookLibraryDelegate(string dllPath, out IntPtr hook, out IntPtr mutex);
@@ -48,7 +66,19 @@ internal sealed class XxmiInjector
     private delegate int UnhookLibraryDelegate(ref IntPtr hook, ref IntPtr mutex);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr SetDllDirectoryW(string? pathName);
+    private static extern bool SetDllDirectoryW(string? pathName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetDllDirectoryW(uint bufferLength, StringBuilder buffer);
+
+    private static void RecordOwnedLauncher(Process process, string executable)
+    {
+        try
+        {
+            OwnedLaunchers[process.Id] = new(process.Id, process.StartTime.ToUniversalTime(), Path.GetFullPath(executable));
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "XXMI ownership could not be recorded; instance will not be closed automatically"); }
+    }
 
     // ---- 「按 XXMI 的方式启动」用到的：挂起启动 + 目标进程内注入 + 恢复 ----
 
@@ -155,8 +185,28 @@ internal sealed class XxmiInjector
         var processes = Process.GetProcessesByName("XXMI Launcher");
         try
         {
+            var owned = new List<Process>();
+            foreach (var process in processes)
+            {
+                try
+                {
+                    if (process.HasExited) continue;
+                    if (!OwnedLaunchers.TryGetValue(process.Id, out var identity)
+                        || process.MainModule?.FileName is not { } executable
+                        || !HoYoShadeHub.Extensions.Games.XxmiLauncherSafety.Matches(identity, process.Id,
+                            process.StartTime.ToUniversalTime(), executable))
+                        return $"发现非本轮 Hub 拥有的 XXMI 实例（pid {process.Id}），请自行退出后重试；未关闭任何实例。";
+                    owned.Add(process);
+                }
+                catch (Exception ex)
+                {
+                    return $"无法确认 XXMI 实例归属（pid {process.Id}）：{ex.Message}；未关闭任何实例。";
+                }
+            }
             var result = await HoYoShadeHub.Extensions.Services.OwnedProcessShutdown.CloseAsync(
-                processes, TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                owned, TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            foreach (var process in owned)
+                if (process.HasExited) OwnedLaunchers.TryRemove(process.Id, out _);
             Logger.LogInformation("XXMI 启动前清理：找到 {Found} 个实例，已退出 {Closed}，结束残留 {Forced}，错误 {Errors}",
                 processes.Length, result.Closed, result.Forced, result.Errors.Count);
             return result.Success ? null : string.Join("; ", result.Errors);
@@ -487,6 +537,8 @@ internal sealed class XxmiInjector
                 return new(false, "调起 XXMI Launcher 失败");
             }
 
+            RecordOwnedLauncher(started, launcher);
+
             Logger.LogInformation("XXMI Launcher 已调起（pid {Pid}，手动模式接管）：\"{Exe}\" {Args}",
                 started.Id, launcher, arguments);
 
@@ -730,6 +782,7 @@ internal sealed class XxmiInjector
             info.ArgumentList.Add(importer); info.ArgumentList.Add("-n");
             using Process? started = Process.Start(info);
             if (started is null) return new(false, false, "XXMI 官方启动器未能启动");
+            RecordOwnedLauncher(started, launcher);
             Logger.LogInformation("XXMI official baseline launch: importer {Importer}, pid {Pid}, target {Exe}; XXMI owns game creation", importer, started.Id, exePath);
             return new(true, false, "已唤起 XXMI 官方启动链；模型注入尚未验证");
         }
@@ -842,10 +895,20 @@ internal sealed class XxmiInjector
             return false;
         }
 
+        await HookGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         IntPtr library = IntPtr.Zero;
+        string? previousDllDirectory = null;
+        bool restoreDllDirectory = false;
 
         try
         {
+            var directoryBuffer = new StringBuilder(32768);
+            Marshal.SetLastPInvokeError(0);
+            uint length = GetDllDirectoryW((uint)directoryBuffer.Capacity, directoryBuffer);
+            if (length >= directoryBuffer.Capacity || length == 0 && Marshal.GetLastWin32Error() != 0)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot preserve DLL search directory");
+            previousDllDirectory = length == 0 ? null : directoryBuffer.ToString();
+            restoreDllDirectory = true;
             library = NativeLibrary.Load(injector);
 
             HookLibraryDelegate hookLibrary = Marshal.GetDelegateForFunctionPointer<HookLibraryDelegate>(
@@ -864,7 +927,8 @@ internal sealed class XxmiInjector
                 }
 
                 // 注入器要先把 dll 读进来找入口；同目录的依赖不在默认搜索路径里 → 先把这个目录加进搜索路径
-                SetDllDirectoryW(Path.GetDirectoryName(dll));
+                if (!SetDllDirectoryW(Path.GetDirectoryName(dll)))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot set XXMI DLL search directory");
 
                 int hookResult = hookLibrary(dll, out IntPtr hook, out IntPtr mutex);
 
@@ -882,7 +946,7 @@ internal sealed class XxmiInjector
                         Logger.LogDebug(ex, "XXMI 失败后脱钩也失败");
                     }
 
-                    SetDllDirectoryW(null);
+                    SetDllDirectoryW(previousDllDirectory);
 
                     if (hookResult == 200)
                     {
@@ -897,20 +961,22 @@ internal sealed class XxmiInjector
                 try
                 {
                     // 游戏可能还没起来：WaitForInjection 内部会等进程出现再注入（超时给长一点）
-                    int waitResult = await Task.Run(() => waitForInjection(dll, processName, 600), cancellationToken);
+                    int waitResult = await HoYoShadeHub.Extensions.Games.XxmiLauncherSafety.PollAsync(
+                        seconds => waitForInjection(dll, processName, seconds), TimeSpan.FromSeconds(600), cancellationToken);
                     Logger.LogInformation("XXMI WaitForInjection 返回 {Result}", waitResult);
                     return waitResult == 0;
                 }
                 finally
                 {
-                    unhookLibrary(ref hook, ref mutex);
-                    SetDllDirectoryW(null);
+                    try { unhookLibrary(ref hook, ref mutex); }
+                    finally { SetDllDirectoryW(previousDllDirectory); }
                     Logger.LogInformation("XXMI 钩子已脱掉");
                 }
             }
 
             return false;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "XXMI 注入失败");
@@ -918,10 +984,12 @@ internal sealed class XxmiInjector
         }
         finally
         {
-            if (library != IntPtr.Zero)
+            try
             {
-                NativeLibrary.Free(library);
+                if (restoreDllDirectory) SetDllDirectoryW(previousDllDirectory);
+                if (library != IntPtr.Zero) NativeLibrary.Free(library);
             }
+            finally { HookGate.Release(); }
         }
     }
 }

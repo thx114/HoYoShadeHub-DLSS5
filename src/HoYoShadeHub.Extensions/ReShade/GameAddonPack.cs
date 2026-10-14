@@ -224,12 +224,132 @@ public static class GameAddonPack
     }
 
     /// <summary>
-    /// 按计划把包目录同步出来：需要的内容硬链接/复制过来，多余的删掉，最后写标记。
+    /// 包指纹：把「这个包应该长什么样」编码成一个字符串 —— 游戏 key、选中的版本、
+    /// 每行的**源**文件路径 + 大小 + 写入时间。
+    ///
+    /// <para>
+    /// 指纹只看源（共享 Addons / 版本归档），**不看包目录里的目标文件** ——
+    /// 所以用户在包目录里改过的插件设置不会改指纹。指纹没变 = 包目录已经是这个包的内容，
+    /// 启动时不再重铺（这就是覆盖包「一次性」的判据）；源变了（装/升级/降级/换版本）
+    /// 指纹就变，下一次启动强制重铺一次。
+    /// </para>
+    /// </summary>
+    public static string ComputeIdentity(
+        string? gameKey,
+        IReadOnlyList<AddonPackEntry> entries,
+        IEnumerable<(string ExtensionId, string Tag)>? selections = null)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(SanitizeGameKey(gameKey)).Append('\n');
+
+        foreach ((string id, string tag) in (selections ?? []).OrderBy(s => s.ExtensionId, StringComparer.OrdinalIgnoreCase))
+        {
+            builder.Append(id).Append('=').Append(tag).Append('\n');
+        }
+
+        foreach (AddonPackEntry entry in entries.OrderBy(e => e.FileName, StringComparer.OrdinalIgnoreCase))
+        {
+            builder.Append(entry.FileName).Append('|').Append(entry.SourcePath).Append('|');
+            try
+            {
+                var info = new FileInfo(entry.SourcePath);
+                builder.Append(info.Exists ? info.Length : -1).Append('|')
+                       .Append(info.Exists ? info.LastWriteTimeUtc.Ticks : 0);
+            }
+            catch
+            {
+                builder.Append("-1|0");
+            }
+
+            builder.Append('\n');
+        }
+
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString())))
+            .ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// 插件自己那份「控制器配置」的实际路径 —— 和插件 <c>resolve_controller_ini</c> 的规则一致：
+    /// 存在游戏专属 <c>FsrBridgeDepthAddon.hk4e.ini</c> 时**优先用它**，否则退回基名
+    /// <c>FsrBridgeDepthAddon.ini</c>。两份都不存在返回 null。
+    ///
+    /// <para>
+    /// 启动器判共存模式（<c>GameIniBootstrap</c>）必须走这个函数，否则会出现
+    /// 「启动器读基名、插件读专属」的分歧：用户在插件 UI 里改的键，启动器看不见。
+    /// </para>
+    /// </summary>
+    public static string? ResolveControllerIni(string? addonDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(addonDirectory))
+        {
+            return null;
+        }
+
+        try
+        {
+            string directory = addonDirectory.Trim();
+            string scoped = Path.Combine(directory, "FsrBridgeDepthAddon.hk4e.ini");
+            if (File.Exists(scoped))
+            {
+                return scoped;
+            }
+
+            string baseline = Path.Combine(directory, "FsrBridgeDepthAddon.ini");
+            return File.Exists(baseline) ? baseline : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>包标记里记的指纹；不是包目录 / 旧标记（没有该字段）返回空串。</summary>
+    public static string ReadIdentity(string? addonDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(addonDirectory))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            string path = Path.Combine(addonDirectory, MarkerFileName);
+            if (!File.Exists(path))
+            {
+                return string.Empty;
+            }
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                   && document.RootElement.TryGetProperty("identity", out JsonElement value)
+                   && value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 按计划把包目录铺出来。<paramref name="identity"/> 非空时是**一次性**语义：
+    ///
+    /// <list type="bullet">
+    /// <item>指纹和包标记里记的一样 → 包没变：已存在的文件一律不动（用户在包目录里改过的
+    /// 插件设置因此不会被刷回），只补缺失的行；包目录里多出来的文件也保留。</item>
+    /// <item>指纹不一样（装包 / 升级 / 降级 / 换版本 / 共享目录变了）→ 包赢一次：
+    /// 计划内的行强制重铺，计划外的旧行清掉，然后记下新指纹。</item>
+    /// <item><paramref name="identity"/> 为空（老调用方 / 测试）→ 保持旧行为：
+    /// 逐个按 <see cref="HysxFileLink.IsUpToDate"/> 判断新鲜度。</item>
+    /// </list>
     /// </summary>
     public static AddonPackSyncResult Sync(
         string addonDirectory,
         IReadOnlyList<AddonPackEntry> entries,
-        IEnumerable<(string ExtensionId, string Tag)>? selections = null)
+        IEnumerable<(string ExtensionId, string Tag)>? selections = null,
+        string? identity = null)
     {
         if (string.IsNullOrWhiteSpace(addonDirectory))
         {
@@ -237,6 +357,10 @@ public static class GameAddonPack
         }
 
         Directory.CreateDirectory(addonDirectory);
+
+        bool knownIdentity = !string.IsNullOrWhiteSpace(identity);
+        bool payloadChanged = !knownIdentity
+                              || !string.Equals(ReadIdentity(addonDirectory), identity, StringComparison.Ordinal);
 
         int linked = 0;
         int copied = 0;
@@ -250,10 +374,18 @@ public static class GameAddonPack
             string target = Path.Combine(addonDirectory, entry.FileName);
             wanted.Add(entry.FileName);
 
-            if (HysxFileLink.IsUpToDate(entry.SourcePath, target))
+            if (File.Exists(target))
             {
-                kept++;
-                continue;
+                // 包没变 → 一次性：绝不覆盖已有文件（用户后改的设置要留住）。
+                // 包变了 → 强制重铺；只有老调用方（没给指纹）才回去比新鲜度。
+                bool leave = payloadChanged
+                    ? !knownIdentity && HysxFileLink.IsUpToDate(entry.SourcePath, target)
+                    : true;
+                if (leave)
+                {
+                    kept++;
+                    continue;
+                }
             }
 
             try
@@ -273,33 +405,37 @@ public static class GameAddonPack
             }
         }
 
-        try
+        // 计划外的旧行只在「包变了」时清；包没变时留着用户自己放的东西。
+        if (payloadChanged)
         {
-            foreach (string file in Directory.EnumerateFiles(addonDirectory, "*", SearchOption.TopDirectoryOnly))
+            try
             {
-                string name = Path.GetFileName(file);
-                if (string.Equals(name, MarkerFileName, StringComparison.OrdinalIgnoreCase) || wanted.Contains(name))
+                foreach (string file in Directory.EnumerateFiles(addonDirectory, "*", SearchOption.TopDirectoryOnly))
                 {
-                    continue;
-                }
+                    string name = Path.GetFileName(file);
+                    if (string.Equals(name, MarkerFileName, StringComparison.OrdinalIgnoreCase) || wanted.Contains(name))
+                    {
+                        continue;
+                    }
 
-                try
-                {
-                    File.Delete(file);
-                    removed++;
-                }
-                catch
-                {
-                    // 删不掉就算了
+                    try
+                    {
+                        File.Delete(file);
+                        removed++;
+                    }
+                    catch
+                    {
+                        // 删不掉就算了
+                    }
                 }
             }
-        }
-        catch
-        {
-            // 清理失败不影响结果
+            catch
+            {
+                // 清理失败不影响结果
+            }
         }
 
-        WriteMarker(addonDirectory, selections);
+        WriteMarker(addonDirectory, selections, knownIdentity ? identity : null);
         return new AddonPackSyncResult
         {
             AddonDirectory = addonDirectory,
@@ -320,15 +456,19 @@ public static class GameAddonPack
         }
     }
 
-    private static void WriteMarker(string addonDirectory, IEnumerable<(string ExtensionId, string Tag)>? selections)
+    private static void WriteMarker(
+        string addonDirectory,
+        IEnumerable<(string ExtensionId, string Tag)>? selections,
+        string? identity = null)
     {
         try
         {
             var payload = new
             {
-                schema = 1,
+                schema = 2,
                 syncedAt = DateTimeOffset.Now,
                 selections = (selections ?? []).Select(s => new { id = s.ExtensionId, tag = s.Tag }).ToArray(),
+                identity = identity ?? string.Empty,
             };
 
             File.WriteAllText(Path.Combine(addonDirectory, MarkerFileName), JsonSerializer.Serialize(payload, _json));

@@ -42,6 +42,16 @@ public static class Program
     {
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
+        try
+        {
+            args = Helpers.LauncherCommandLine.WaitForParentExit(args);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 1;
+        }
+
         // 多人/反作弊游戏后台守卫：只读轮询进程名，发现即暂停一切注入/解锁
         Features.GameLauncher.MultiplayerGameGuard.EnsureStarted();
 
@@ -85,7 +95,8 @@ public static class Program
                         FileName = AppConfig.HoYoShadeHubExecutePath,
                         UseShellExecute = true,
                         Verb = "runas",
-                        Arguments = string.Join(" ", args)
+                        Arguments = Helpers.LauncherCommandLine.BuildArguments(args),
+                        WorkingDirectory = AppContext.BaseDirectory,
                     };
                     System.Diagnostics.Process.Start(info);
                 }

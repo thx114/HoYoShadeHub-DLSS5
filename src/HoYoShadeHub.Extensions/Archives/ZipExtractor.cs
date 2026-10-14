@@ -57,7 +57,48 @@ public static class ZipExtractor
     public static void ExtractToDirectory(string archivePath, string destinationDirectory)
         => ExtractToDirectory(archivePath, destinationDirectory, out _);
 
-    private static void ExtractWithTar(string archivePath, string destinationDirectory)
+    /// <summary>Cancelable byte-based extraction with throttled progress; fallback has unknown progress.</summary>
+    public static void ExtractToDirectory(string archivePath, string destinationDirectory,
+        CancellationToken cancellationToken, Action<double?> progress)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+        try
+        {
+            using var archive = ZipFile.OpenRead(archivePath);
+            string root = Path.GetFullPath(destinationDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            long total = archive.Entries.Sum(e => e.Length), completed = 0, last = 0;
+            byte[] buffer = new byte[128 * 1024];
+            foreach (var entry in archive.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string target = Path.GetFullPath(Path.Combine(root, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new IOException("ZIP path escapes extraction directory.");
+                if (string.IsNullOrEmpty(entry.Name)) { Directory.CreateDirectory(target); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                using var input = entry.Open();
+                using var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, buffer.Length);
+                int count;
+                while ((count = input.Read(buffer, 0, buffer.Length)) != 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    output.Write(buffer, 0, count);
+                    completed += count;
+                    long now = Environment.TickCount64;
+                    if (now - last >= 100) { last = now; progress(total == 0 ? 0 : (double)completed / total); }
+                }
+            }
+            progress(1);
+        }
+        catch (InvalidDataException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            progress(null);
+            ExtractWithTar(archivePath, destinationDirectory, cancellationToken);
+            progress(1);
+        }
+    }
+
+    private static void ExtractWithTar(string archivePath, string destinationDirectory, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(TarPath))
         {
@@ -83,8 +124,19 @@ public static class ZipExtractor
 
         using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("起不了 tar.exe。");
-        string error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+        // Drain both redirected pipes concurrently: sequential reads can deadlock on a full pipe.
+        Task<string> errors = process.StandardError.ReadToEndAsync();
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        using var registration = cancellationToken.Register(() =>
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
+        });
+        try { process.WaitForExitAsync(cancellationToken).GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { process.WaitForExit(); throw; }
+        string error = errors.GetAwaiter().GetResult();
+        _ = output.GetAwaiter().GetResult();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (process.ExitCode != 0)
         {

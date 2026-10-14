@@ -1,4 +1,4 @@
-using HoYoShadeHub.Extensions.Models;
+﻿using HoYoShadeHub.Extensions.Models;
 
 namespace HoYoShadeHub.Extensions.Services;
 
@@ -261,7 +261,10 @@ public sealed class AddonVersionStore
             string relative = file.Path.Replace('/', Path.DirectorySeparatorChar);
             string target = Path.Combine(dir, relative);
 
-            if (HysxFileLink.SizeEquals(source, target))
+            // Addon binaries/configs can be replaced in-place with identical length.
+            // Size-only reuse can preserve an older same-size plugin indefinitely; use
+            // content identity for the archive path as well as the live sync path.
+            if (HysxFileLink.IsUpToDate(source, target))
             {
                 skipped++;
                 continue;

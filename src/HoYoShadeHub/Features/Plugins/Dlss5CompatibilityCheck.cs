@@ -100,7 +100,7 @@ internal class Dlss5CompatibilityCheck
         items.Add(CheckNvDlssFgPreset(context));
 
         // 19 MSI Afterburner / RTSS 会 hook 游戏呈现，可能和 DLSS5 打架
-        items.Add(CheckOverlayConflict());
+        items.Add(CheckOverlayConflict(context));
         items.Add(CheckNvidiaInfoOverlay());
 
         // 20 每游戏插件包：同一插件多版本 / 这个游戏在用哪一版 / 包与共享目录是否同步（按用户要求不再在 DLSS5 兼容性检测中提示）
@@ -1323,7 +1323,7 @@ internal class Dlss5CompatibilityCheck
 
     #region 18 NVIDIA 驱动：DLSS-FG 帧生成模型预设
 
-    /// <summary>18. 帧生成模型预设不是 Preset B 时，启用帧生成可能闪烁。</summary>
+    /// <summary>18. 帧生成模型预设应保持默认（不被覆盖）；只要被修改过，启用帧生成就可能闪烁，报红。</summary>
     private static Dlss5CompatItem CheckNvDlssFgPreset(Dlss5CompatContext context)
     {
         var item = new Dlss5CompatItem(18, "显卡", "NVIDIA 驱动  DLSS-FG 帧生成模型预设");
@@ -1349,21 +1349,13 @@ internal class Dlss5CompatibilityCheck
         if (!state.Overridden)
         {
             item.Level = Dlss5CheckLevel.Ok;
-            item.Message = $"「{exeName}」没有覆盖 DLSS-FG 预设（{state.Display}），跟随默认。"
-                           + "启用帧生成若出现闪烁，可以覆盖为 0x00000002（Preset B）。";
+            item.Message = $"「{exeName}」没有覆盖 DLSS-FG 预设（{state.Display}），跟随默认 正常。";
             return item;
         }
 
-        if (state.Value == NvDrsInterop.DlssFgPresetB)
-        {
-            item.Level = Dlss5CheckLevel.Ok;
-            item.Message = $"「{exeName}」的帧生成模型预设已是 Preset B（0x00000002） 正常。";
-            return item;
-        }
-
-        item.Level = Dlss5CheckLevel.Warning;
-        item.Message = $"「{exeName}」的帧生成模型预设不是 Preset B：{state.Display}。"
-                       + "不为 B 时启用帧生成可能遇到闪烁问题；如需修改请自行到 NVIDIA App / 控制面板覆盖 DLSS-FG 预设（启动器不再代改）。";
+        item.Level = Dlss5CheckLevel.Error;
+        item.Message = $"「{exeName}」的帧生成模型预设被修改过：{state.Display}。"
+                       + "优设应该保持默认，被修改后启用帧生成可能遇到闪烁问题；请到 NVIDIA App / 控制面板把 DLSS-FG 预设恢复默认（启动器不再代改）。";
 
         return item;
     }
@@ -1373,38 +1365,49 @@ internal class Dlss5CompatibilityCheck
     #region 19 MSI Afterburner / RTSS 是否可能冲突
 
     /// <summary>19. MSI Afterburner / RTSS 会 hook 游戏的呈现，可能和 DLSS5 链路打架。</summary>
-    private static Dlss5CompatItem CheckOverlayConflict()
+    private static Dlss5CompatItem CheckOverlayConflict(Dlss5CompatContext context)
     {
-        var item = new Dlss5CompatItem(19, "系统", "MSI Afterburner / RTSS 是否可能冲突");
-
-        List<string> running = RunningProcesses(["RTSS", "RTSSHooksLoader64", "RTSSHooksLoader", "MSIAfterburner", "EncoderServer"]);
-        List<string> installed = InstalledUnder(
-            [
-                (Environment.SpecialFolder.ProgramFilesX86, "RivaTuner Statistics Server"),
-                (Environment.SpecialFolder.ProgramFiles, "RivaTuner Statistics Server"),
-                (Environment.SpecialFolder.ProgramFilesX86, "MSI Afterburner"),
-                (Environment.SpecialFolder.ProgramFiles, "MSI Afterburner"),
-            ]);
-
-        if (running.Count > 0)
+        var item = new Dlss5CompatItem(19, "系统", "RTSS 当前游戏配置 / 叠加层对照")
+        { AlternativeLabel = "禁用当前游戏 RTSS 注入" };
+        var running = RunningProcesses(["RTSS", "RTSSHooksLoader64", "RTSSHooksLoader", "MSIAfterburner"]);
+        string? root = RtssInstallation.FindRoot(out string note);
+        string? exe = context.GameExePath is { Length: > 0 } path ? Path.GetFileName(path) : null;
+        item.Level = running.Count > 0 ? Dlss5CheckLevel.Warning : Dlss5CheckLevel.Info;
+        item.Message = note + "检测到进程不代表已确认冲突。仅更改当前 EXE，不改 Global、OSD、限帧及其他游戏；操作不参与一键修复。";
+        if (running.Count > 0) item.Message += "\n相关运行进程：" + string.Join("、", running.Distinct());
+        if (root is null || string.IsNullOrWhiteSpace(exe))
+        {
+            item.Message += root is null ? " 未找到 RTSS 安装目录，可点击指定目录。" : " 请先选择游戏主程序。";
+            item.CanFix = root is null;
+            item.IsOptionalFix = true;
+            item.FixLabel = "指定 RTSS 目录";
+            item.PickRtssFolder = root is null;
+            return item;
+        }
+        try
+        {
+            var state = RtssProfileService.Read(root, exe, RtssInstallation.BackupRoot);
+            item.Message += $"\nRTSS：{root}\n当前 profile：{state.Profile}\nEnableHooking={state.Hooking ?? "未设置（继承）"}；EnableOSD={state.Osd ?? "未设置（继承）"}。";
+            item.CanFix = true;
+            item.IsOptionalFix = true;
+            item.FixLabel = "Low 设置说明";
+            item.Fix = () => Task.FromResult<string?>($"自动 Low 数值尚未核实；请在 RTSS 选择 {exe}，将 Application detection level 设为 Low，重启游戏对照。EnableHooking=1 不在此被断言为 Low。无 OSD 只表示不显示，不能代替退出 RTSS 排除 hook。未改文件。");
+            item.AlternativeFix = () =>
+            {
+                RtssInstallation.EnsureStopped(exe);
+                return Task.FromResult<string?>(RtssProfileService.Apply(root, exe, RtssInstallation.BackupRoot, RtssProfileMode.Disabled));
+            };
+            if (state.CanRestore) item.RestoreFix = () =>
+            {
+                RtssInstallation.EnsureStopped(exe);
+                return Task.FromResult<string?>(RtssProfileService.Restore(root, exe, RtssInstallation.BackupRoot));
+            };
+        }
+        catch (Exception ex)
         {
             item.Level = Dlss5CheckLevel.Warning;
-            item.Message = "检测到 " + string.Join("、", running.Distinct()) +
-                           "。RTSS 会 hook 游戏的呈现，和 DLSS5 链路（OptiScaler / 插帧）抢 hook 时可能黑屏、崩溃或插帧不生效；" +
-                           "遇到问题先把 RTSS / MSI Afterburner 退掉再启动游戏（RTSS 里也可以只给这个游戏关掉 Application Detection）。";
-            return item;
+            item.Message += "\n读取 RTSS profile 失败（未修改）：" + ex.Message;
         }
-
-        if (installed.Count > 0)
-        {
-            item.Level = Dlss5CheckLevel.Info;
-            item.Message = "装了 " + string.Join("、", installed.Distinct()) + "，现在没在运行。" +
-                           "它运行时会 hook 游戏的呈现，DLSS5 出问题（黑屏 / 崩溃 / 插帧不生效）的话先退掉它排除干扰。";
-            return item;
-        }
-
-        item.Level = Dlss5CheckLevel.Ok;
-        item.Message = "没有检测到 MSI Afterburner / RTSS。";
         return item;
     }
 

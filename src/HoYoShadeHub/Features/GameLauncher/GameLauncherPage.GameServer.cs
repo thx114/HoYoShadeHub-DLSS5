@@ -73,6 +73,10 @@ public sealed partial class GameLauncherPage : PageBase
     /// <returns></returns>
     private async Task InitializeGameServerAsync()
     {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _serverRequests.Begin();
+        if (!IsPageRequestCurrent(_serverRequests, request, gameId)) return;
+        var cancellationToken = PageCancellationToken;
         try
         {
             // 自定义游戏 / Hub 不认识的：HoYoPlay 那边没有区服信息
@@ -84,12 +88,13 @@ public sealed partial class GameLauncherPage : PageBase
             GameInfo? gameInfo;
             if (CurrentGameBiz == GameBiz.bh3_global)
             {
-                gameInfo = await _hoYoPlayService.GetGameInfoAsync(GameId.FromGameBiz(GameBiz.bh3_global)!);
+                gameInfo = await _hoYoPlayService.GetGameInfoAsync(GameId.FromGameBiz(GameBiz.bh3_global)!, cancellationToken);
             }
             else
             {
-                gameInfo = await _hoYoPlayService.GetGameInfoAsync(CurrentGameId);
+                gameInfo = await _hoYoPlayService.GetGameInfoAsync(gameId, cancellationToken);
             }
+            if (!IsPageRequestCurrent(_serverRequests, request, gameId)) return;
             if (gameInfo?.GameServerConfigs?.Count > 0)
             {
                 GameServers = gameInfo.GameServerConfigs;
@@ -109,7 +114,7 @@ public sealed partial class GameLauncherPage : PageBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Initialize game server");
+            if (ex is not OperationCanceledException) _logger.LogError(ex, "Initialize game server");
         }
     }
 

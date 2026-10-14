@@ -198,7 +198,15 @@ public class BackgroundService
         {
             var bytes = await _httpClient.GetByteArrayAsync(url, cancellationToken);
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-            await File.WriteAllBytesAsync(file, bytes, cancellationToken);
+            string temporary = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                try { File.Move(temporary, file, overwrite: false); }
+                catch (IOException) when (File.Exists(file)) { }
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
         return file;
     }

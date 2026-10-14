@@ -39,6 +39,7 @@ internal static class RocketLaunchPreparation
     public static async Task<RocketIntegration.PrepareResult> PrepareAsync(GameId gameId, GameEntry? entry)
     {
         await Gate.WaitAsync();
+        string? configPath = null;
         try
         {
             if (MultiplayerGameGuard.IsActive) return new(false, MultiplayerGameGuard.BlockReason());
@@ -50,7 +51,10 @@ internal static class RocketLaunchPreparation
                 return new(false, "火箭的模型导入器是 d3d11 代理，需要游戏跑 DX11 路线，请关闭游戏 DX12 启动选项。");
 
             string? config = RocketIntegration.FindConfigPath(AppConfig.RocketConfigPath);
-            if (config is null) return new(false, "找不到 Rocket config.ini，请点启用 Rocket 右侧设置选择位置。");
+            configPath = config;
+            if (config is null)
+                return new(false, "找不到 Rocket config.ini，请点启用 Rocket 右侧设置选择位置；也可以直接用弹窗里的 DLL 路径配 SSMT 等第三方加载器。",
+                    null, null, ResolveDisplayDlls(gameId));
 
             var discovery = GameCatalog.CreateService();
             entry ??= GameCatalog.GetOrCreate(discovery, gameId);
@@ -62,6 +66,7 @@ internal static class RocketLaunchPreparation
             bool shadeEnabled = AppConfig.GetUseHoYoShadeLaunchOption(gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
             string? opt = optEnabled ? AppConfig.GetSelectedOptiScalerDll(gameId) : null;
             if (optEnabled && (string.IsNullOrWhiteSpace(opt) || !File.Exists(opt))) return new(false, "请先选择已安装的 OptiScaler 构建。");
+            await OptiSmoothMotionInterlock.EnsureAsync(gameId, exe, optEnabled);
             ShadeHost? host = shadeEnabled ? new ShadeHost(Path.Combine(AppConfig.UserDataFolder,
                 AppConfig.GetUseHoYoShadeLaunchOption(gameId) ? "HoYoShade" : "OpenHoYoShade")) : null;
             string? shade = host is null ? null : Path.Combine(host.RootPath, "ReShade64.dll");
@@ -72,9 +77,9 @@ internal static class RocketLaunchPreparation
             if (RocketIntegration.SupportsGame(gameId.GameBiz.Value))
                 return PrepareGenshin(gameId, entry, config, host, opt, shade, optEnabled);
 
-            return PrepareOtherGame(gameId, rocketGame, config, opt, shade);
+            return PrepareOtherGame(gameId, entry, rocketGame, config, host, opt, shade);
         }
-        catch (Exception ex) { return new(false, "准备 Rocket 联动失败：" + ex.Message); }
+        catch (Exception ex) { return new(false, "准备 Rocket 联动失败：" + ex.Message, configPath); }
         finally { Gate.Release(); }
     }
 
@@ -99,7 +104,7 @@ internal static class RocketLaunchPreparation
             if (!OptiScalerRuntime.SetRocketMode(build, true))
                 return new(false, "写入 OptiScaler RocketMode=true 失败。");
             OptiScalerRuntime.EnsureFsrBridgeIni(bridgeDirectory);
-            OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory);
+            OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, AppConfig.GetGenshinBridgeRenderScale(gameId));
             if (OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, opt) is null
                 || !OptiScalerRuntime.EnsureFsrBridgeOptiSidecar(bridgeDirectory, build))
                 return new(false, "准备桥的 OptiScaler 配套配置失败。");
@@ -136,7 +141,7 @@ internal static class RocketLaunchPreparation
         }
         string extraNote = chainExtraModules.Count == 0 ? "" : Environment.NewLine + "额外模块 " + chainExtraModules.Count
             + " 个也在链里（GIMI 之后、OptiScaler 之前）：" + string.Join(" → ", chainExtraModules.Select(Path.GetFileName));
-        return result with { Message = RocketIntegration.WaitingText + Environment.NewLine + "桥 DLL：" + bridge + extraNote + addonNote
+        return result with { DllPaths = new[] { bridge }, Message = RocketIntegration.WaitingText + Environment.NewLine + "桥 DLL：" + bridge + extraNote + addonNote
             + Environment.NewLine + "Rocket 已运行时请在其界面重新读取/确认额外 DLL；Hub 不会自动启动或重启 Rocket。" };
     }
 
@@ -144,31 +149,74 @@ internal static class RocketLaunchPreparation
     /// 其他游戏：没有 FSR 桥，用火箭的「&lt;游戏名&gt;插件DLL列表」把多份 DLL 交给火箭注入。
     /// 顺序 = 注入顺序：OptiScaler 在前、ReShade 在后。
     /// </summary>
-    private static RocketIntegration.PrepareResult PrepareOtherGame(GameId gameId, string rocketGame, string config,
-        string? opt, string? shade)
+    private static RocketIntegration.PrepareResult PrepareOtherGame(GameId gameId, GameEntry entry, string rocketGame, string config,
+        ShadeHost? host, string? opt, string? shade)
     {
         var dlls = new List<string>();
         // 用户勾的其他模块排最前（和 Hub 批量注入路线一致：模块 → OptiScaler → ReShade）
         dlls.AddRange(BridgeChainModules.Resolve(gameId, opt, shade));
         if (opt is not null) dlls.Add(opt);
         if (shade is not null) dlls.Add(shade);
-        if (dlls.Count == 0) return new(false, "请至少启用 OptiScaler 或 HoYoShade。");
+        if (dlls.Count == 0) return new(false, "请至少启用 OptiScaler 或 HoYoShade。", config);
+        // Validate the Rocket schema before touching any per-game configuration.
+        _ = RocketIntegration.BuildPluginListConfiguration(File.ReadAllBytes(config), rocketGame, dlls);
         if (opt is not null)
         {
             string build = Path.GetDirectoryName(opt)!;
             // 同上：先把上一次会话的改动收回它的 profile，再激活这次的 profile
             OptiScalerPresets.CollectFromRuntime(build);
             if (!OptiScalerRuntime.PrepareGenshinEarlyConfiguration(build, gameId.GameBiz.Value))
-                return new(false, "准备 OptiScaler profile/依赖路径失败。");
+                return new(false, "准备 OptiScaler profile/依赖路径失败。", config);
+            // StarRail's old profile must not undo the native DX11-only input route.
+            if (GameLauncherService.UsesStarRailFinalDx12(gameId)
+                && !OptiScalerRuntime.EnsureStarRailDx11InputRoute(build, gameId.GameBiz.Value))
+                return new(false, "准备崩铁 DX11-only 输入配置失败。", config);
             // 非原神没有 GIMI 接管最终 ReShade runtime，别把上一次原神跑留下的 true 带过去。
             if (!OptiScalerRuntime.SetRocketMode(build, false))
-                return new(false, "写入 OptiScaler RocketMode=false 失败。");
+                return new(false, "写入 OptiScaler RocketMode=false 失败。", config);
+        }
+        if (host is not null)
+        {
+            // Same sync/bootstrap order as normal launch; respect disabled addons/effects.
+            GameAddonPackService.Sync(gameId, entry, host);
+            var ini = GameIniBootstrap.Ensure(entry, host, false, GameLauncherService.UsesStarRailFinalDx12(gameId));
+            if (ini.Failed || ini.MissingTemplate) return new(false, "准备 ReShade 配置失败，尚未配置 Rocket 注入路径。", config);
+            GameAddonPackService.Sync(gameId, entry, host);
+            ini = GameIniBootstrap.Ensure(entry, host, false, GameLauncherService.UsesStarRailFinalDx12(gameId));
+            if (ini.Failed || ini.MissingTemplate) return new(false, "同步 ReShade 插件配置失败，尚未配置 Rocket 注入路径。", config);
         }
         var listed = RocketIntegration.PreparePluginList(config, rocketGame, dlls);
         if (!listed.Success) return listed;
-        return listed with { Message = RocketIntegration.WaitingText + Environment.NewLine
+        return listed with { DllPaths = dlls, Message = RocketIntegration.WaitingText + Environment.NewLine
             + "火箭会按这个顺序注入 " + dlls.Count + " 份 DLL：" + string.Join(" → ", dlls.Select(Path.GetFileName))
+            + Environment.NewLine + "ConfigPath=" + listed.ConfigPath + Environment.NewLine + "BackupPath=" + (listed.BackupPath ?? "(unchanged)")
+            + Environment.NewLine + "DLL 清单（绝对路径）：" + Environment.NewLine + string.Join(Environment.NewLine, dlls.Select(Path.GetFullPath))
             + Environment.NewLine + "Rocket 已运行时请在其界面重新读取/确认额外 DLL；Hub 不会自动启动或重启 Rocket。" };
+    }
+
+    /// <summary>找不到 Rocket 配置时也要给出可复制到第三方加载器（SSMT 等）的 DLL 列表。只读解析，不做任何准备副作用。</summary>
+    private static IReadOnlyList<string> ResolveDisplayDlls(GameId gameId)
+    {
+        var dlls = new List<string>();
+        if (RocketIntegration.SupportsGame(gameId.GameBiz.Value))
+        {
+            // 原神：第三方加载器只要加载桥，chain.txt 会拉起当前配置的所有层。
+            string? bridge = ModuleRegistry.ResolveInjectionDlls(gameId)
+                .FirstOrDefault(spec => ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath)).DllPath;
+            if (!string.IsNullOrWhiteSpace(bridge)) dlls.Add(bridge);
+            return dlls;
+        }
+        if (AppConfig.GetUseOptiScalerLaunchOption(gameId)
+            && AppConfig.GetSelectedOptiScalerDll(gameId) is { Length: > 0 } opt && File.Exists(opt))
+            dlls.Add(opt);
+        if (AppConfig.GetUseHoYoShadeLaunchOption(gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId))
+        {
+            var host = new ShadeHost(Path.Combine(AppConfig.UserDataFolder,
+                AppConfig.GetUseHoYoShadeLaunchOption(gameId) ? "HoYoShade" : "OpenHoYoShade"));
+            string shade = Path.Combine(host.RootPath, "ReShade64.dll");
+            if (File.Exists(shade)) dlls.Add(shade);
+        }
+        return dlls;
     }
 
     private static bool IsGameRunning(string rocketGame, string exe)

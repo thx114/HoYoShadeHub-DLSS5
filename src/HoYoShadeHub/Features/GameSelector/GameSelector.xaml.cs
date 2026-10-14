@@ -11,9 +11,9 @@ using Microsoft.Win32;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Background;
 using HoYoShadeHub.Features.GameLauncher;
-using Microsoft.Extensions.Logging;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Features.HoYoPlay;
 using HoYoShadeHub.Features.Setting;
@@ -44,7 +44,7 @@ public sealed partial class GameSelector : UserControl
 {
 
 
-    public event EventHandler<(GameId, bool DoubleTapped)>? CurrentGameChanged;
+    public event EventHandler<(GameId?, bool DoubleTapped)>? CurrentGameChanged;
 
 
     private readonly HoYoPlayService _hoyoplayService = AppConfig.GetService<HoYoPlayService>();
@@ -54,6 +54,10 @@ public sealed partial class GameSelector : UserControl
 
 
     private readonly Microsoft.Extensions.Logging.ILogger<GameSelector> _logger = AppConfig.GetLogger<GameSelector>();
+    private readonly UiLifetime _lifetime = new();
+    private readonly LatestAsyncOperation _refresh = new();
+    private XamlRoot? _attachedRoot;
+    private bool _isRemovingCustomGame;
 
 
 
@@ -62,12 +66,20 @@ public sealed partial class GameSelector : UserControl
         this.InitializeComponent();
         InitializeGameSelector();
         this.Loaded += GameSelector_Loaded;
-        WeakReferenceMessenger.Default.Register<LanguageChangedMessage>(this, OnLanguageChanged);
+        this.Unloaded += GameSelector_Unloaded;
+    }
+
+    private void RegisterMessages()
+    {
+        long generation = _lifetime.Generation;
+        WeakReferenceMessenger.Default.Register<LanguageChangedMessage>(this,
+            (recipient, message) => DispatchCurrent(generation, () => OnLanguageChanged(recipient, message)));
         // 定位到游戏之后，把它固定到顶部（用户要求：定位到的游戏就固定到顶部）
         WeakReferenceMessenger.Default.Register<PinGameBizMessage>(this, (_, message) => DispatcherQueue.TryEnqueue(() =>
         {
             try
             {
+                if (!_lifetime.IsCurrent(generation)) return;
                 PinGameBiz(message.GameBiz);
             }
             catch { }
@@ -78,6 +90,7 @@ public sealed partial class GameSelector : UserControl
         {
             try
             {
+                if (!_lifetime.IsCurrent(generation)) return;
                 List<GameBizIcon> added = AppendCustomGameIcons();
                 if (added.Count > 0)
                 {
@@ -88,8 +101,19 @@ public sealed partial class GameSelector : UserControl
             }
             catch { }
         }));
-        WeakReferenceMessenger.Default.Register<MainWindowStateChangedMessage>(this, OnMainWindowStateChanged);
-        WeakReferenceMessenger.Default.Register<MainWindowDragRectAdaptToGameIconMessage>(this, OnMainWindowStateChanged);
+        WeakReferenceMessenger.Default.Register<MainWindowStateChangedMessage>(this,
+            (recipient, message) => DispatchCurrent(generation, () => OnMainWindowStateChanged(recipient, message)));
+        WeakReferenceMessenger.Default.Register<MainWindowDragRectAdaptToGameIconMessage>(this,
+            (recipient, message) => DispatchCurrent(generation, () => OnMainWindowStateChanged(recipient, message)));
+    }
+
+    private void DispatchCurrent(long generation, Action update)
+    {
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            if (_lifetime.IsCurrent(generation)) update();
+        }
+        else DispatcherQueue.TryEnqueue(() => { if (_lifetime.IsCurrent(generation)) update(); });
     }
 
 
@@ -158,10 +182,28 @@ public sealed partial class GameSelector : UserControl
 
     private async void GameSelector_Loaded(object sender, RoutedEventArgs e)
     {
-        this.XamlRoot.Changed -= XamlRoot_Changed;
-        this.XamlRoot.Changed += XamlRoot_Changed;
-        await Task.Delay(1000);
-        await UpdateGameInfoAsync();
+        if (!_lifetime.Enter()) return;
+        RegisterMessages();
+        _attachedRoot = XamlRoot;
+        if (_attachedRoot is not null) _attachedRoot.Changed += XamlRoot_Changed;
+        _ = LoadCustomGameIconsAsync(GameBizIcons.ToArray());
+        CancellationToken cancellationToken = _lifetime.Token;
+        try
+        {
+            await Task.Delay(1000, cancellationToken);
+            await UpdateGameInfoAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _logger.LogWarning(ex, "Initialize game selector"); }
+    }
+
+    private void GameSelector_Unloaded(object sender, RoutedEventArgs e)
+    {
+        if (!_lifetime.Exit()) return;
+        _refresh.Cancel();
+        WeakReferenceMessenger.Default.UnregisterAll(this);
+        if (_attachedRoot is not null) _attachedRoot.Changed -= XamlRoot_Changed;
+        _attachedRoot = null;
     }
 
 
@@ -185,6 +227,7 @@ public sealed partial class GameSelector : UserControl
 
     private async void OnLanguageChanged(object? _, LanguageChangedMessage __)
     {
+        if (!_lifetime.IsActive) return;
         this.Bindings.Update();
         await UpdateGameInfoAsync();
     }
@@ -358,6 +401,8 @@ public sealed partial class GameSelector : UserControl
     /// <summary>自定义游戏的图标是从 exe 里现抠的，抠好再换上</summary>
     private async Task LoadCustomGameIconsAsync(IEnumerable<GameBizIcon> icons)
     {
+        if (!_lifetime.IsActive) return;
+        long generation = _lifetime.Generation;
         foreach (GameBizIcon icon in icons)
         {
             if (icon.CustomEntry is not { } entry)
@@ -369,6 +414,7 @@ public sealed partial class GameSelector : UserControl
             {
                 if (await GameIconExtractor.EnsureAsync(entry) is { } uri)
                 {
+                    if (!_lifetime.IsCurrent(generation)) return;
                     icon.GameIcon = uri;
                     RefreshCustomGameDisplays();
                 }
@@ -378,7 +424,7 @@ public sealed partial class GameSelector : UserControl
 
         // 抠不出图标（exe 不在 / 缩略图取不到）也必须刷一次：刷新原本只写在「抠到了」的分支里，
         // 于是新加的游戏进不了「选择游戏」面板，用户看到的表现就是「加了却在列表里找不到」。
-        RefreshCustomGameDisplays();
+        if (_lifetime.IsCurrent(generation)) RefreshCustomGameDisplays();
     }
 
 
@@ -496,6 +542,132 @@ public sealed partial class GameSelector : UserControl
         }
 
         icon.IsPinned = false;
+    }
+
+    /// <summary>
+    /// 从启动器列表移除用户添加的自定义游戏。
+    /// 只删除 Hub 的 games.json 记录和当前界面卡片，不碰游戏文件、ReShade 或 HoYoShade。
+    /// </summary>
+    private async void GameIcon_RemoveCustom_Click(object sender, RoutedEventArgs e)
+    {
+        if (ResolveCustomEntry(sender) is not { } entry)
+        {
+            return;
+        }
+
+        await RemoveCustomGameAsync(entry);
+    }
+
+    private async void GameDisplay_RemoveCustom_Click(object sender, RoutedEventArgs e)
+    {
+        if (ResolveCustomEntry(sender) is not { } entry)
+        {
+            return;
+        }
+
+        await RemoveCustomGameAsync(entry);
+    }
+
+    private static GameEntry? ResolveCustomEntry(object sender) => sender switch
+    {
+        FrameworkElement { DataContext: GameBizIcon { IsCustom: true, CustomEntry: { IsCustom: true } entry } } => entry,
+        FrameworkElement { DataContext: GameBizDisplay { IsCustom: true, CustomEntry: { IsCustom: true } entry } } => entry,
+        _ => null,
+    };
+
+    private async Task RemoveCustomGameAsync(GameEntry entry)
+    {
+        if (_isRemovingCustomGame || !_lifetime.IsActive || XamlRoot is null) return;
+        _isRemovingCustomGame = true;
+        long generation = _lifetime.Generation;
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "移除自定义游戏",
+                Content = $"确定从启动器列表移除“{entry.DisplayName}”吗？\n\n只移除列表记录，不删除游戏文件，也不会卸载游戏目录里的 HoYoShade/ReShade。",
+                PrimaryButtonText = "移除",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close,
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary || !_lifetime.IsCurrent(generation))
+            {
+                return;
+            }
+
+            GameDiscoveryService service = GameCatalog.CreateService();
+            if (!service.RemoveCustom(entry.Id, out string? removeError))
+            {
+                InAppToast.MainWindow?.Error("移除自定义游戏失败", removeError ?? "未知原因", 7000);
+                return;
+            }
+
+            GameBiz biz = entry.CustomBiz;
+            bool wasCurrent = CurrentGameBiz == biz || CurrentGameBizIcon?.GameBiz == biz;
+            if (CurrentGameBizIcon?.GameBiz == biz)
+            {
+                CurrentGameBizIcon.IsSelected = false;
+            }
+
+            foreach (GameBizIcon stale in GameBizIcons
+                         .Where(x => x.IsCustom && (x.CustomEntry?.Id == entry.Id || x.GameBiz == biz))
+                         .ToList())
+            {
+                GameBizIcons.Remove(stale);
+            }
+
+            RefreshCustomGameDisplays();
+
+            if (wasCurrent)
+            {
+                // 删除当前卡片后切换到剩余游戏，并通知主视图更新选择。
+                GameBizIcon? fallback = GameBizIcons.FirstOrDefault(x => !x.IsCustom)
+                    ?? GameBizIcons.FirstOrDefault()
+                    ?? GameBizDisplays.SelectMany(x => x.Servers).FirstOrDefault();
+                if (fallback is not null)
+                {
+                    if (CurrentGameBizIcon is not null)
+                    {
+                        CurrentGameBizIcon.IsSelected = false;
+                    }
+
+                    CurrentGameBizIcon = fallback;
+                    CurrentGameBiz = fallback.GameBiz;
+                    CurrentGameId = fallback.GameId;
+                    fallback.IsSelected = true;
+                    AppConfig.CurrentGameBiz = fallback.GameBiz;
+                    CurrentGameChanged?.Invoke(this, (fallback.GameId, false));
+                }
+                else
+                {
+                    CurrentGameBizIcon = null;
+                    CurrentGameBiz = default;
+                    CurrentGameId = null;
+                    AppConfig.CurrentGameBiz = default;
+                    CurrentGameChanged?.Invoke(this, (null, false));
+                }
+            }
+
+            if (VisualTreeHelper.GetOpenPopupsForXamlRoot(XamlRoot).FirstOrDefault() is Popup popup)
+            {
+                popup.IsOpen = false;
+            }
+
+            HideFullBackground();
+            UpdateDragRectangles();
+            InAppToast.MainWindow?.Success("已移除自定义游戏", $"“{entry.DisplayName}”已从启动器列表移除。游戏文件未改动。", 6000);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Remove custom game failed for {Id}", entry.Id);
+            InAppToast.MainWindow?.Error("移除自定义游戏失败", ex.Message, 7000);
+        }
+        finally
+        {
+            _isRemovingCustomGame = false;
+        }
     }
 
     /// <summary>
@@ -1397,6 +1569,7 @@ public sealed partial class GameSelector : UserControl
         var display = new GameBizDisplay
         {
             IsCustom = true,
+            CustomEntry = entry,
             GameInfo = new GameInfo
             {
                 Id = entry.CustomBizValue,
@@ -1444,11 +1617,14 @@ public sealed partial class GameSelector : UserControl
     /// <returns></returns>
     private async Task UpdateGameInfoAsync()
     {
+        if (!_lifetime.IsActive) return;
+        using var operation = _refresh.Begin(_lifetime.Token);
         try
         {
-            List<GameInfo> gameInfos = await _hoyoplayService.UpdateGameInfoListAsync();
+            List<GameInfo> gameInfos = await _hoyoplayService.UpdateGameInfoListAsync(operation.Token);
+            if (!operation.IsCurrent) return;
             InitializeGameServerArea(gameInfos);
-            foreach (GameBizIcon icon in GameBizIcons)
+            foreach (GameBizIcon icon in GameBizIcons.ToArray())
             {
                 if (icon.GameBiz.IsKnown())
                 {
@@ -1456,11 +1632,12 @@ public sealed partial class GameSelector : UserControl
                 }
                 else
                 {
-                    GameInfo info = await _hoyoplayService.GetGameInfoAsync(icon.GameId);
+                    GameInfo info = await _hoyoplayService.GetGameInfoAsync(icon.GameId, operation.Token);
+                    if (!operation.IsCurrent) return;
                     icon.UpdateInfo(info);
                 }
             }
-            await InitializeInstalledGamesCommand.ExecuteAsync(null);
+            if (operation.IsCurrent) await InitializeInstalledGamesCommand.ExecuteAsync(null);
         }
         catch { }
     }

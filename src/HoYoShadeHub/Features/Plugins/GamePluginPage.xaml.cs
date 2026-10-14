@@ -25,7 +25,6 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Windows.ApplicationModel.DataTransfer;
 
 namespace HoYoShadeHub.Features.Plugins;
 
@@ -88,12 +87,6 @@ public sealed partial class GamePluginPage : PageBase
 
     public ObservableCollection<AddonItemViewModel> Addons { get; } = [];
 
-    /// <summary>DLSS5 预设切换器的预设列表（右卡「预设管理」）</summary>
-    public ObservableCollection<Dlss5PresetFile> Presets { get; } = [];
-
-    /// <summary>最近一次剪贴板内容变化的时间（「+」导入时判断 1 分钟窗口用）</summary>
-    private DateTimeOffset? _clipboardChangedAt;
-
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
@@ -111,8 +104,6 @@ public sealed partial class GamePluginPage : PageBase
         _isPageAlive = true;
         RegisterWindowStateHandler();
         AddonList.ItemsSource = Addons;
-        PresetList.ItemsSource = Presets;
-        Clipboard.ContentChanged += OnClipboardContentChanged;
         _ = RefreshAsync();
     }
 
@@ -122,15 +113,7 @@ public sealed partial class GamePluginPage : PageBase
         // 否则窗口每次激活都会摸到已经释放的页面（ObjectDisposedException 崩进程）
         _isPageAlive = false;
         WeakReferenceMessenger.Default.UnregisterAll(this);
-        Clipboard.ContentChanged -= OnClipboardContentChanged;
         Addons.Clear();
-        Presets.Clear();
-    }
-
-    private void OnClipboardContentChanged(object? sender, object e)
-    {
-        // 事件不一定落在 UI 线程，记时间戳走分发队列
-        DispatcherQueue?.TryEnqueue(() => _clipboardChangedAt = DateTimeOffset.Now);
     }
 
     /// <summary>
@@ -176,7 +159,11 @@ public sealed partial class GamePluginPage : PageBase
             _discovery = GameCatalog.CreateService();
 
             // 跟着左上角选中的那个游戏走
-            _entry = GameCatalog.GetOrCreate(_discovery, CurrentGameId);
+            _entry = CurrentGameId is { } selectedGame
+                ? GameCatalog.IsCustomBiz(selectedGame.GameBiz)
+                    ? GameCatalog.FindByCustomBiz(GameCatalog.DiscoverAll(_discovery), selectedGame.GameBiz)
+                    : GameCatalog.GetOrCreate(_discovery, selectedGame)
+                : null;
 
             if (_host is null)
             {
@@ -196,22 +183,7 @@ public sealed partial class GamePluginPage : PageBase
                 return;
             }
 
-            // 覆盖包用户内容（ini_config.json / auto.json / presets\）挂在「AddonPath 指向包」上：
-            // 进页先同步一次包，让这些内容打开页面就激活，不用等启动 / 切版本
-            if (CurrentGameId is { } packGameId && _host is not null)
-            {
-                try
-                {
-                    GameAddonPackService.Sync(packGameId, _entry, _host);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Sync addon pack on page refresh");
-                }
-            }
-
-            // 进插件页先自动收拾这个游戏自己的 ReShade.ini（缺了补、指错了拉回），再读它
-            AutoFixGameIni(_entry);
+            // 导航只读：包 Sync/INI Ensure 仅在既有明确导入/准备/启动入口执行。
             LoadGame(_entry);
         }
         catch (Exception ex)
@@ -222,42 +194,6 @@ public sealed partial class GamePluginPage : PageBase
         finally
         {
             _isWorking = false;
-        }
-    }
-
-    /// <summary>
-    /// 进插件页时自动收拾这个游戏的 ReShade.ini（用户要求，等于把「复制模板」「指回当前 HoYoShade」两个按钮跑一遍）：
-    /// ini 不存在 → 拿当前 HoYoShade 的模板复制一份过去；ini 指向<strong>别的</strong> HoYoShade → 自动对齐回当前宿主。
-    ///
-    /// <para>两种例外不动：每游戏插件包目录（专属包是正常状态）和当前宿主根目录里面的子目录 —
-    /// 与 <see cref="UpdatePathHint"/> / 「指回当前 HoYoShade」按钮同一判定口径；对齐器本身也会跳过
-    /// 这两种，这里提前返回只是少写一次盘。</para>
-    /// <para>失败只记日志不弹错 —— 原来的提示条和手动按钮都还在。</para>
-    /// </summary>
-    private void AutoFixGameIni(GameEntry entry)
-    {
-        try
-        {
-            GameIniBootstrapResult result = GameIniBootstrap.Ensure(entry, _host, GameLauncher.GameLauncherService.UsesGenshinFinalDx12(CurrentGameId));
-            if (result.Failed)
-            {
-                _logger.LogWarning("Auto-fix game ReShade.ini failed for {Game}", entry.DisplayName);
-                return;
-            }
-
-            if (result.CreatedFromTemplate)
-            {
-                _logger.LogInformation("Auto-created game ReShade.ini from template for {Game}", entry.DisplayName);
-            }
-            if (result.Aligned)
-            {
-                _logger.LogInformation("Auto-aligned game ReShade.ini for {Game}: {Keys}",
-                    entry.DisplayName, string.Join(", ", result.AlignKeys));
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Auto-fix game ReShade.ini for {Game}", entry.DisplayName);
         }
     }
 
@@ -280,16 +216,16 @@ public sealed partial class GamePluginPage : PageBase
             _isApplying = false;
         }
 
-        // 预设管理：跟插件目录走，和 ini 是否可读无关
-        RefreshPresets();
-
-        // 覆盖包动作（内置 + auto.json）
-        RefreshActions();
-
         // 注入时机（HoYoShade / ReShade 这一步）：按游戏，独立于插件列表是否可用
         UpdateShadeInjectDelayUi();
 
-        _plugins = GamePluginServiceFactory.Create(entry, _host);
+        // 不提供 NameCachePath，避免服务 Reload/LearnNames 在导航时写缓存。
+        _plugins = GamePluginService.Create(entry, _host, new GamePluginServiceOptions
+        {
+            CandidateNames = [.. GameCatalog.AddonCandidateNames()],
+            TagsOfAddon = GameCatalog.TagsOfAddonFile,
+        });
+        LoadGlobalSettings();
 
         Addons.Clear();
 
@@ -315,9 +251,7 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
-        // DLSS5 Feed：效果开关（LumeniteFX Kernel + DLSS5_Feed）写在预设里，
-        // 跟着这个游戏的插件开关同步一次；切游戏时还会走 GameCatalog.SyncDlss5FeedPreset
-        _plugins.SyncDlss5FeedPreset(out _);
+        // 导航不执行 SyncDlss5FeedPreset；用户明确开关插件/启动准备仍走既有入口。
 
         // 需求1：同一个插件装了多个版本时，版本下拉就长在**这张插件卡片里**
         var versionStore = new AddonVersionStore(AppConfig.CacheRoot);
@@ -432,8 +366,6 @@ public sealed partial class GamePluginPage : PageBase
     {
         _plugins = null;
         Addons.Clear();
-        Presets.Clear();
-        TextBlock_PresetsEmpty.Visibility = Visibility.Collapsed;
         Button_CopyIni.Visibility = Visibility.Collapsed;
         SetAddonsEmptyState(message, true);
         UpdatePathHint(null);
@@ -1231,186 +1163,254 @@ public sealed partial class GamePluginPage : PageBase
 
     #endregion
 
-    #region 预设管理（DLSS5-ReShade-Preset-Switcher）
+    #region ReShade 全局设置（叠加层键 + 深度）
 
-    /// <summary>扫当前插件目录的预设（Addons 顶层 + DLSS5-Presets 递归），刷新右卡列表</summary>
-    private void RefreshPresets()
+    /// <summary>程序改控件时屏蔽提交（别把加载当成用户操作）</summary>
+    private bool _loadingSettings;
+
+    /// <summary>刷新右栏「全局设置」：叠加层键 + 深度宏当前值</summary>
+    private void LoadGlobalSettings()
     {
-        Presets.Clear();
-        string? addonsDir = ResolveCurrentAddonDirectory() ?? _host?.AddonsPath;
-        foreach (Dlss5PresetFile preset in Dlss5PresetLibrary.Scan(addonsDir))
-        {
-            Presets.Add(preset);
-        }
-
-        TextBlock_PresetsEmpty.Text = string.IsNullOrWhiteSpace(addonsDir)
-            ? "还没有插件目录。装好 HoYoShade / 插件后再来。"
-            : "还没有预设。点右上「+」导入分享码或预设文件。";
-        TextBlock_PresetsEmpty.Visibility = Presets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    #endregion
-
-    #region 覆盖包动作（内置 + auto.json）
-
-    private string? _packRoot;
-
-    /// <summary>刷新「动作」区：内置（关/开全部插件）+ 覆盖包 auto.json 定义、且用户仍然启用的自定义动作</summary>
-    private void RefreshActions()
-    {
-        Panel_Actions.Children.Clear();
-        _packRoot = GameAddonPackUserContent.PackRootOfAddonDirectory(ResolveCurrentAddonDirectory());
-
-        var buttons = new List<(string Label, string? Tip, object Tag)>();
-
-        if (_plugins is { HasReShadeIni: true })
-        {
-            buttons.Add(("关闭全部插件", "把这个游戏的插件全部禁用（写进游戏 ReShade.ini）", BuiltinAction("关闭全部插件", false)));
-            buttons.Add(("启用全部插件", "把这个游戏的插件全部启用", BuiltinAction("启用全部插件", true)));
-        }
-
-        // auto.json 内容变了 / 还没同意过 → 先弹窗让用户挑（默认全装），确认前自定义动作不上架
-        string gameBiz = CurrentGameId?.GameBiz.Value ?? string.Empty;
-        string hash = PackActionConsent.ComputeHash(_packRoot);
-        List<PackAutoAction> packActions = PackAutoActionFile.Load(_packRoot);
-        bool needConsent = packActions.Count > 0
-                           && gameBiz.Length > 0
-                           && !PackActionConsent.IsConsented(gameBiz, hash);
-        if (needConsent && _packRoot is not null)
-        {
-            _ = PromptPackActionConsentAsync(gameBiz, hash, _packRoot, packActions);
-        }
-        else if (packActions.Count > 0 && gameBiz.Length > 0)
-        {
-            HashSet<string> disabled = PackActionConsent.DisabledActions(gameBiz, hash);
-            foreach (PackAutoAction action in packActions)
-            {
-                if (disabled.Contains(action.Name))
-                {
-                    continue;
-                }
-
-                buttons.Add((action.Name,
-                    action.RunOnLaunch ? "启动 / 注入前会自动执行" : null,
-                    action));
-            }
-        }
-
-        Grid_ActionsHeader.Visibility = buttons.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        foreach ((string label, string? tip, object tag) in buttons)
-        {
-            var button = new Button
-            {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left,
-                Content = label,
-                Tag = tag,
-            };
-            if (tip is not null)
-            {
-                ToolTipService.SetToolTip(button, tip);
-            }
-
-            button.Click += Button_PackAction_Click;
-            Panel_Actions.Children.Add(button);
-        }
-    }
-
-    private static PackAutoAction BuiltinAction(string name, bool enabled)
-    {
-        var action = new PackAutoAction { Name = name };
-        action.Steps.Add(new PackActionStep
-        {
-            Action = "set_addons",
-            Raw = MakeRaw(new { action = "set_addons", enabled }),
-        });
-        return action;
-    }
-
-    /// <summary>
-    /// 覆盖包 auto.json 首次出现 / 内容变更后的同意弹窗（UI 在 <see cref="PackActionConsentDialog"/>）。
-    /// 兜底路径：导入时游戏还没装 / 当时点了「下次再说」的，进本页还会问一次；
-    /// 确认后立即执行（once 步骤记账，启动前的 runOnLaunch 再跑会自动跳过）。
-    /// </summary>
-    private async Task PromptPackActionConsentAsync(string gameBiz, string hash, string packRoot, List<PackAutoAction> actions)
-    {
+        _loadingSettings = true;
         try
         {
-            List<string>? disabled = await PackActionConsentDialog.ShowAsync(XamlRoot, packRoot, actions);
-            if (disabled is null)
+            // 深度复选框挂宏描述
+            CheckBox_DepthUpsideDown.Tag = ReShadeDepthOptions.UpsideDown;
+            CheckBox_DepthReversed.Tag = ReShadeDepthOptions.Reversed;
+            CheckBox_DepthLogarithmic.Tag = ReShadeDepthOptions.Logarithmic;
+            CheckBox_DepthMirrored.Tag = ReShadeDepthOptions.Mirrored;
+            NumberBox_DepthMultiplier.Tag = ReShadeDepthOptions.Multiplier;
+            NumberBox_DepthFarPlane.Tag = ReShadeDepthOptions.FarPlane;
+
+            // ---- 叠加层（Home）键 ----
+            string? iniPath = _entry?.ReShadeIniPath;
+            bool hasIni = iniPath is not null && File.Exists(iniPath);
+            string? overlayKey = null;
+            if (hasIni)
             {
-                return;   // 下次再说：不上架自定义动作，下次进页还会问
+                overlayKey = ReShadeProfile.Load(iniPath!).GetValue(ReShadeHotkeys.InputSection, "KeyOverlay");
             }
 
-            PackActionConsent.Save(gameBiz, hash, disabled);
-            RefreshActions();
+            TextBox_OverlayKey.IsEnabled = hasIni;
+            TextBox_OverlayKey.Text = hasIni
+                ? ReShadeHotkeys.Describe(overlayKey ?? ReShadeHotkeys.DefaultOverlayKey)
+                : "这个游戏还没有 ReShade.ini";
 
-            // 同意后立即执行勾选的动作 —— 确认即生效，不等首次启动
-            var disabledSet = new HashSet<string>(disabled, StringComparer.Ordinal);
-            TextBlock_Status.Text = "正在执行覆盖包动作…";
-            List<string> results = await PackActionExecutor.RunAsync(actions, disabledSet, BuildActionContext(interactive: true));
-            if (results.Count > 0)
+            // ---- 深度（ReShade.ini 的全局预处理器定义）----
+            (IniDocument? doc, _) = TryResolveGlobalIni();
+            bool hasPreset = doc is not null;
+            TextBlock_DepthTarget.Text = hasPreset
+                ? "ReShade 深度"
+                : "ReShade 深度（尚未生成配置）";
+            foreach (CheckBox box in new[]
+                     { CheckBox_DepthUpsideDown, CheckBox_DepthReversed, CheckBox_DepthLogarithmic, CheckBox_DepthMirrored })
             {
-                TextBlock_Status.Text = results[0];
-                ShowInfo("覆盖包动作执行完成", string.Join("\n", results), InfoBarSeverity.Success);
-
-                // 插件开关 / 预设 / 启动选项会改盘上的 ini —— 卡片状态跟一遍
-                UpdateHookPointUi();
-                RefreshPresets();
+                box.IsEnabled = hasPreset;
             }
-            else
+            NumberBox_DepthMultiplier.IsEnabled = hasPreset;
+            NumberBox_DepthFarPlane.IsEnabled = hasPreset;
+
+            if (doc is not null)
             {
-                TextBlock_Status.Text = "覆盖包动作已全部禁用。";
+                foreach (CheckBox box in new[]
+                         { CheckBox_DepthUpsideDown, CheckBox_DepthReversed, CheckBox_DepthLogarithmic, CheckBox_DepthMirrored })
+                {
+                    if (box.Tag is ReShadeDepthOption option)
+                    {
+                        box.IsChecked = string.Equals(ReShadeDepthOptions.Get(doc, option, "GENERAL") ?? option.DefaultValue, "1",
+                            StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+
+                string? multiplier = ReShadeDepthOptions.Get(doc, ReShadeDepthOptions.Multiplier, "GENERAL");
+                NumberBox_DepthMultiplier.Value = double.TryParse(multiplier,
+                    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                    out double m) ? m : double.NaN;
+                string? farPlane = ReShadeDepthOptions.Get(doc, ReShadeDepthOptions.FarPlane, "GENERAL");
+                NumberBox_DepthFarPlane.Value = double.TryParse(farPlane,
+                    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                    out double f) ? f : double.NaN;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Pack action consent prompt");
+            _logger.LogWarning(ex, "Load ReShade global settings");
+        }
+        finally
+        {
+            _loadingSettings = false;
         }
     }
 
-    private async void Button_PackAction_Click(object sender, RoutedEventArgs e)
+    private (IniDocument? Doc, string? Path) TryResolveGlobalIni()
     {
-        if (sender is not FrameworkElement { Tag: PackAutoAction action })
+        try
+        {
+            if (_entry?.ReShadeIniPath is not { } iniPath || !File.Exists(iniPath))
+            {
+                return (null, null);
+            }
+
+            return (IniDocument.Load(iniPath), iniPath);
+        }
+        catch
+        {
+            return (null, null);
+        }
+    }
+
+    /// <summary>按键采集：把按下的键（含修饰键）写成 ReShade 四段热键</summary>
+    private void TextBox_OverlayKey_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (_loadingSettings)
         {
             return;
         }
 
-        if (action.Steps.Count == 0)
+        int vk = VirtualKeyToVk(e.Key);
+        if (vk < 0)
         {
+            // 纯修饰键 / 不认识的键：不改绑
             return;
         }
 
-        TextBlock_Status.Text = $"正在执行「{action.Name}」…";
-        string summary = await LauncherActionRunner.RunAsync(action, BuildActionContext(interactive: true));
-        TextBlock_Status.Text = $"「{action.Name}」：{summary}";
-        ShowInfo($"动作「{action.Name}」", summary, InfoBarSeverity.Informational);
+        if (e.Key == Windows.System.VirtualKey.Escape)
+        {
+            LoadGlobalSettings();
+            return;
+        }
 
-        // 插件开关 / 预设应用会改盘上的 ini —— 卡片状态跟一遍
-        UpdateHookPointUi();
-        RefreshPresets();
+        bool ctrl = IsKeyDown(Windows.System.VirtualKey.Control);
+        bool alt = IsKeyDown(Windows.System.VirtualKey.Menu);
+        bool shift = IsKeyDown(Windows.System.VirtualKey.Shift);
+        CommitOverlayKey(ReShadeHotkeys.Format(vk, ctrl, alt, shift));
     }
 
-    private static System.Text.Json.JsonElement MakeRaw(object value)
-        => System.Text.Json.JsonSerializer.SerializeToDocument(value).RootElement.Clone();
-
-    private LauncherActionContext BuildActionContext(bool interactive) => new()
+    private static bool IsKeyDown(Windows.System.VirtualKey key)
     {
-        GameId = CurrentGameId,
-        GameBiz = CurrentGameBiz,
-        Entry = _entry,
-        Host = _host,
-        Plugins = _plugins,
-        PackRoot = _packRoot,
-        XamlRoot = XamlRoot,
-        Interactive = interactive,
-        Report = text => TextBlock_Status.Text = text,
+        // CoreVirtualKeyStates 是 WinRT 投影枚举；用整数位避免命名空间解析差异（Down = 1）
+        return ((int)Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(key) & 1) != 0;
+    }
+
+    private static int VirtualKeyToVk(Windows.System.VirtualKey key) => key switch
+    {
+        >= Windows.System.VirtualKey.A and <= Windows.System.VirtualKey.Z => (int)key,
+        >= Windows.System.VirtualKey.Number0 and <= Windows.System.VirtualKey.Number9 => (int)key,
+        >= Windows.System.VirtualKey.F1 and <= Windows.System.VirtualKey.F24 => (int)key,
+        >= Windows.System.VirtualKey.NumberPad0 and <= Windows.System.VirtualKey.NumberPad9 =>
+            0x60 + ((int)key - (int)Windows.System.VirtualKey.NumberPad0),
+        Windows.System.VirtualKey.Space => 0x20,
+        Windows.System.VirtualKey.Escape => 0x1B,
+        Windows.System.VirtualKey.Tab => 0x09,
+        Windows.System.VirtualKey.Back => 0x08,
+        Windows.System.VirtualKey.Enter => 0x0D,
+        Windows.System.VirtualKey.Insert => 0x2D,
+        Windows.System.VirtualKey.Delete => 0x2E,
+        Windows.System.VirtualKey.Home => 0x24,
+        Windows.System.VirtualKey.End => 0x23,
+        Windows.System.VirtualKey.PageUp => 0x21,
+        Windows.System.VirtualKey.PageDown => 0x22,
+        Windows.System.VirtualKey.Up => 0x26,
+        Windows.System.VirtualKey.Down => 0x28,
+        Windows.System.VirtualKey.Left => 0x25,
+        Windows.System.VirtualKey.Right => 0x27,
+        Windows.System.VirtualKey.Multiply => 0x6A,
+        Windows.System.VirtualKey.Add => 0x6B,
+        Windows.System.VirtualKey.Subtract => 0x6D,
+        Windows.System.VirtualKey.Decimal => 0x6E,
+        Windows.System.VirtualKey.Divide => 0x6F,
+        _ when (int)key is 0xBA or 0xBB or 0xBC or 0xBD or 0xBE or 0xBF or 0xC0 or 0xDB or 0xDC or 0xDD or 0xDE => (int)key,
+        _ => -1,
     };
+
+    /// <summary>写 [INPUT] KeyOverlay 到游戏 ReShade.ini（四段：键码,ctrl,alt,shift）</summary>
+    private bool CommitOverlayKey(string value)
+    {
+        if (_entry?.ReShadeIniPath is not { } iniPath || !File.Exists(iniPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            ReShadeProfile profile = ReShadeProfile.Load(iniPath);
+            profile.SetValue(ReShadeHotkeys.InputSection, "KeyOverlay", value);
+            profile.Save();
+            if (CurrentGameId is { } gameId) AppConfig.SetReShadeOverride(gameId, "KeyOverlay", value);
+            TextBox_OverlayKey.Text = ReShadeHotkeys.Describe(value);
+            WarnIfGameRunning();
+            ShowInfo("叠加层键已改", $"新按键：{ReShadeHotkeys.Describe(value)}。重启游戏后生效。", InfoBarSeverity.Success);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowInfo("按键保存失败", ex.Message, InfoBarSeverity.Error);
+            return false;
+        }
+    }
+
+    private void Button_ResetOverlayKey_Click(object sender, RoutedEventArgs e)
+        => CommitOverlayKey(ReShadeHotkeys.DefaultOverlayKey);
+
+    private void Button_DisableOverlayKey_Click(object sender, RoutedEventArgs e)
+        => CommitOverlayKey(ReShadeHotkeys.DisabledKey);
+
+    /// <summary>四个深度开关复选框共用：勾 = 1，不勾 = 0</summary>
+    private void CheckBox_Depth_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings || sender is not CheckBox box || box.Tag is not ReShadeDepthOption option)
+        {
+            return;
+        }
+
+        CommitDepthValue(option, box.IsChecked == true ? "1" : "0");
+    }
+
+    private void CommitDepthValue(ReShadeDepthOption option, string value)
+    {
+        if (_loadingSettings)
+        {
+            return;
+        }
+
+        try
+        {
+            (IniDocument? preset, string? path) = TryResolveGlobalIni();
+            if (preset is null || path is null)
+            {
+                throw new IOException("当前 ReShade.ini 不可读，未保存深度设置。");
+            }
+            if (ReShadeDepthOptions.Set(preset, option, value, "GENERAL")) preset.Save(path);
+            if (CurrentGameId is { } gameId) AppConfig.SetReShadeOverride(gameId, option.Name, value);
+            WarnIfGameRunning();
+        }
+        catch (Exception ex)
+        {
+            LoadGlobalSettings();
+            ShowInfo("深度设置保存失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    /// <summary>两个深度数值输入共用；清空 = 回写默认值（等同于 ReShade 默认）</summary>
+    private void NumberBox_Depth_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_loadingSettings || sender.Tag is not ReShadeDepthOption option)
+        {
+            return;
+        }
+
+        string value = double.IsNaN(args.NewValue)
+            ? option.DefaultValue
+            : string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"{Math.Round(args.NewValue * 100) / 100}");
+        CommitDepthValue(option, value);
+    }
 
     /// <summary>「包目录」按钮：打开（必要时预创建）覆盖包目录</summary>
     private void Button_OpenPackFolder_Click(object sender, RoutedEventArgs e)
     {
-        string? packRoot = _packRoot;
+        string? packRoot = null;
         if (packRoot is null && CurrentGameId is { } gameId)
         {
             packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
@@ -1430,123 +1430,6 @@ public sealed partial class GamePluginPage : PageBase
         catch (Exception ex)
         {
             ShowInfo("打不开包目录", ex.Message, InfoBarSeverity.Error);
-        }
-    }
-
-    /// <summary>每个预设那一行的「分享码」：编码进剪贴板（可直接粘到游戏内插件的 Paste code）</summary>
-    private void Button_CopyPresetCode_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: Dlss5PresetFile preset })
-        {
-            return;
-        }
-
-        string? code = Dlss5PresetLibrary.BuildShareCode(preset.Path);
-        if (code is null)
-        {
-            ShowInfo("生成分享码失败", "预设文件读不了，或内容超过 256 KiB 上限。", InfoBarSeverity.Error);
-            return;
-        }
-
-        try
-        {
-            var package = new DataPackage();
-            package.SetText(code);
-            Clipboard.SetContent(package);
-            TextBlock_Status.Text = $"已复制「{preset.Name}」的分享码（{code.Length} 个字符），可以粘到游戏内插件的 Paste code。";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Copy preset share code");
-            ShowInfo("复制失败", ex.Message, InfoBarSeverity.Error);
-        }
-    }
-
-    /// <summary>
-    /// 「+」导入预设：剪贴板 1 分钟内有变化且内容是分享码 → 弹窗确认导入剪贴板；
-    /// 否则（或用户选「选择文件」）弹文件选择器挑 .txt / .ini。
-    /// </summary>
-    private async void Button_AddPreset_Click(object sender, RoutedEventArgs e)
-    {
-        string? addonsDir = ResolveCurrentAddonDirectory() ?? _host?.AddonsPath;
-        if (string.IsNullOrWhiteSpace(addonsDir))
-        {
-            ShowInfo("没有插件目录", "先装好 HoYoShade，或给这个游戏指定主程序。", InfoBarSeverity.Warning);
-            return;
-        }
-
-        if (_clipboardChangedAt is { } changed
-            && DateTimeOffset.Now - changed <= TimeSpan.FromMinutes(1))
-        {
-            string? text = await TryGetClipboardTextAsync();
-            if (Dlss5PresetShareCode.LooksLikeCode(text) && text is not null)
-            {
-                var dialog = new ContentDialog
-                {
-                    XamlRoot = XamlRoot,
-                    Title = "导入剪贴板里的分享码？",
-                    Content = "检测到剪贴板里有最近 1 分钟内复制的 DLSS5 预设分享码。要现在导入吗？",
-                    PrimaryButtonText = "导入",
-                    CloseButtonText = "选择文件…",
-                    DefaultButton = ContentDialogButton.Primary,
-                };
-
-                if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-                {
-                    ImportShareCode(addonsDir, text);
-                    return;
-                }
-            }
-        }
-
-        string? file = await FileDialogHelper.PickSingleFileAsync(
-            XamlRoot,
-            ("预设文件", ".txt"),
-            ("预设文件", ".ini"));
-        if (string.IsNullOrWhiteSpace(file))
-        {
-            return;
-        }
-
-        string? target = Dlss5PresetLibrary.ImportFile(addonsDir, file);
-        if (target is null)
-        {
-            ShowInfo("导入失败", "文件读不了，或插件目录写不进去。", InfoBarSeverity.Error);
-            return;
-        }
-
-        _logger.LogInformation("Imported preset file {Source} -> {Target}", file, target);
-        RefreshPresets();
-        TextBlock_Status.Text = "已导入预设：" + target;
-    }
-
-    private void ImportShareCode(string addonsDir, string code)
-    {
-        string? target = Dlss5PresetLibrary.ImportShareCode(addonsDir, code, null);
-        if (target is null)
-        {
-            ShowInfo("导入失败", "分享码解不开 —— 可能复制不全，或不是 DLSS5 预设的分享码。", InfoBarSeverity.Error);
-            return;
-        }
-
-        _logger.LogInformation("Imported preset share code -> {Target}", target);
-        RefreshPresets();
-        TextBlock_Status.Text = "已导入分享码：" + target;
-    }
-
-    private static async Task<string?> TryGetClipboardTextAsync()
-    {
-        try
-        {
-            DataPackageView content = Clipboard.GetContent();
-            return content.Contains(StandardDataFormats.Text)
-                ? await content.GetTextAsync()
-                : null;
-        }
-        catch
-        {
-            // 剪贴板被别的进程占用等，静默按「没有」处理
-            return null;
         }
     }
 

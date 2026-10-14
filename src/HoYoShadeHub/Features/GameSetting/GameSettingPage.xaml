@@ -114,6 +114,27 @@
                                    TextWrapping="Wrap" />
                     </StackPanel>
 
+                    <StackPanel x:Name="StackPanel_GenshinGraphics"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <TextBlock FontWeight="Bold" Text="游戏渲染精度" />
+                        <ComboBox MinWidth="160"
+                                  ItemsSource="{x:Bind GenshinRenderScaleOptions}"
+                                  SelectedIndex="{x:Bind GenshinRenderScaleIndex, Mode=TwoWay}" />
+                        <TextBlock Margin="0,4,0,0" FontWeight="Bold" Text="Bridge 渲染精度" />
+                        <ComboBox MinWidth="160"
+                                  ItemsSource="{x:Bind GenshinBridgeRenderScaleOptions}"
+                                  SelectedIndex="{x:Bind GenshinBridgeRenderScaleIndex, Mode=TwoWay}" />
+                        <TextBlock Margin="0,4,0,0" FontWeight="Bold" Text="抗锯齿" />
+                        <ComboBox MinWidth="160"
+                                  ItemsSource="{x:Bind GenshinAntiAliasingOptions}"
+                                  SelectedIndex="{x:Bind GenshinAntiAliasingIndex, Mode=TwoWay}" />
+                        <InfoBar IsClosable="False"
+                                 IsOpen="{x:Bind ShowGenshinFsrWarning}"
+                                 Severity="Warning"
+                                 Message="Bridge / OptiScaler 超分辨率需要游戏提供 FSR 输入；选择 SMAA 或关闭可能使超分辨率无法生效。" />
+                    </StackPanel>
+
                     <!--  原神帧率解锁（开关在启动页「启动选项」里）  -->
                     <StackPanel x:Name="StackPanel_GenshinFpsUnlock"
                                 Margin="0,8,0,0"

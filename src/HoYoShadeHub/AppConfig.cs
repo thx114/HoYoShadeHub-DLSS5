@@ -7,6 +7,8 @@ using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Core.Networking;
 using HoYoShadeHub.Core.SelfQuery;
+using HoYoShadeHub.Core.Settings;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Background;
 using HoYoShadeHub.Features.Database;
 using HoYoShadeHub.Features.GameLauncher;
@@ -540,7 +542,9 @@ public static class AppConfig
 
 
 
-    public static void SaveConfiguration()
+    public static void SaveConfiguration() => TrySaveConfiguration();
+
+    public static bool TrySaveConfiguration()
     {
         try
         {
@@ -573,13 +577,14 @@ public static class AppConfig
             {
                 sb.AppendLine($"{nameof(mid)}={mid}");
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
-            File.WriteAllText(ConfigPath, sb.ToString());
+            SettingPersistence.WriteConfiguration(ConfigPath, sb.ToString());
+            return true;
         }
         catch (Exception ex)
         {
             // config.ini 写失败不能吞：这里存着 UserDataFolder / 登录票据，静默丢失就是「游戏全丢」那类事故的源头
             Log.Error(ex, "SaveConfiguration failed: {Path}", ConfigPath);
+            return false;
         }
     }
 
@@ -1511,6 +1516,12 @@ public static class AppConfig
 
     // ===================== 插件（addon 扩展）的每游戏版本 =====================
 
+    public static string? GetReShadeOverride(GameId gameId, string key)
+        => GetValue<string>(default, BuildLaunchOptionKey(gameId, $"reshade_override_{key}"));
+
+    public static void SetReShadeOverride(GameId gameId, string key, string value)
+        => SetValue(value, BuildLaunchOptionKey(gameId, $"reshade_override_{key}"));
+
     /// <summary>
     /// 这个游戏给某个扩展选的版本 tag（空 = 用共享目录里当前生效的那份）。
     /// 归档库里的版本才能选；选过之后就为这个游戏拼一个专属插件包。
@@ -2215,7 +2226,10 @@ public static class AppConfig
 
     public static void SetUseOptiScalerLaunchOption(GameId gameId, bool value)
     {
+        bool wasEnabled = GetUseOptiScalerLaunchOption(gameId);
         SetValue(value, BuildLaunchOptionKey(gameId, "use_optiscaler"));
+        if (value && !wasEnabled)
+            Features.Plugins.OptiSmoothMotionInterlock.OnOptiEnabled(gameId);
     }
 
     /// <summary>启动时解锁帧率（原神），按游戏记</summary>
@@ -2248,6 +2262,17 @@ public static class AppConfig
     {
         SetValue(Math.Clamp(value, 60, 1000), BuildLaunchOptionKey(gameId, "fps_unlock_target"));
     }
+
+    public static int GetGenshinBridgeRenderScaleIndex(GameId gameId) =>
+        Math.Clamp(GetValue(4, BuildLaunchOptionKey(gameId, "genshin_bridge_render_scale_index")),
+            0, OptiScalerRuntime.FsrBridgeRenderScales.Count - 1);
+
+    public static float GetGenshinBridgeRenderScale(GameId gameId) =>
+        OptiScalerRuntime.FsrBridgeRenderScales[GetGenshinBridgeRenderScaleIndex(gameId)];
+
+    public static void SetGenshinBridgeRenderScaleIndex(GameId gameId, int value) =>
+        SetValue(Math.Clamp(value, 0, OptiScalerRuntime.FsrBridgeRenderScales.Count - 1),
+            BuildLaunchOptionKey(gameId, "genshin_bridge_render_scale_index"));
 
     /// <summary>帧率解锁数据已同步到的游戏版本（shellcode 按游戏版本适配），按游戏记</summary>
     public static string? GetFpsUnlockDataVersion(GameId gameId)
@@ -2567,6 +2592,8 @@ public static class AppConfig
             {
                 if (_settingCache is not null)
                 {
+                    if (_settingCache.TryGetValue(key, out string? current))
+                        return ConvertFromString(current, defaultValue);
                     _settingCache[key] = fromDb;
                 }
             }
@@ -2616,6 +2643,8 @@ public static class AppConfig
             {
                 if (_settingCache is not null)
                 {
+                    if (_settingCache.TryGetValue(key, out string? current))
+                        return current is not null;
                     _settingCache[key] = value;
                 }
             }
@@ -2645,39 +2674,35 @@ public static class AppConfig
 
     public static void SetValue<T>(T? value, [CallerMemberName] string? key = null)
     {
-        if (string.IsNullOrWhiteSpace(key))
-        {
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(UserDataFolder))
-        {
-            return;
-        }
-        InitializeSettingProvider();
+        if (!string.IsNullOrWhiteSpace(key))
+            TrySetValue(key, value);
+    }
 
+    public static bool TrySetValue(string key, object? value)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(UserDataFolder))
+            return false;
+        InitializeSettingProvider();
         try
         {
             string? val = value?.ToString();
-
-            lock (_settingLock)
+            var cache = Volatile.Read(ref _settingCache);
+            if (cache is null)
+                return false;
+            bool saved = SettingPersistence.TryWrite(_settingLock, cache, key, val, () =>
             {
-                if (_settingCache is null)
-                {
-                    return;
-                }
-
-                if (_settingCache.TryGetValue(key, out string? cacheValue) && cacheValue == val)
-                {
-                    return;
-                }
-
-                _settingCache[key] = val;
-            }
-
-            using var dapper = DatabaseService.CreateConnection();
-            dapper.Execute("INSERT OR REPLACE INTO Setting (Key, Value) VALUES (@key, @val);", new { key, val });
+                using var dapper = DatabaseService.CreateConnection();
+                dapper.Execute("INSERT OR REPLACE INTO Setting (Key, Value) VALUES (@key, @val);", new { key, val });
+            }, out Exception? error);
+            if (!saved)
+                Log.Error(error, "Save setting failed: {Key}", key);
+            return saved;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Save setting failed: {Key}", key);
+            return false;
+        }
     }
 
 

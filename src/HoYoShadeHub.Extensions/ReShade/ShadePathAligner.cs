@@ -118,6 +118,25 @@ public static class ShadePathAligner
                 continue;
             }
 
+            // AddonPath 指向一个已经不存在、又不是每游戏插件包的目录（比如旧启动器清理后
+            // 留下的 <旧安装>\cache\games\<game>\Addons）：这种路径不带 RootAnchors 特征段，
+            // RootOf 认不出来会被原样保留，于是插件页警告一直在、「指回当前 HoYoShade」永远
+            // 空操作报「不用改」（用户反馈）。死路径没有保留价值，直接指回当前共享插件目录。
+            if (string.Equals(section, "ADDON", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(key, "AddonPath", StringComparison.OrdinalIgnoreCase)
+                && Path.IsPathFullyQualified(value.Trim())
+                && !Directory.Exists(value.Trim()))
+            {
+                string sharedAddons = Path.Combine(root, "reshade-shaders", "Addons");
+                if (!PathsEqual(value.Trim(), sharedAddons))
+                {
+                    ini.SetValue(section, key, sharedAddons);
+                    changed.Add($"[{section}] {key}");
+                }
+
+                continue;
+            }
+
             string aligned = AlignValue(value, root, iniDir, ref previousRoot);
             if (string.Equals(aligned, value, StringComparison.Ordinal))
             {

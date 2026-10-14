@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
@@ -40,14 +41,21 @@ public sealed record XxmiInstanceItem(string Importer, string Path)
 /// </summary>
 public sealed partial class XxmiModItem : ObservableObject
 {
-    internal XxmiModItem(XxmiModEntry entry)
+    internal XxmiModItem(XxmiModEntry entry, ModDirectoryLease lease)
     {
+        Lease = lease;
+        DisplayStem = ModDirectoryPolicy.DisplayName(lease.Context, entry.Name);
         Name = entry.Name;
         Path = entry.Path;
         IsDirectory = entry.IsDirectory;
         _enabled = entry.Enabled;
-        ModId = GameBananaPreviewService.ModIdFromFolderName(entry.Name);
+        ModId = GameBananaPreviewService.ModIdFromFolderName(DisplayStem);
     }
+
+    internal ModDirectoryLease Lease { get; }
+    internal string DisplayStem { get; }
+    internal string StorageIdentity => Lease.Context.OwnerKey + "|" + Lease.Context.Backend + "|"
+        + Lease.Context.ModsDirectory.ToLowerInvariant() + "|" + (ModId is { } id ? "gb:" + id : "name:" + DisplayStem);
 
     /// <summary>磁盘上的名字（<c>gb_719975</c> / <c>xyz DISABLED</c>）—— 身份判定和改盘都用它</summary>
     public string Name { get; }
@@ -66,7 +74,7 @@ public sealed partial class XxmiModItem : ObservableObject
     /// </summary>
     public string DisplayName => CustomName is { Length: > 0 } custom
         ? custom
-        : (_remoteName is { Length: > 0 } remote ? remote : XxmiModManager.StripDisabled(Name));
+        : (_remoteName is { Length: > 0 } remote ? remote : DisplayStem);
 
     /// <summary>
     /// 搜索用的文本：把「自定义名 / 远端名 / 目录名 / 作者 / 来源」都拼进来，
@@ -77,7 +85,7 @@ public sealed partial class XxmiModItem : ObservableObject
         {
             CustomName,
             _remoteName,
-            XxmiModManager.StripDisabled(Name),
+            DisplayStem,
             Name,
             Author,
             IsFromGameBanana ? "gb_" + ModId : null,
@@ -366,6 +374,13 @@ public sealed partial class XxmiPage : PageBase
 
     private string? _instance;
     private bool _loadingMods;
+    private readonly ModDirectorySession _modSession = new();
+    private ModDirectoryLease? _modDirectory;
+    private long _selectionRevision;
+    private bool _bindingInstances;
+    private bool _selectingBackend;
+    private bool UseRocketMods => ComboBox_Backend.SelectedIndex == 1;
+    private string GameOwnerKey => _gameId is null ? "no-game" : _gameId.GameBiz.Value + "|" + _gameId.Id;
 
     /// <summary>当前实例对应的导入器名（ZZMI / GIMI…），只在底部状态里显示</summary>
     private string _importerName = string.Empty;
@@ -396,7 +411,38 @@ public sealed partial class XxmiPage : PageBase
         base.OnNavigatedTo(e);
         _gameId = e.Parameter as GameId;
         _gameName = ResolveGameName();
+        _selectingBackend = true;
+        ComboBox_Backend.SelectedIndex = _gameId is not null && AppConfig.GetUseRocketLaunchOption(_gameId) ? 1 : 0;
+        _selectingBackend = false;
         LoadInstance();
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        _modSession.Select("inactive", ModBackend.Xxmi);
+        _modDirectory = null;
+        _gameId = null;
+        _mods.Clear();
+        base.OnNavigatedFrom(e);
+    }
+
+    private void ComboBox_Backend_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_selectingBackend && _gameId is not null) LoadInstance();
+    }
+
+    private ModDirectoryLease RequireModDirectory()
+    {
+        var lease = _modDirectory ?? throw new InvalidOperationException("尚未解析当前游戏的 Mod 目录，请先配置/刷新后端。");
+        _modSession.Require(lease);
+        return lease;
+    }
+
+    private void RequireModItem(XxmiModItem item)
+    {
+        if (!_mods.Contains(item) || !ReferenceEquals(_modDirectory, item.Lease))
+            throw new InvalidOperationException("游戏或 Mod 后端已切换，旧卡片操作已取消。");
+        ModDirectoryPolicy.EntryPath(_modSession, item.Lease, item.Path);
     }
 
     /// <summary>当前游戏的名字（导航参数只有 GameId；自定义游戏要反查 games.json 才有名字）</summary>
@@ -415,32 +461,71 @@ public sealed partial class XxmiPage : PageBase
 
     private async void LoadInstance()
     {
+        bool rocket = UseRocketMods;
+        GameId? game = _gameId is null ? null : new GameId { Id = _gameId.Id, GameBiz = _gameId.GameBiz };
+        string? gameName = _gameName;
+        string owner = GameOwnerKey;
+        long revision = _selectionRevision = _modSession.Select(owner, rocket ? ModBackend.Rocket : ModBackend.Xxmi);
+        _modDirectory = null;
+        _instance = null;
+        _mods.Clear();
+        _modsCountText = string.Empty;
+        _loadingMods = false;
+        TextBox_Instance.Text = string.Empty;
+        _bindingInstances = true;
+        try { ComboBox_Importer.ItemsSource = null; } finally { _bindingInstances = false; }
+        _instanceStatusText = "正在读取当前游戏的 Mod 后端…";
+        _importerName = rocket ? "Rocket" : "XXMI";
+        UpdateStatusBar();
+        Button_Browse.IsEnabled = !rocket;
+        ComboBox_Importer.IsEnabled = !rocket;
+        MenuFlyout_OpenXxmi.IsEnabled = !rocket;
+        Button_AutoFind.Content = rocket ? "读取配置" : "自动查找";
         try
         {
-            await LoadInstanceCore();
+            if (game is null) throw new InvalidOperationException("请先选择当前游戏。");
+            await LoadInstanceCore(revision, game, gameName, owner, rocket);
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(revision)) return;
             // 探测过程踩了任何坑（权限 / 坏盘 / 配置损坏）都不能让页面加载失败 ——
             // 加载失败的表现就是「整个页面读不到 XXMI」，比报错更误导
             _logger.LogWarning(ex, "XXMI 实例探测失败");
             _instance = null;
             TextBox_Instance.Text = string.Empty;
             _importerName = string.Empty;
-            _instanceStatusText = "检测 XXMI 出错了：" + ex.Message + "　可以点「选择…」手动指定 MI 目录。";
+            _instanceStatusText = "Mod 目录解析失败：" + ex.Message;
             _modsCountText = string.Empty;
             _mods.Clear();
             UpdateStatusBar();
         }
     }
 
-    private async Task LoadInstanceCore()
+    private async Task LoadInstanceCore(long revision, GameId game, string? gameName, string owner, bool rocket)
     {
-        string? expected = XxmiLocator.ImporterForGame(_gameId?.GameBiz, _gameName);
+        if (rocket)
+        {
+            string? config = RocketIntegration.FindConfigPath(AppConfig.RocketConfigPath);
+            string? configuredGame = RocketIntegration.GameNameFor(game.GameBiz.Value, gameName);
+            string? selectedExe = GameCatalog.GetOrCreate(GameCatalog.CreateService(), game)?.ExePath;
+            var route = await Task.Run(() => ModDirectoryPolicy.ResolveRocket(owner, config, configuredGame, selectedExe));
+            if (!_modSession.IsCurrent(revision)) return;
+            _modDirectory = _modSession.Bind(revision, route);
+            _instance = route.InstanceDirectory;
+            TextBox_Instance.Text = route.ModsDirectory;
+            _bindingInstances = true;
+            try { ComboBox_Importer.ItemsSource = null; } finally { _bindingInstances = false; }
+            _importerName = "Rocket";
+            _instanceStatusText = $"已配置后端：{route.InstanceDirectory}　Mods：{route.ModsDirectory}（禁用规则来自后端 DISABLED*）";
+            await LoadMods();
+            return;
+        }
+        string? expected = XxmiLocator.ImporterForGame(game.GameBiz, gameName);
         // 磁盘枚举（实例探测 / 根查找 / 实例列表）放后台线程，避免进页面卡死 UI
         (string? instance, string? importer, List<XxmiInstanceItem> items) = await Task.Run(() =>
         {
-            string? inst = XxmiLocator.FindInstance(_gameId?.GameBiz, _gameName, out string? imp);
+            string? inst = XxmiLocator.FindInstance(game.GameBiz, gameName, out string? imp);
             List<XxmiInstanceItem> list = [];
             string? root = XxmiLocator.FindRoot();
             if (root is not null && expected is not null)
@@ -460,11 +545,18 @@ public sealed partial class XxmiPage : PageBase
             return (inst, imp, list);
         });
 
+        if (!_modSession.IsCurrent(revision)) return;
+        _modDirectory = instance is null ? null : _modSession.Bind(revision, ModDirectoryPolicy.ResolveXxmi(owner, instance));
         _instance = instance;
         TextBox_Instance.Text = instance ?? string.Empty;
         _importerName = importer ?? expected ?? string.Empty;
-        ComboBox_Importer.ItemsSource = items;
-        ComboBox_Importer.SelectedItem = items.FirstOrDefault(i => string.Equals(i.Path, instance, StringComparison.OrdinalIgnoreCase));
+        _bindingInstances = true;
+        try
+        {
+            ComboBox_Importer.ItemsSource = items;
+            ComboBox_Importer.SelectedItem = items.FirstOrDefault(i => string.Equals(i.Path, instance, StringComparison.OrdinalIgnoreCase));
+        }
+        finally { _bindingInstances = false; }
 
         string status = instance is null
             ? (expected is null
@@ -474,9 +566,9 @@ public sealed partial class XxmiPage : PageBase
 
         // 之前手动指定的目录被实例↔游戏配对检查忽略了（类型不匹配）——明说原因，
         // 不然看起来像「读不到 XXMI」
-        if (_gameId is not null && expected is not null)
+        if (expected is not null)
         {
-            string? manual = AppConfig.GetXxmiInstance(_gameId.GameBiz);
+            string? manual = AppConfig.GetXxmiInstance(game.GameBiz);
 
             if (!string.IsNullOrWhiteSpace(manual)
                 && XxmiLocator.IsInstance(manual)
@@ -503,6 +595,7 @@ public sealed partial class XxmiPage : PageBase
         // 先清计数，免得切实例时残留上一份的数字
         _modsCountText = string.Empty;
         await LoadMods();
+        if (!_modSession.IsCurrent(revision)) return;
         UpdateStatusBar();
 
         MaybePromptKrqlvHd(importer);
@@ -532,6 +625,9 @@ public sealed partial class XxmiPage : PageBase
 
     private async Task PromptKrqlvHdAsync(string currentOptions)
     {
+        long revision = _selectionRevision;
+        GameId? game = _gameId;
+        string? gameName = _gameName;
         try
         {
             ContentDialog dialog = new()
@@ -550,12 +646,13 @@ public sealed partial class XxmiPage : PageBase
             {
                 return;
             }
+            if (!_modSession.IsCurrent(revision) || UseRocketMods) return;
 
             string merged = string.IsNullOrWhiteSpace(currentOptions)
                 ? "-krqlv=hd"
                 : currentOptions.Trim() + " -krqlv=hd";
 
-            string? error = XxmiLocator.SetLaunchOptions(_gameId?.GameBiz, _gameName, merged);
+            string? error = XxmiLocator.SetLaunchOptions(game?.GameBiz, gameName, merged);
 
             TextBlock_Status.Text = error is null
                 ? "已在 XXMI 配置里加上 -krqlv=hd（并启用启动参数）。"
@@ -594,7 +691,8 @@ public sealed partial class XxmiPage : PageBase
     {
         _loadingMods = true;
 
-        if (_instance is null)
+        ModDirectoryLease? lease = _modDirectory;
+        if (lease is null)
         {
             _mods.Clear();
             _modsCountText = string.Empty;
@@ -602,27 +700,37 @@ public sealed partial class XxmiPage : PageBase
             return;
         }
 
-        string modsDirectory = XxmiLocator.ModsDirectory(_instance);
+        string modsDirectory = _modSession.Require(lease).ModsDirectory;
 
         if (!Directory.Exists(modsDirectory))
         {
             _mods.Clear();
-            _modsCountText = "还没有 Mods 目录（导入一个 mod 就会自动建）";
+            _modsCountText = "还没有 XXMI Mods 目录（显式导入时才创建）";
             _loadingMods = false;
             return;
         }
 
-        List<XxmiModEntry> entries = await Task.Run(() => XxmiModManager.List(modsDirectory));
+        List<ModDirectoryEntry> directoryEntries;
+        try { directoryEntries = await Task.Run(() => ModDirectoryPolicy.List(_modSession, lease)); }
+        catch
+        {
+            if (!_modSession.IsCurrent(lease)) return;
+            _loadingMods = false;
+            throw;
+        }
+        if (!_modSession.IsCurrent(lease)) return;
+        List<XxmiModEntry> entries = directoryEntries.Select(e => new XxmiModEntry(e.Name, e.Path, e.IsDirectory, e.Enabled)).ToList();
 
         // 尽量**就地更新**而不是清空重建：
         // 卡片带预览图，重建会让已经贴上的图全丢、画面闪一下。
         // 用 modId（或名字）当身份，命中的复用旧 item（图还在），只同步启用状态和路径。
-        var existing = _mods.ToDictionary(m => IdentityOf(m), StringComparer.OrdinalIgnoreCase);
+        var existing = _mods.GroupBy(IdentityOf, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var rebuilt = new List<XxmiModItem>(entries.Count);
 
         foreach (XxmiModEntry entry in entries)
         {
-            string key = IdentityOf(entry);
+            string key = IdentityOf(entry, lease);
 
             if (existing.TryGetValue(key, out XxmiModItem? item))
             {
@@ -633,12 +741,14 @@ public sealed partial class XxmiPage : PageBase
             }
             else
             {
-                var fresh = new XxmiModItem(entry);
+                var fresh = new XxmiModItem(entry, lease);
                 rebuilt.Add(fresh);
             }
 
             // 用户起的名字优先（按稳定身份查，启用/禁用改名后也不会丢）
-            rebuilt[^1].ApplyCustomName(_renames.GetName(IdentityOf(entry)));
+            // Existing XXMI alias keys stay intact; Rocket aliases are scoped to game/backend/root.
+            string? customName = _renames.GetName(lease.Context.Backend == ModBackend.Xxmi ? LegacyIdentityOf(entry) : key);
+            rebuilt[^1].ApplyCustomName(customName);
         }
 
         // 让 _mods 的内容和顺序都对齐 rebuilt（复用过的 item 实例保持不动，所以图不会丢）
@@ -682,12 +792,19 @@ public sealed partial class XxmiPage : PageBase
     /// 图标和状态都会白丢。GameBanana 的 mod 有稳定的 modId，用它最准；其余的退回名字（去掉 DISABLED）。
     /// </summary>
     private static string IdentityOf(XxmiModItem item) =>
-        item.ModId is { } id ? "gb:" + id : "name:" + XxmiModManager.StripDisabled(item.Name);
+        item.StorageIdentity;
 
-    private static string IdentityOf(XxmiModEntry entry) =>
+    private static string LegacyIdentityOf(XxmiModEntry entry) =>
         GameBananaPreviewService.ModIdFromFolderName(entry.Name) is { } id
             ? "gb:" + id
             : "name:" + XxmiModManager.StripDisabled(entry.Name);
+
+    private static string IdentityOf(XxmiModEntry entry, ModDirectoryLease lease) =>
+        new XxmiModItem(entry, lease).StorageIdentity;
+
+    private static string RenameIdentityOf(XxmiModItem item) => item.Lease.Context.Backend == ModBackend.Xxmi
+        ? item.ModId is { } id ? "gb:" + id : "name:" + item.DisplayStem
+        : item.StorageIdentity;
 
 
 
@@ -778,7 +895,7 @@ public sealed partial class XxmiPage : PageBase
 
     private void ComboBox_Importer_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ComboBox_Importer.SelectedItem is not XxmiInstanceItem item)
+        if (_bindingInstances || UseRocketMods || ComboBox_Importer.SelectedItem is not XxmiInstanceItem item)
         {
             return;
         }
@@ -791,11 +908,12 @@ public sealed partial class XxmiPage : PageBase
             AppConfig.SetXxmiInstance(_gameId.GameBiz, item.Path);
         }
 
-        _ = LoadMods();
+        LoadInstance();
     }
 
     private void Button_AutoFind_Click(object sender, RoutedEventArgs e)
     {
+        if (UseRocketMods) { LoadInstance(); return; }
         if (_gameId is not null)
         {
             AppConfig.SetXxmiInstance(_gameId.GameBiz, null);
@@ -809,9 +927,12 @@ public sealed partial class XxmiPage : PageBase
 
     private async void Button_Browse_Click(object sender, RoutedEventArgs e)
     {
+        if (UseRocketMods) { TextBlock_Status.Text = "Rocket 目录只从当前游戏的已配置后端读取，请在 Rocket 设置中配置。"; return; }
+        long revision = _selectionRevision;
         try
         {
             string? folder = await FileDialogHelper.PickFolderAsync(XamlRoot);
+            if (!_modSession.IsCurrent(revision)) return;
 
             if (string.IsNullOrWhiteSpace(folder))
             {
@@ -837,6 +958,7 @@ public sealed partial class XxmiPage : PageBase
                 TextBlock_Status.Text = $"{folder} 是 {Path.GetFileName(folder)} 实例；{ _gameName ?? "这个游戏" }只能用 {expected}（MI 实例和游戏是一对一的）。";
                 return;
             }
+            ModDirectoryPolicy.ResolveXxmi(GameOwnerKey, folder);
 
             if (_gameId is not null)
             {
@@ -850,28 +972,26 @@ public sealed partial class XxmiPage : PageBase
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(revision)) return;
             TextBlock_Status.Text = "选择目录失败：" + ex.Message;
         }
     }
 
     private void Button_OpenInstance_Click(object sender, RoutedEventArgs e)
     {
-        if (!string.IsNullOrWhiteSpace(_instance) && Directory.Exists(_instance))
-        {
-            OpenInExplorer(_instance);
-        }
+        try { OpenInExplorer(_modSession.Require(RequireModDirectory()).InstanceDirectory); }
+        catch (Exception ex) { TextBlock_Status.Text = "打开目录失败：" + ex.Message; }
     }
 
     private void Button_OpenMods_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_instance))
+        try
         {
-            return;
+            string mods = _modSession.Require(RequireModDirectory()).ModsDirectory;
+            if (!Directory.Exists(mods)) throw new DirectoryNotFoundException("已配置的 Mods 目录不存在；打开操作不会创建目录。");
+            OpenInExplorer(mods);
         }
-
-        string mods = XxmiLocator.ModsDirectory(_instance);
-        Directory.CreateDirectory(mods);
-        OpenInExplorer(mods);
+        catch (Exception ex) { TextBlock_Status.Text = "打开 Mods 失败：" + ex.Message; }
     }
 
     /// <summary>
@@ -881,8 +1001,11 @@ public sealed partial class XxmiPage : PageBase
     /// </summary>
     private async void Button_LaunchXxmi_Click(object sender, RoutedEventArgs e)
     {
+        if (UseRocketMods) { TextBlock_Status.Text = "当前是 Rocket Mod 后端；本页不启动 Rocket 或改变启动链。"; return; }
+        long revision = _selectionRevision;
         // 没装 XXMI 时这是全盘浅扫（8 秒上限）：别在 UI 线程上跑，否则点一下卡 8 秒
         string? root = await Task.Run(XxmiLocator.FindRoot);
+        if (!_modSession.IsCurrent(revision) || UseRocketMods) return;
 
         if (root is null)
         {
@@ -913,58 +1036,40 @@ public sealed partial class XxmiPage : PageBase
 
     private async void Button_ImportFolder_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_instance))
-        {
-            TextBlock_Status.Text = "先指定 MI 实例目录。";
-            return;
-        }
-
-        string? folder = await FileDialogHelper.PickFolderAsync(XamlRoot);
-
-        if (string.IsNullOrWhiteSpace(folder))
-        {
-            return;
-        }
-
+        long revision = _selectionRevision;
         try
         {
-            string mods = XxmiLocator.ModsDirectory(_instance);
-            Directory.CreateDirectory(mods);
-            string imported = XxmiModManager.ImportFolder(mods, folder);
+            var lease = RequireModDirectory();
+            string? folder = await FileDialogHelper.PickFolderAsync(XamlRoot);
+            if (string.IsNullOrWhiteSpace(folder) || !_modSession.IsCurrent(lease)) return;
+            string imported = ModDirectoryPolicy.ImportFolder(_modSession, lease, folder);
             await LoadMods();
+            if (!_modSession.IsCurrent(lease)) return;
             TextBlock_Status.Text = $"已导入：{Path.GetFileName(imported)}";
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(revision)) return;
             TextBlock_Status.Text = "导入失败：" + ex.Message;
         }
     }
 
     private async void Button_ImportZip_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_instance))
-        {
-            TextBlock_Status.Text = "先指定 MI 实例目录。";
-            return;
-        }
-
-        string? zip = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("压缩包", ".zip"), ("所有文件", ".*"));
-
-        if (string.IsNullOrWhiteSpace(zip))
-        {
-            return;
-        }
-
+        long revision = _selectionRevision;
         try
         {
-            string mods = XxmiLocator.ModsDirectory(_instance);
-            Directory.CreateDirectory(mods);
-            string imported = XxmiModManager.ImportZip(mods, zip);
+            var lease = RequireModDirectory();
+            string? zip = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("压缩包", ".zip"), ("所有文件", ".*"));
+            if (string.IsNullOrWhiteSpace(zip) || !_modSession.IsCurrent(lease)) return;
+            string imported = ModDirectoryPolicy.ImportZip(_modSession, lease, zip);
             await LoadMods();
+            if (!_modSession.IsCurrent(lease)) return;
             TextBlock_Status.Text = $"已导入并解压：{Path.GetFileName(imported)}";
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(revision)) return;
             TextBlock_Status.Text = "导入失败：" + ex.Message;
         }
     }
@@ -981,21 +1086,31 @@ public sealed partial class XxmiPage : PageBase
 
         // 双向绑定在事件之前就把 item.Enabled 改成了 wanted，所以「绑定值」不能当判据；
         // 真正的事实是**磁盘上的目录名**（启用/禁用就是改名）。名字已经对了就别白改一次。
-        if (XxmiModManager.IsEnabled(Path.GetFileName(item.Path)) == wanted)
-        {
-            return;
-        }
-
         try
         {
-            item.Path = XxmiModManager.SetEnabled(item.Path, wanted);
-            _ = LoadMods();
+            RequireModItem(item);
+            if (ModDirectoryPolicy.IsEnabled(item.Lease.Context, Path.GetFileName(item.Path)) == wanted) return;
+            item.Path = ModDirectoryPolicy.SetEnabled(_modSession, item.Lease, item.Path, wanted);
+            ReloadMods();
             TextBlock_Status.Text = $"{item.Name} → {(wanted ? "已启用" : "已禁用")}";
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(item.Lease)) return;
             TextBlock_Status.Text = "切换失败：" + ex.Message;
-            _ = LoadMods();
+            ReloadMods();
+        }
+    }
+
+    private async void ReloadMods()
+    {
+        long revision = _selectionRevision;
+        try { await LoadMods(); }
+        catch (Exception ex)
+        {
+            if (!_modSession.IsCurrent(revision)) return;
+            _loadingMods = false;
+            TextBlock_Status.Text = "Mod 列表刷新失败：" + ex.Message;
         }
     }
 
@@ -1210,6 +1325,8 @@ public sealed partial class XxmiPage : PageBase
         {
             return;
         }
+        try { RequireModItem(item); }
+        catch (Exception ex) { TextBlock_Status.Text = ex.Message; return; }
 
         var input = new TextBox
         {
@@ -1221,7 +1338,7 @@ public sealed partial class XxmiPage : PageBase
 
         var hint = new TextBlock
         {
-            Text = "只改显示名，不动磁盘上的文件夹名（XXMI 靠它认 mod）。\n留空 = 恢复成原来的名字。",
+            Text = "只改显示名，不动磁盘上的文件夹名（后端靠它认 Mod）。\n留空 = 恢复成原来的名字。",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0),
             Opacity = 0.7,
@@ -1247,15 +1364,19 @@ public sealed partial class XxmiPage : PageBase
             return;
         }
 
+        if (!_modSession.IsCurrent(item.Lease)) return;
+        try { RequireModItem(item); }
+        catch (Exception ex) { TextBlock_Status.Text = ex.Message; return; }
+
         string? name = string.IsNullOrWhiteSpace(input.Text) ? null : input.Text.Trim();
 
-        _renames.SetName(IdentityOf(item), name);
+        _renames.SetName(RenameIdentityOf(item), name);
         item.ApplyCustomName(name);
         ApplySearchFilter();
 
         TextBlock_Status.Text = name is null
-            ? $"{XxmiModManager.StripDisabled(item.Name)} → 已恢复原名"
-            : $"{XxmiModManager.StripDisabled(item.Name)} → 显示为「{name}」（磁盘文件夹名没变）";
+            ? $"{item.DisplayStem} → 已恢复原名"
+            : $"{item.DisplayStem} → 显示为「{name}」（磁盘文件夹名没变）";
     }
 
     /// <summary>
@@ -1380,6 +1501,8 @@ public sealed partial class XxmiPage : PageBase
         {
             return;
         }
+        try { RequireModItem(item); }
+        catch (Exception ex) { TextBlock_Status.Text = ex.Message; return; }
 
         var lines = new List<string>
         {
@@ -1433,6 +1556,9 @@ public sealed partial class XxmiPage : PageBase
 
         if (await dialog.ShowAsync() == ContentDialogResult.Primary)
         {
+            if (!_modSession.IsCurrent(item.Lease)) return;
+            try { RequireModItem(item); }
+            catch (Exception ex) { TextBlock_Status.Text = ex.Message; return; }
             OpenInExplorer(item.IsDirectory ? item.FullPath : Path.GetDirectoryName(item.FullPath)!);
         }
     }
@@ -1499,7 +1625,12 @@ public sealed partial class XxmiPage : PageBase
     {
         if (sender is FrameworkElement { DataContext: XxmiModItem item })
         {
-            OpenInExplorer(item.IsDirectory ? item.Path : Path.GetDirectoryName(item.Path));
+            try
+            {
+                RequireModItem(item);
+                OpenInExplorer(item.IsDirectory ? item.Path : Path.GetDirectoryName(item.Path)!);
+            }
+            catch (Exception ex) { TextBlock_Status.Text = ex.Message; }
         }
     }
 
@@ -1509,6 +1640,8 @@ public sealed partial class XxmiPage : PageBase
         {
             return;
         }
+        try { RequireModItem(item); }
+        catch (Exception ex) { TextBlock_Status.Text = ex.Message; return; }
 
         ContentDialog dialog = new()
         {
@@ -1531,12 +1664,16 @@ public sealed partial class XxmiPage : PageBase
 
         try
         {
-            XxmiModManager.Delete(item.Path);
+            if (!_modSession.IsCurrent(item.Lease)) return;
+            RequireModItem(item);
+            ModDirectoryPolicy.Delete(_modSession, item.Lease, item.Path);
             await LoadMods();
+            if (!_modSession.IsCurrent(item.Lease)) return;
             TextBlock_Status.Text = $"已删除：{item.Name}";
         }
         catch (Exception ex)
         {
+            if (!_modSession.IsCurrent(item.Lease)) return;
             TextBlock_Status.Text = "删除失败：" + ex.Message;
         }
     }

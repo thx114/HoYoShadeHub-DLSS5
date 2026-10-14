@@ -8,6 +8,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 using HoYoShadeHub.Core;
+using HoYoShadeHub.Extensions.Games;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.GameLauncher;
 using HoYoShadeHub.Features.GameSelector;
 using HoYoShadeHub.Frameworks;
@@ -203,6 +205,52 @@ public sealed partial class GameSettingPage : PageBase
     }
 
 
+    public IReadOnlyList<string> GenshinRenderScaleOptions => GenshinGraphicsSettings.RenderScaleLabels;
+    public IReadOnlyList<string> GenshinAntiAliasingOptions => GenshinGraphicsSettings.AntiAliasingLabels;
+    public IReadOnlyList<string> GenshinBridgeRenderScaleOptions { get; } =
+        OptiScalerRuntime.FsrBridgeRenderScales.Select(x => x.ToString("0.0##", System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+
+    private int _savedGenshinRenderScaleIndex = -1;
+    private int _savedGenshinAntiAliasingIndex = -1;
+    private int _genshinRenderScaleIndex = -1;
+    public int GenshinRenderScaleIndex
+    {
+        get => _genshinRenderScaleIndex;
+        set
+        {
+            if (SetProperty(ref _genshinRenderScaleIndex, value))
+                IsApplyButtonEnable = true;
+        }
+    }
+
+    private int _genshinAntiAliasingIndex = -1;
+    public int GenshinAntiAliasingIndex
+    {
+        get => _genshinAntiAliasingIndex;
+        set
+        {
+            if (SetProperty(ref _genshinAntiAliasingIndex, value))
+            {
+                IsApplyButtonEnable = true;
+                OnPropertyChanged(nameof(ShowGenshinFsrWarning));
+            }
+        }
+    }
+
+    private int _genshinBridgeRenderScaleIndex = 4;
+    public int GenshinBridgeRenderScaleIndex
+    {
+        get => _genshinBridgeRenderScaleIndex;
+        set
+        {
+            if (SetProperty(ref _genshinBridgeRenderScaleIndex, value))
+                IsApplyButtonEnable = true;
+        }
+    }
+
+    public bool ShowGenshinFsrWarning => GenshinAntiAliasingIndex > 0
+        && AppConfig.GetUseOptiScalerLaunchOption(CurrentGameId);
+
     /// <summary>原神帧率解锁目标值，范围 60-1000。按游戏记，开关在启动页启动选项里（默认 119 = 安全上限）</summary>
     private double _fpsUnlockTargetValue = AppConfig.FpsUnlockWarnThreshold;
     public double FpsUnlockTargetValue
@@ -375,6 +423,19 @@ public sealed partial class GameSettingPage : PageBase
                 IsGraphicsSettingEnable = true;
                 StackPanel_GenshinHDR.Visibility = Visibility.Visible;
                 StackPanel_GenshinFpsUnlock.Visibility = Visibility.Visible;
+                StackPanel_GenshinGraphics.Visibility = Visibility.Visible;
+                GenshinBridgeRenderScaleIndex = AppConfig.GetGenshinBridgeRenderScaleIndex(CurrentGameId);
+                try
+                {
+                    var graphics = GameSettingService.GetGenshinGraphicsSettings(CurrentGameBiz);
+                    GenshinRenderScaleIndex = _savedGenshinRenderScaleIndex = graphics.RenderScaleIndex;
+                    GenshinAntiAliasingIndex = _savedGenshinAntiAliasingIndex = graphics.AntiAliasingIndex;
+                }
+                catch (Exception ex)
+                {
+                    ErrorMessage = ex.Message;
+                    _logger.LogWarning(ex, "Read Genshin graphics settings");
+                }
                 FpsUnlockTargetValue = AppConfig.GetFpsUnlockTarget(CurrentGameId);
                 EnableGenshinHDR = AppConfig.EnableGenshinHDR;
                 _displayInformation = DisplayInformation.CreateForWindowId(this.XamlRoot.GetAppWindow().Id);
@@ -576,6 +637,15 @@ public sealed partial class GameSettingPage : PageBase
                 }
                 if (CurrentGameBiz.Game is GameBiz.hk4e)
                 {
+                    GameSettingService.SetGenshinGraphicsSettings(CurrentGameBiz,
+                        GenshinRenderScaleIndex >= 0 && GenshinRenderScaleIndex != _savedGenshinRenderScaleIndex
+                            ? GenshinRenderScaleIndex : null,
+                        GenshinAntiAliasingIndex >= 0 && GenshinAntiAliasingIndex != _savedGenshinAntiAliasingIndex
+                            ? GenshinAntiAliasingIndex : null);
+                    _savedGenshinRenderScaleIndex = GenshinRenderScaleIndex;
+                    _savedGenshinAntiAliasingIndex = GenshinAntiAliasingIndex;
+                    if (GenshinBridgeRenderScaleIndex >= 0)
+                        AppConfig.SetGenshinBridgeRenderScaleIndex(CurrentGameId, GenshinBridgeRenderScaleIndex);
                     AppConfig.EnableGenshinHDR = EnableGenshinHDR;
                     GameSettingService.SetGenshinEnableHDR(CurrentGameBiz, EnableGenshinHDR);
                     AppConfig.SetFpsUnlockTarget(CurrentGameId, (int)FpsUnlockTargetValue);

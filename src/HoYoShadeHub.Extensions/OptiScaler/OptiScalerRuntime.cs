@@ -936,9 +936,11 @@ Fsr2TranslationMode=2
 
     /// <summary>
     /// 原神 Bridge 的渲染精度不是注册表值，而是 Bridge DLL 目录旁的
-    /// <c>Dx11FsrBridge.render-scale.cache</c>。FSR Bridge 开启时固定到 0.6，
-    /// 让 DX11 FSR 输入保持低于 1，避免 Bridge/OptiScaler 走原生 1.0 路径。
+    /// <c>Dx11FsrBridge.render-scale.cache</c>。启动器按游戏设置写入选定精度。
     /// </summary>
+    public static IReadOnlyList<float> FsrBridgeRenderScales { get; } =
+        Array.AsReadOnly(new[] { 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 0.999f });
+
     public static bool EnsureFsrBridgeRenderScale(string? directory, float scale = 0.6f)
     {
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
@@ -1147,7 +1149,7 @@ Fsr2TranslationMode=2
         /// <summary>普通 LoadLibraryW</summary>
         public static FsrBridgeChainStep Load(string dllPath) => new("load", dllPath);
 
-        /// <summary>这一步的参数是不是「可以按相对路径写」的 DLL 路径</summary>
+        /// <summary>DLL path step. Serialized as an absolute path; wait stays a module-name token.</summary>
         public bool IsPath => Verb is "migoto" or "load";
     }
 
@@ -1171,10 +1173,11 @@ Fsr2TranslationMode=2
     }
 
     /// <summary>
-    /// 写链清单，返回真正写进去的行（失败 / 没有有效步骤返回 null）。
-    /// 与 autoload 清单同一套路径策略：能写成「相对桥 DLL 目录」的就写相对，
-    /// 整包搬到别的机器还能用；跨盘、或者要爬两层以上才退回绝对路径。
-    /// 文件故意不写 BOM，免得读的人把第一个字符吃成 <c>﻿</c>。
+    /// Writes the chain file and returns the lines actually written (null on failure or no steps).
+    /// load/migoto arguments are always absolute canonical paths. Bridge resolves a relative
+    /// path from the process directory, so a chain-file-relative ..\AMD\... becomes path_not_found.
+    /// wait tokens such as dxgi.dll and OptiScaler.dll stay unchanged. Step order is not changed.
+    /// The file has no BOM.
     /// </summary>
     public static string[]? WriteFsrBridgeChain(string? directory, IReadOnlyList<FsrBridgeChainStep>? steps)
     {
@@ -1197,12 +1200,7 @@ Fsr2TranslationMode=2
             {
                 try
                 {
-                    string relative = Path.GetRelativePath(directory, step.Argument);
-                    if (!Path.IsPathRooted(relative)
-                        && !relative.StartsWith(@"..\..\", StringComparison.Ordinal))
-                    {
-                        argument = relative;
-                    }
+                    argument = Path.GetFullPath(step.Argument);
                 }
                 catch
                 {
@@ -1432,6 +1430,196 @@ Fsr2TranslationMode=2
 
     #endregion
 
+    #region 启动体检：按生效配置检查构建里该有的文件
+
+    /// <summary>体检严重度：缺文件（功能直接不工作）</summary>
+    public const string IssueRequired = "缺文件";
+
+    /// <summary>体检严重度：配置矛盾 / 提醒（文件可能都在）</summary>
+    public const string IssueNote = "提醒";
+
+    /// <summary>
+    /// 启动体检的一条问题。<see cref="ExpectedPath"/> = 文件该在的位置，
+    /// <see cref="Advice"/> = 给人看的修法。
+    /// </summary>
+    public sealed record OptiScalerBuildIssue(string Severity, string Title, string ExpectedPath, string Advice)
+    {
+        public override string ToString() => $"[{Severity}] {Title}；期望位置：{ExpectedPath}；{Advice}";
+    }
+
+    /// <summary>构建目录里 SM75/SM86 旁加载 DLL 的文件夹名</summary>
+    public const string Sm86FolderName = "dlssg_sm86";
+
+    /// <summary>SM86/SM75 旁加载的文件名（正身 + 上游的代理名）</summary>
+    public static IReadOnlyList<string> Sm86FileNames { get; } = ["dlssg_sm86.dll", "version.dll"];
+
+    /// <summary>
+    /// SM86/SM75 旁加载的两个文件夹，顺序与加载器 <c>AmpereMfgLoader</c> 的搜索顺序一致：
+    /// 先 <c>&lt;构建&gt;\OptiScaler\dlssg_sm86\</c>，再 <c>&lt;构建&gt;\dlssg_sm86\</c>。
+    /// </summary>
+    public static IReadOnlyList<string> Sm86Folders(string buildDirectory) =>
+    [
+        Path.Combine(buildDirectory, "OptiScaler", Sm86FolderName),
+        Path.Combine(buildDirectory, Sm86FolderName),
+    ];
+
+    /// <summary>
+    /// 加载器实际会命中的 SM86/SM75 旁加载文件（<c>dlssg_sm86.dll</c> 或代理名 <c>version.dll</c>，
+    /// 含构建根直接放一份的情况）；找不到返回 null。
+    /// </summary>
+    public static string? FindSm86Loader(string? buildDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(buildDirectory))
+        {
+            return null;
+        }
+
+        foreach (string directory in Sm86Folders(buildDirectory))
+        {
+            foreach (string name in Sm86FileNames)
+            {
+                string path = Path.Combine(directory, name);
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+            }
+        }
+
+        // 构建根直接放一份也命中（加载器的 basePath 候选里有它）
+        foreach (string name in Sm86FileNames)
+        {
+            string path = Path.Combine(buildDirectory, name);
+            if (File.Exists(path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 启动体检：读构建目录里生效的 <c>OptiScaler.ini</c>，按"这份配置要开什么功能"检查运行时文件在不在
+    /// —— DLSS 超分（<c>nvngx_dlss.dll</c>）、DLSSG 帧生成（310.9 的 <c>nvngx_dlssg.dll</c> + streamline 整套）、
+    /// 20/30 系的 SM86/SM75 旁加载（<c>dlssg_sm86.dll</c>）。只报告，不动任何文件；空列表 = 没发现问题。
+    ///
+    /// <para>
+    /// 以前只有「自动补齐」没有「校验」：构建里缺 <c>nvngx_dlss.dll</c> / <c>dlssg_sm86.dll</c> 时，
+    /// 启动日志里一个字都没有，游戏菜单里就是少了对应选项，只能靠人猜。
+    /// </para>
+    /// </summary>
+    /// <param name="buildDirectory">构建目录（OptiScaler.dll 所在目录）</param>
+    /// <param name="gpuClass">
+    /// 本机显卡代次：<c>ada</c> / <c>blackwell</c> / <c>ampere</c> / <c>turing</c>；认不出传 null（那就只查文件，
+    /// 不评判开哪个解锁）。调用方用 <c>OptiScalerPresetCatalog.GpuClass</c>。
+    /// </param>
+    public static IReadOnlyList<OptiScalerBuildIssue> AuditBuild(string? buildDirectory, string? gpuClass = null)
+    {
+        List<OptiScalerBuildIssue> issues = [];
+        if (string.IsNullOrWhiteSpace(buildDirectory) || !Directory.Exists(buildDirectory))
+        {
+            return issues;
+        }
+
+        string iniPath = Path.Combine(buildDirectory, ConfigFileName);
+        if (!File.Exists(iniPath))
+        {
+            issues.Add(new(IssueRequired, "主配置 OptiScaler.ini 不存在", iniPath,
+                "启动前应由挂着的「配置」重放生成；没有它说明构建目录不完整，去 OptiScaler 页重装或重选一份构建。"));
+            return issues;
+        }
+
+        string ini;
+        try
+        {
+            ini = File.ReadAllText(iniPath);
+        }
+        catch
+        {
+            return issues;
+        }
+
+        bool dlssUpscaling = IsDlssUpscaler(ReadIniValue(ini, "Upscalers", "Dx11Upscaler"))
+                             || IsDlssUpscaler(ReadIniValue(ini, "Upscalers", "Dx12Upscaler"));
+        bool dlssgOutput = string.Equals(ReadIniValue(ini, "FrameGen", "FGOutput"), "DLSSG",
+            StringComparison.OrdinalIgnoreCase);
+        bool adaUnlock = IsIniTrue(ReadIniValue(ini, "DLSSG", "AdaMfgUnlock"));
+        bool ampereUnlock = IsIniTrue(ReadIniValue(ini, "DLSSG", "AmpereMfgUnlock"));
+
+        if (dlssUpscaling && !HasUpscalerReplacements(buildDirectory))
+        {
+            issues.Add(new(IssueRequired, "配置要 DLSS 超分，但没有 nvngx_dlss.dll",
+                string.Join(" 或 ", Path.Combine(buildDirectory, DlssSrFileName),
+                    Path.Combine(buildDirectory, "OptiScaler", DlssSrFileName)),
+                "OptiScaler 只在自己所在目录找它（运行时只会写 Config::CheckUpscalerFiles nvngx.dll not found）；"
+                + "去「全局插件 → OptiScaler」点补齐，或把 nvngx_dlss.dll 放进上面任一个位置。"));
+        }
+
+        if (dlssgOutput || adaUnlock || ampereUnlock)
+        {
+            if (!DlssgTargetsReady(buildDirectory))
+            {
+                issues.Add(new(IssueRequired, "配置要 DLSSG 帧生成，但 310.9 的 nvngx_dlssg.dll 不齐",
+                    string.Join("、", DlssgTargetSubdirs.Select(d => Path.Combine(buildDirectory, d, DlssgFileName))),
+                    "MFG 解锁只认 310.9；启动流程会用 EnsureDlssgForUnlock 补，仍然是这条说明旁边既没有可用的 310.9 也下不下来。"));
+            }
+
+            if (!HasStreamline(buildDirectory))
+            {
+                issues.Add(new(IssueRequired, "Streamline 运行时不全（DLSSG 需要）",
+                    StreamlineDirectory(buildDirectory),
+                    $"需要 {string.Join("、", StreamlineFileNames)} 加 {DlssgFileName}；去「全局插件 → OptiScaler」补齐 streamline 2.14。"));
+            }
+        }
+
+        // 显卡代次（认得出才评判）：40/50 系走 Ada 解锁，20/30 系走 SM86 旁加载
+        bool isAdaClass = gpuClass is "ada" or "blackwell";
+        bool isSm86Class = gpuClass is "ampere" or "turing";
+
+        if (ampereUnlock && isAdaClass)
+        {
+            // 40/50 系上 SM86 路径会被加载器直接拒绝 —— 这里也就不该再报"缺 dlssg_sm86.dll"
+            issues.Add(new(IssueNote, "本机是 40/50 系，开 AmpereMfgUnlock 没有用（会被加载器拒）", "[DLSSG]",
+                "加载器原话：\"SM86/SM75 MFG requires an RTX 20 series (Turing) or RTX 30 series (Ampere) GPU. Detected arch 0x…\"。"
+                + "40/50 系请开 AdaMfgUnlock、关掉 AmpereMfgUnlock（这个构建也不需要 dlssg_sm86.dll）。"));
+        }
+        else if (ampereUnlock && FindSm86Loader(buildDirectory) is null)
+        {
+            issues.Add(new(IssueRequired, "开了 AmpereMfgUnlock，但找不到 dlssg_sm86.dll",
+                string.Join(" 或 ", Sm86Folders(buildDirectory).Select(d => Path.Combine(d, "dlssg_sm86.dll"))),
+                "加载器就在这两个文件夹里找它；缺了它日志里只会有一句 \"dlssg_sm86.dll not found in OptiScaler/dlssg_sm86/ or dlssg_sm86/ subfolders.\"，"
+                + "20/30 系菜单里不会出现 DLSS 帧生成。"));
+        }
+
+        if (adaUnlock && isSm86Class)
+        {
+            issues.Add(new(IssueNote, "本机是 20/30 系，开 AdaMfgUnlock 会被自动关掉（等于白开）", "[DLSSG]",
+                "OptiScaler 判本机不支持 Ada MFG 时会把 AdaMfgUnlock 强制回 false，菜单里那个开关也是灰的 —— "
+                + "现场表现就是「折腾半天没有帧生成选项」。20/30 系要 MFG：开 AmpereMfgUnlock，并且构建里有 dlssg_sm86.dll。"));
+        }
+
+        if (ampereUnlock && adaUnlock)
+        {
+            issues.Add(new(IssueNote, "AdaMfgUnlock 和 AmpereMfgUnlock 同时开着", "[DLSSG]",
+                "两者互斥：Ada 卡上加载器会直接拒绝 SM86（\"Cannot enable SM86/SM75 MFG while Ada (RTX 40) MFG unlock is enabled.\"）。"
+                + "30/20 系请关掉 AdaMfgUnlock，40 系请关掉 AmpereMfgUnlock。"));
+        }
+
+        return issues;
+    }
+
+    /// <summary>ini 里的布尔值（<c>true</c> / <c>1</c> 都算开）</summary>
+    private static bool IsIniTrue(string? value)
+        => value is not null
+           && (value.Trim() == "1" || value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>超分那栏选的是不是 DLSS（<c>auto</c> 不算，避免误报）</summary>
+    private static bool IsDlssUpscaler(string? value)
+        => value is not null && value.Trim().Equals("dlss", StringComparison.OrdinalIgnoreCase);
+
+    #endregion
+
     /// <summary>构建目录里 Streamline 后端文件夹的绝对路径（<c>OptiScaler/streamline</c>）</summary>
     public static string StreamlineDirectory(string buildDirectory)
         => Path.Combine(buildDirectory, "OptiScaler", StreamlineFolderName);
@@ -1596,13 +1784,26 @@ Fsr2TranslationMode=2
         return EnsureConfigDllPath(buildDirectory);
     }
 
-    /// <summary>写入 Hub 路线标记，供 OptiScaler 在启动时区分 Rocket/GIMI 与普通 Hub 路径。</summary>
-    public static bool SetRocketMode(string buildDirectory, bool enabled)
+    /// <summary>写入 [HoYoShade] 下的布尔路线标记，保留其它 OptiScaler 配置。</summary>
+    private static bool SetHoYoShadeBool(string buildDirectory, string keyName, bool enabled)
     {
         if (string.IsNullOrWhiteSpace(buildDirectory)) return false;
         string iniPath = Path.Combine(buildDirectory, ConfigFileName);
-        if (!File.Exists(iniPath)) return false;
+        return SetHoYoShadeBoolFile(iniPath, keyName, enabled);
+    }
+
+    private static bool SetHoYoShadeBoolFile(string iniPath, string keyName, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(iniPath) || !File.Exists(iniPath)) return false;
         string text = File.ReadAllText(iniPath);
+        string updated = SetHoYoShadeBoolText(text, keyName, enabled);
+        if (!string.Equals(updated, text, StringComparison.Ordinal))
+            File.WriteAllText(iniPath, updated, new System.Text.UTF8Encoding(false));
+        return true;
+    }
+
+    private static string SetHoYoShadeBoolText(string text, string keyName, bool enabled)
+    {
         string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         string value = enabled ? "true" : "false";
         var section = new System.Text.RegularExpressions.Regex(
@@ -1613,22 +1814,39 @@ Fsr2TranslationMode=2
             updated = section.Replace(text, match =>
             {
                 string body = match.Groups[2].Value;
-                var key = new System.Text.RegularExpressions.Regex(@"(?mi)^[ \t]*RocketMode[ \t]*=[^\r\n]*(?:\r?\n|$)");
+                var key = new System.Text.RegularExpressions.Regex(
+                    $@"(?mi)^[ \t]*{System.Text.RegularExpressions.Regex.Escape(keyName)}[ \t]*=[^\r\n]*(?:\r?\n|$)");
                 body = key.IsMatch(body)
-                    ? key.Replace(body, $"RocketMode = {value}{newline}", 1)
-                    : body.TrimEnd('\r', '\n') + newline + $"RocketMode = {value}" + newline;
+                    ? key.Replace(body, $"{keyName} = {value}{newline}", 1)
+                    : body.TrimEnd('\r', '\n') + newline + $"{keyName} = {value}" + newline;
                 return match.Groups[1].Value + body;
             }, 1);
         }
         else
         {
-            updated = text.TrimEnd('\r', '\n') + newline + newline + "[HoYoShade]" + newline + $"RocketMode = {value}" + newline;
+            updated = text.TrimEnd('\r', '\n') + newline + newline + "[HoYoShade]" + newline + $"{keyName} = {value}" + newline;
         }
-        if (!string.Equals(updated, text, StringComparison.Ordinal))
-            File.WriteAllText(iniPath, updated, new System.Text.UTF8Encoding(false));
-        return true;
+        return updated;
     }
 
+    /// <summary>写入 Hub 路线标记，供 OptiScaler 在启动时区分 Rocket/GIMI 与普通 Hub 路径。</summary>
+    public static bool SetRocketMode(string buildDirectory, bool enabled) =>
+        SetHoYoShadeBool(buildDirectory, "RocketMode", enabled);
+
+    /// <summary>崩铁单 runtime 路线必须让 OptiScaler 保留 DX11 source 的可见输入窗口。</summary>
+    public static bool SetDx11ReShadeOnly(string buildDirectory, bool enabled) =>
+        SetHoYoShadeBool(buildDirectory, "Dx11ReShadeOnly", enabled);
+
+    /// <summary>
+    /// Reassert the StarRail-only DX11 source route after a per-game profile has been activated,
+    /// and persist just this route key back into that game's profile.
+    /// </summary>
+    public static bool EnsureStarRailDx11InputRoute(string buildDirectory, string gameKey)
+    {
+        return !string.IsNullOrWhiteSpace(gameKey)
+            && OptiScalerProfiles.TryUpdateActiveProfile(buildDirectory, gameKey,
+                text => SetHoYoShadeBoolText(text, "Dx11ReShadeOnly", true));
+    }
     /// <summary>原神启用本 fork 0.1.9+ 时，profile 激活后保持外部 NR guide 坐标修正。</summary>
     public static bool EnsureGenshinNativeGuides(string buildDirectory)
     {
@@ -1739,6 +1957,112 @@ Fsr2TranslationMode=2
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Hub 启动时会按「本机路径」重钉一遍的 ini 键（节, 键）。
+    ///
+    /// <para>
+    /// 这些值只对当前这台机器 / 这个安装目录成立（<c>OptiDllPath</c> 指的就是本机数据目录里的
+    /// 绝对路径），它们属于运行时那份主 ini 与 <c>profiles\&lt;游戏&gt;.ini</c>。
+    /// 用户自己的「配置」（<c>presets\&lt;名字&gt;.ini</c>）回写时必须保留他自己写的那份，
+    /// 否则配置一带上本机路径，换台机器 / 换安装目录就失效。
+    /// </para>
+    /// </summary>
+    private static readonly (string Section, string Key)[] MachinePinnedKeys =
+    [
+        ("Libraries", "OptiDllPath"),
+    ];
+
+    /// <summary>
+    /// OptiScaler 自己对 <c>OptiDllPath</c> 的默认值（它 ini 注释里写明 <c>; Default is .\OptiScaler</c>）。
+    /// 新建配置时用它顶掉 Hub 钉进去的本机绝对路径，配置才是能带走的。
+    /// </summary>
+    public const string DefaultOptiDllPath = @".\OptiScaler";
+
+    /// <summary>
+    /// 把运行时内容（主 ini / profile）回写成用户「配置」之前，先把
+    /// <see cref="MachinePinnedKeys"/> 还原成配置自己那份（<paramref name="reference"/>）。
+    ///
+    /// <para>
+    /// 取值顺序：<paramref name="reference"/> 里写了就用它写的那份；没写（或没有 reference，
+    /// 例如「把当前配置存成一份新配置」）才退回 <paramref name="fallback"/>。
+    /// 两个都没有就原样返回 —— 不凭空造值，免得把用户没写过的设置塞进他的配置。
+    /// </para>
+    /// </summary>
+    public static string RestoreMachinePinnedKeys(string runtimeText, string? reference, string? fallback = null)
+    {
+        if (string.IsNullOrEmpty(runtimeText))
+        {
+            return runtimeText;
+        }
+
+        foreach ((string section, string key) in MachinePinnedKeys)
+        {
+            if ((reference is { Length: > 0 } ? ReadIniValue(reference, section, key) : null)
+                is not { } value)
+            {
+                value = fallback;
+            }
+
+            if (value is null)
+            {
+                continue;
+            }
+
+            runtimeText = WriteIniValue(runtimeText, section, key, value);
+        }
+
+        return runtimeText;
+    }
+
+    /// <summary>读 ini 文本里某个节下某个键的值；节 / 键不存在返回 null</summary>
+    public static string? ReadIniValue(string text, string section, string key)
+    {
+        var body = new System.Text.RegularExpressions.Regex(
+            $@"(?msi)^\[{System.Text.RegularExpressions.Regex.Escape(section)}\][ \t]*\r?\n(.*?)(?=^\[|\z)");
+        System.Text.RegularExpressions.Match match = body.Match(text);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var line = new System.Text.RegularExpressions.Regex(
+            $@"(?mi)^[ \t]*{System.Text.RegularExpressions.Regex.Escape(key)}[ \t]*=[^\r\n]*");
+        System.Text.RegularExpressions.Match found = line.Match(match.Groups[1].Value);
+        if (!found.Success)
+        {
+            return null;
+        }
+
+        int eq = found.Value.IndexOf('=');
+        return eq < 0 ? null : found.Value[(eq + 1)..].Trim();
+    }
+
+    /// <summary>把 ini 文本里某个节下的键改成给定值；节 / 键不存在就补上。只动目标行，其余字节原样保留。</summary>
+    public static string WriteIniValue(string text, string section, string key, string value)
+    {
+        string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var body = new System.Text.RegularExpressions.Regex(
+            $@"(?msi)(^\[{System.Text.RegularExpressions.Regex.Escape(section)}\][ \t]*\r?\n)(.*?)(?=^\[|\z)");
+        string replacement = $"{key} = {value}{newline}";
+
+        if (body.IsMatch(text))
+        {
+            return body.Replace(text, match =>
+            {
+                var line = new System.Text.RegularExpressions.Regex(
+                    $@"(?mi)^[ \t]*{System.Text.RegularExpressions.Regex.Escape(key)}[ \t]*=[^\r\n]*(?:\r?\n|$)");
+                string inner = match.Groups[2].Value;
+                string body2 = line.IsMatch(inner)
+                    ? line.Replace(inner, replacement, 1)
+                    : inner.TrimEnd('\r', '\n') + newline + replacement;
+                return match.Groups[1].Value + body2;
+            }, 1);
+        }
+
+        return text.TrimEnd('\r', '\n') + newline + newline
+               + $"[{section}]" + newline + replacement;
     }
 
     /// <summary>目标缺失或大小不一致才复制；源不存在返回 false</summary>

@@ -401,110 +401,109 @@
                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                    BorderThickness="1"
                    CornerRadius="4">
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                 <Grid RowSpacing="10">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <!--  预设管理（DLSS5-ReShade-Preset-Switcher 的预设）  -->
-                    <Grid Grid.Row="0" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Row="0" Spacing="8">
                         <TextBlock VerticalAlignment="Center"
                                   Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                  Text="预设管理" />
-                        <Button x:Name="Button_AddPreset"
-                               Grid.Column="1"
-                               MinWidth="0"
-                               Padding="8,4"
-                               Click="Button_AddPreset_Click"
-                               ToolTipService.ToolTip="导入预设：剪贴板里有 1 分钟内的分享码就直接导入；否则选一个 .txt / .ini 文件">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon FontFamily="Segoe Fluent Icons" FontSize="12" Glyph="&#xE710;" />
-                                <TextBlock Text="导入" />
-                            </StackPanel>
-                        </Button>
-                    </Grid>
+                                  Text="全局设置" />
 
-                    <Grid Grid.Row="1">
-                        <ListView x:Name="PresetList"
-                                  Padding="0"
-                                  SelectionMode="None">
-                            <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="reshade:Dlss5PresetFile">
-                                    <Border Margin="0,0,0,6"
-                                           Padding="10,6"
-                                           Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                                           BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                           BorderThickness="1"
-                                           CornerRadius="4"
-                                           ToolTipService.ToolTip="{x:Bind RelativePath, Mode=OneWay}">
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock VerticalAlignment="Center"
-                                                      Text="{x:Bind Name, Mode=OneWay}"
-                                                      TextTrimming="CharacterEllipsis" />
-                                            <Button Grid.Column="1"
-                                                   MinWidth="0"
-                                                   Padding="8,2"
-                                                   Click="Button_CopyPresetCode_Click"
-                                                   Tag="{x:Bind}"
-                                                   ToolTipService.ToolTip="复制这个预设的分享码（可以直接粘到游戏内插件的 Paste code）">
-                                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="11" Glyph="&#xE8C8;" />
-                                                    <TextBlock FontSize="11" Text="分享码" />
-                                                </StackPanel>
-                                            </Button>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-
-                        <TextBlock x:Name="TextBlock_PresetsEmpty"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"
-                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                        <!--  叠加层（Home）键改绑：点输入框后直接按新键（可带 Ctrl/Alt/Shift）  -->
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                  Text="还没有预设。点右上「+」导入分享码或预设文件。"
-                                  TextAlignment="Center"
-                                  TextWrapping="Wrap"
-                                  Visibility="Collapsed" />
-                    </Grid>
-
-                    <StackPanel Grid.Row="2" Spacing="8">
-                        <!--  覆盖包动作：内置（关闭/启用全部插件）+ 包 auto.json 定义的自定义动作  -->
-                        <Grid ColumnSpacing="8" x:Name="Grid_ActionsHeader">
+                                  Text="叠加层（Home）键" />
+                        <Grid ColumnSpacing="6" RowSpacing="6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock VerticalAlignment="Center"
-                                      Style="{ThemeResource BodyStrongTextBlockStyle}"
-                                      Text="动作" />
-                            <Button Grid.Column="1"
-                                   MinWidth="0"
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBox x:Name="TextBox_OverlayKey"
+                                    Grid.ColumnSpan="2"
+                                    HorizontalAlignment="Stretch"
+                                    IsReadOnly="True"
+                                    PreviewKeyDown="TextBox_OverlayKey_KeyDown"
+                                    ToolTipService.ToolTip="点一下这里，然后按想用的键（可带 Ctrl / Alt / Shift）；按 Esc 取消捕获" />
+                            <Button MinWidth="0"
+                                   Grid.Row="1"
                                    Padding="8,2"
-                                   Click="Button_OpenPackFolder_Click"
-                                   ToolTipService.ToolTip="打开覆盖包目录（ini_config.json / auto.json / presets\ 都放这里）">
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                    <FontIcon FontFamily="Segoe Fluent Icons" FontSize="11" Glyph="&#xE8B7;" />
-                                    <TextBlock FontSize="11" Text="包目录" />
-                                </StackPanel>
-                            </Button>
+                                   Click="Button_ResetOverlayKey_Click"
+                                   Content="恢复默认"
+                                   ToolTipService.ToolTip="恢复成 Home（36,0,0,0）" />
+                            <Button MinWidth="0"
+                                   Grid.Row="1" Grid.Column="1"
+                                   Padding="8,2"
+                                   Click="Button_DisableOverlayKey_Click"
+                                   Content="禁用"
+                                   ToolTipService.ToolTip="写成 0,0,0,0：这个键不再打开叠加层" />
                         </Grid>
-                        <StackPanel x:Name="Panel_Actions" Spacing="6" />
+
+                        <!--  ReShade 深度：写进活动预设的全局预处理器定义  -->
+                        <TextBlock x:Name="TextBlock_DepthTarget"
+                                  Margin="0,6,0,0"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                  Style="{ThemeResource CaptionTextBlockStyle}"
+                                  Text="深度"
+                                  TextWrapping="Wrap" />
+                        <CheckBox x:Name="CheckBox_DepthUpsideDown"
+                                 Content="深度上下翻转"
+                                 Checked="CheckBox_Depth_Changed"
+                                 Unchecked="CheckBox_Depth_Changed"
+                                 ToolTipService.ToolTip="RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN：深度缓冲上下颠倒时打开" />
+                        <CheckBox x:Name="CheckBox_DepthReversed"
+                                 Content="深度前后反向"
+                                 Checked="CheckBox_Depth_Changed"
+                                 Unchecked="CheckBox_Depth_Changed"
+                                 ToolTipService.ToolTip="RESHADE_DEPTH_INPUT_IS_REVERSED：反向 Z（1=近 0=远）时打开" />
+                        <CheckBox x:Name="CheckBox_DepthLogarithmic"
+                                 Content="对数深度"
+                                 Checked="CheckBox_Depth_Changed"
+                                 Unchecked="CheckBox_Depth_Changed"
+                                 ToolTipService.ToolTip="RESHADE_DEPTH_INPUT_IS_LOGARITHMIC：对数深度缓冲时打开" />
+                        <CheckBox x:Name="CheckBox_DepthMirrored"
+                                 Content="深度左右镜像"
+                                 Checked="CheckBox_Depth_Changed"
+                                 Unchecked="CheckBox_Depth_Changed"
+                                 ToolTipService.ToolTip="RESHADE_DEPTH_INPUT_IS_MIRRORED：深度左右颠倒时打开" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock VerticalAlignment="Center"
+                                      Style="{ThemeResource CaptionTextBlockStyle}"
+                                      Text="深度倍数" />
+                            <NumberBox x:Name="NumberBox_DepthMultiplier"
+                                      Width="130"
+                                      Minimum="0.05"
+                                      Maximum="8"
+                                      SmallChange="0.05"
+                                      SpinButtonPlacementMode="Compact"
+                                      PlaceholderText="1.0"
+                                      ValueChanged="NumberBox_Depth_ValueChanged"
+                                      ToolTipService.ToolTip="RESHADE_DEPTH_MULTIPLIER：整体缩放深度值；清空 = 默认 1.0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock VerticalAlignment="Center"
+                                      Style="{ThemeResource CaptionTextBlockStyle}"
+                                      Text="线性化远平面" />
+                            <NumberBox x:Name="NumberBox_DepthFarPlane"
+                                      Width="130"
+                                      Minimum="1"
+                                      Maximum="65535"
+                                      SmallChange="1"
+                                      SpinButtonPlacementMode="Compact"
+                                      PlaceholderText="1000.0"
+                                      ValueChanged="NumberBox_Depth_ValueChanged"
+                                      ToolTipService.ToolTip="RESHADE_DEPTH_LINEARIZATION_FAR_PLANE：线性化深度用的远平面；清空 = 默认 1000.0" />
+                        </StackPanel>
                     </StackPanel>
 
-                    <StackPanel Grid.Row="3" Spacing="8">
+                    <StackPanel Grid.Row="1" Spacing="8">
                         <Button x:Name="Button_OpenGameFolder"
                                HorizontalAlignment="Stretch"
                                Click="Button_OpenGameFolder_Click"
@@ -513,8 +512,13 @@
                                HorizontalAlignment="Stretch"
                                Click="Button_OpenAddonFolder_Click"
                                Content="打开插件目录" />
+                        <Button HorizontalAlignment="Stretch"
+                               Click="Button_OpenPackFolder_Click"
+                               Content="包目录"
+                               ToolTipService.ToolTip="打开覆盖包目录（ini_config.json / auto.json / presets\ 都放这里）" />
                     </StackPanel>
                 </Grid>
+                </ScrollViewer>
             </Border>
         </Grid>
 

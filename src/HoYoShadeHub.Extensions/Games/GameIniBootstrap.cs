@@ -152,6 +152,11 @@ public static class GameIniBootstrap
                     result.SyncedSecondary = true;
                 }
             }
+
+            // 落盘前最后一次收敛：写坏的热键（36,,0,,0,,0）在 ReShade 里等于这个键没绑 ——
+            // 现象就是「按 Home 打不开菜单」，而用户手改完 ini 又会被覆盖包存档等写回路径还原，
+            // 所以放在**启动前**统一修，两份 ini 都修（每个 runtime 各有自己的 [INPUT]）。
+            result.RepairedHotkeys = RepairHotkeys(ini) | RepairHotkeys(secondary);
         }
         catch
         {
@@ -161,8 +166,44 @@ public static class GameIniBootstrap
         return result;
     }
 
-    private static bool IsDisabledPreset(string? path)
+    /// <summary>
+    /// 把一份 ini 的 <c>[INPUT]</c> 热键收敛回 ReShade 的四段格式，返回有没有改过。
+    /// 任何失败都吞掉（只反映在返回值里），不挡启动。
+    /// </summary>
+    private static bool RepairHotkeys(string iniPath)
     {
+        try
+        {
+            if (!File.Exists(iniPath))
+            {
+                return false;
+            }
+
+            IniDocument ini = IniDocument.Load(iniPath);
+            bool changed = false;
+            foreach (string key in ini.GetSectionKeys(ReShadeHotkeys.InputSection).ToList())
+            {
+                string? value = ini.GetValue(ReShadeHotkeys.InputSection, key);
+                if (ReShadeHotkeys.TryNormalize(ReShadeHotkeys.InputSection, key, value, out string repaired))
+                {
+                    changed |= Set(ini, ReShadeHotkeys.InputSection, key, repaired);
+                }
+            }
+
+            if (changed)
+            {
+                ini.Save(iniPath);
+            }
+
+            return changed;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsDisabledPreset(string? path)    {
         string name = Path.GetFileName((path ?? string.Empty).Replace('\\', '/'));
         return string.Equals(name, DisabledDx11PresetFileName, StringComparison.OrdinalIgnoreCase)
             || string.Equals(name, "DX11 Disabled.ini", StringComparison.OrdinalIgnoreCase);
@@ -176,6 +217,14 @@ public static class GameIniBootstrap
             ini.RemoveKey(section, key);
             return true;
         }
+
+        // 写坏的热键值（36,,0,,0,,0 / 36,0,0,,0）在 ReShade 里等于这个键没绑，
+        // 任何一条进入 ini 的路径都不放过（含从第二 runtime 回灌主 ini 的那条）。
+        if (ReShadeHotkeys.TryNormalize(section, key, value, out string repaired))
+        {
+            value = repaired;
+        }
+
         if (string.Equals(ini.GetValue(section, key), value, StringComparison.Ordinal)) return false;
         ini.SetValue(section, key, value);
         return true;
@@ -238,7 +287,11 @@ public static class GameIniBootstrap
         bool singleEffects = IsSingleEffectsMode(addon);
         if (singleEffects)
         {
-            bool sourceChanged = ConfigureSingleEffects(main, final, primaryPath, ref changed);
+            bool sourceOnly = addon?.GetValue("General", "Dx11ReShadeOnly")?.Trim() == "1";
+            bool capChanged = Set(main, "INSTALL", "MaxEffectRuntimes", sourceOnly ? "1" : null);
+            bool sourceChanged = ConfigureSingleEffects(main, final, primaryPath, ref changed,
+                sourceOnly);
+            sourceChanged |= capChanged;
             if (changed) final.Save(secondaryPath);
             if (sourceChanged) main.Save(primaryPath);
             result.PrimaryRuntimeConfigured |= sourceChanged;
@@ -296,8 +349,11 @@ public static class GameIniBootstrap
         string? addonPath = source.GetValue("ADDON", "AddonPath");
         if (string.IsNullOrWhiteSpace(addonPath)) return null;
         string directory = Path.GetFullPath(addonPath.Trim(), Path.GetDirectoryName(Path.GetFullPath(primaryPath))!);
-        string config = Path.Combine(directory, "FsrBridgeDepthAddon.ini");
-        return File.Exists(config) ? IniDocument.Load(config) : null;
+
+        // 和插件同一条解析规则：原神有 FsrBridgeDepthAddon.hk4e.ini 时插件就读它，
+        // 启动器只认基名会读到另一个文件（用户改的键看不见）。
+        string? config = GameAddonPack.ResolveControllerIni(directory);
+        return config is null ? null : IniDocument.Load(config);
     }
 
     private static bool IsSingleEffectsMode(IniDocument? addon) =>
@@ -306,7 +362,7 @@ public static class GameIniBootstrap
 
     // The last shared path is also the one-time migration marker. It lets either
     // runtime change the selection; source wins if both were changed between launches.
-    private static bool ConfigureSingleEffects(IniDocument source, IniDocument final, string primaryPath, ref bool finalChanged)
+    private static bool ConfigureSingleEffects(IniDocument source, IniDocument final, string primaryPath, ref bool finalChanged, bool sourceOwnsMenu = false)
     {
         string? last = source.GetValue("GENERAL", SharedPresetKey);
         string? sourcePreset = source.GetValue("GENERAL", "PresetPath");
@@ -352,14 +408,23 @@ public static class GameIniBootstrap
         changed |= Set(source, "GENERAL", "HoYoShadeEffectsStage", "1");
         changed |= Set(source, "GENERAL", "NoReloadOnInit", "0");
         changed |= Set(source, "GENERAL", "SkipLoadingDisabledEffects", "0");
-        changed |= Set(source, "INPUT", "KeyOverlay", "0,0,0,0");
+        // A single DX11 runtime owns its native menu even when the controller addon
+        // is intentionally disabled. Never depend on that addon to restore Home.
+        if (sourceOwnsMenu)
+        {
+            string? shortcut = source.GetValue("INPUT", "KeyOverlay");
+            if (string.IsNullOrWhiteSpace(shortcut) || shortcut.Split(',')[0].Trim() == "0")
+                changed |= Set(source, "INPUT", "KeyOverlay", "36,0,0,0");
+            finalChanged |= Set(final, "INPUT", "KeyOverlay", "0,0,0,0");
+        }
+        else changed |= Set(source, "INPUT", "KeyOverlay", "0,0,0,0");
         foreach (string key in PrimaryHudKeys)
             changed |= Set(source, "OVERLAY", key, "0");
         changed |= Set(source, "OVERLAY", "HoYoShadeHomeOverlay", null);
         finalChanged |= Set(final, "GENERAL", "HoYoShadeEffectsStage", "2");
         finalChanged |= Set(final, "GENERAL", "NoReloadOnInit", "1");
         finalChanged |= Set(final, "GENERAL", SharedPresetKey, null);
-        finalChanged |= Set(final, "OVERLAY", "HoYoShadeHomeOverlay", "NR Input Effects");
+        finalChanged |= Set(final, "OVERLAY", "HoYoShadeHomeOverlay", sourceOwnsMenu ? null : "NR Input Effects");
         return changed;
     }
 
@@ -376,6 +441,11 @@ public static class GameIniBootstrap
         bool wasSingle = source.ContainsKey("GENERAL", "HoYoShadeEffectsStage")
             || source.ContainsKey("GENERAL", SharedPresetKey);
         bool changed = ClearSingleEffectsKeys(source);
+        // The cap is part of the managed single-runtime transition. Leaving that
+        // route must remove only our cap, otherwise later ordinary launches keep
+        // silently constrained to one runtime.
+        if (wasSingle && source.GetValue("INSTALL", "MaxEffectRuntimes")?.Trim() == "1")
+            changed |= Set(source, "INSTALL", "MaxEffectRuntimes", null);
         if (wasSingle && final is not null)
         {
             final.SetValue("GENERAL", "NoReloadOnInit", "0");
@@ -594,6 +664,9 @@ public sealed class GameIniBootstrapResult
     /// <summary>覆盖包 ini_config.json 这轮写进了游戏 ini</summary>
     public bool AppliedPackIniConfig { get; internal set; }
 
+    /// <summary>有写坏的 <c>[INPUT]</c> 热键（形如 <c>36,,0,,0,,0</c>）被收敛回了四段</summary>
+    public bool RepairedHotkeys { get; internal set; }
+
     /// <summary>从覆盖包 presets\ 新导入的预设数</summary>
     public int ImportedPackPresets { get; internal set; }
 
@@ -604,5 +677,5 @@ public sealed class GameIniBootstrapResult
 
     public bool PrimaryRuntimeConfigured { get; internal set; }
 
-    public bool ChangedAnything => CreatedFromTemplate || TutorialMarkedDone || CreatedSecondary || SyncedSecondary || Aligned || PrimaryRuntimeConfigured;
+    public bool ChangedAnything => CreatedFromTemplate || TutorialMarkedDone || CreatedSecondary || SyncedSecondary || Aligned || PrimaryRuntimeConfigured || RepairedHotkeys;
 }

@@ -132,13 +132,13 @@
                 <!--  模型替换（XXMI）：MI 实例 + Mods 管理  -->
                 <NavigationViewItem Name="NavigationViewItem_Xxmi"
                                     Tag="XxmiPage"
-                                    ToolTipService.ToolTip="模型替换（XXMI）">
+                                    ToolTipService.ToolTip="Mod（XXMI / Rocket）">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE7B8;" />
                     </NavigationViewItem.Icon>
                     <NavigationViewItem.Content>
                         <Border Height="40">
-                            <TextBlock x:Name="TextBlock_XxmiNav" VerticalAlignment="Center" Text="模型替换" />
+                            <TextBlock x:Name="TextBlock_XxmiNav" VerticalAlignment="Center" Text="Mod" />
                         </Border>
                     </NavigationViewItem.Content>
                 </NavigationViewItem>

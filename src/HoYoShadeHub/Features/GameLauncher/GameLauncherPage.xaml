@@ -750,14 +750,14 @@
                 <CheckBox x:Name="CheckBox_UseRocket" Content="启用Rocket"
                           IsChecked="{x:Bind UseRocket, Mode=TwoWay}"
                           IsEnabled="{x:Bind CanUseRocket, Mode=OneWay}" Margin="0,1"
-                          ToolTipService.ToolTip="点击启动游戏只配置 Rocket 和桥加载链，不启动游戏、不调用 Hub 注入器。" />
+                          ToolTipService.ToolTip="该模式允许你从第三方的模组加载器启动，不仅限于Rocket,还包括SSMT等可加载dll的启动器。点击启动游戏只完成文件配置，不启动游戏、不调用 Hub 注入器。" />
                 <Button Click="Button_RocketSettings_Click" Padding="8,4" VerticalAlignment="Center"
                         IsEnabled="{x:Bind CanUseRocket, Mode=OneWay}"
                         ToolTipService.ToolTip="Rocket 安装位置（启用 XXMI 时禁用）">
                     <FontIcon Glyph="&#xE713;" FontSize="14" />
                 </Button>
             </StackPanel>
-            <TextBlock Text="点击启动游戏完成准备后，请手动从 Rocket 启动原神。Rocket 已打开时请重新确认额外 DLL 设置。"
+            <TextBlock Text="点击启动游戏完成准备后，请手动从 Rocket（或 SSMT 等第三方加载器）启动游戏。加载器已打开时请重新确认额外 DLL 设置。"
                        Visibility="{x:Bind RocketInstructionVisibility, Mode=OneWay}"
                        TextWrapping="Wrap" MaxWidth="300" FontSize="12" Margin="0,2,0,6"
                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -792,26 +792,25 @@
                       Visibility="{x:Bind HoYoShadeRowVisibility, Mode=OneWay}"
                       Margin="0,1" />
 
-            <!--  鸣潮：原版 ReShade（官方 Addon 版）装进游戏本体进程目录，dxgi.dll 由游戏自己加载。
-                  没装显示「安装 ReShade」；装了显示「启用 ReShade」（取消勾选只是把文件改名停用，文件保留可恢复）。  -->
+            <!-- 鸣潮：ReShade DLL 留在 Hub，窗口就绪后直接注入，不走 inject.exe 或游戏目录代理。 -->
             <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind VanillaReShadeVisibility, Mode=OneWay}">
                 <CheckBox x:Name="CheckBox_UseVanillaReShade"
-                          Content="启用 ReShade"
+                          Content="启用 ReShade 注入"
                           IsChecked="{x:Bind UseVanillaReShade, Mode=TwoWay}"
                           Visibility="{x:Bind VanillaReShadeToggleVisibility, Mode=OneWay}"
                           Margin="0,1"
-                          ToolTipService.ToolTip="勾上 = 游戏本体目录里有 dxgi.dll，进游戏就会加载 ReShade，按 Home 开覆盖层。取消勾选只是把文件改名停用（随时勾回来），不删文件。" />
+                          ToolTipService.ToolTip="由 Hub 等鸣潮客户端窗口后直接加载 ReShade64.dll，不调用 inject.exe，不往游戏目录安装 dxgi.dll。注入可能被游戏保护拒绝，不保证兼容。" />
                 <Button x:Name="Button_InstallVanillaReShade"
                         Content="安装 ReShade"
                         Click="Button_InstallVanillaReShade_Click"
                         Visibility="{x:Bind VanillaReShadeInstallVisibility, Mode=OneWay}"
                         Padding="8,4" VerticalAlignment="Center"
-                        ToolTipService.ToolTip="下载官方「可加载插件」版原版 ReShade，装进游戏本体目录。鸣潮注册的 exe 只是启动器壳，装壳目录不会被游戏加载。" />
+                        ToolTipService.ToolTip="下载原版 ReShade 到 Hub 缓存供直接注入；游戏目录只在缺少时创建配置。" />
                 <Button x:Name="Button_RemoveVanillaReShade"
                         Click="Button_RemoveVanillaReShade_Click"
                         Visibility="{x:Bind VanillaReShadeToggleVisibility, Mode=OneWay}"
                         Padding="6,2" VerticalAlignment="Center"
-                        ToolTipService.ToolTip="卸载：只删本启动器装的那份 dxgi.dll（别人装的 / 改过的不动）。">
+                        ToolTipService.ToolTip="移除 Hub 中的每游戏注入副本；游戏配置与旧代理备份保留。">
                     <FontIcon Glyph="&#xE74D;" FontSize="12" />
                 </Button>
             </StackPanel>

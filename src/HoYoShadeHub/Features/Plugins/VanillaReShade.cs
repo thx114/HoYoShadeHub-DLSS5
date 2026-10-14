@@ -63,6 +63,33 @@ internal static class VanillaReShade
             ? real
             : (string.IsNullOrWhiteSpace(registeredDirectory) ? null : registeredDirectory);
 
+    public static bool IsInjectionInstalled(string? directory)
+        => !string.IsNullOrWhiteSpace(directory) && ReShadeInjectionDeployment.IsInstalled(CacheDirectory, directory);
+
+    public static bool IsInjectionEnabled(string? directory)
+        => !string.IsNullOrWhiteSpace(directory) && ReShadeInjectionDeployment.IsEnabled(CacheDirectory, directory);
+
+    public static string PrepareInjection(string directory)
+    {
+        ReShadeInjectionDeployment.SetEnabled(CacheDirectory, directory, true, CachedDllPath);
+        return ReShadeInjectionDeployment.DllPath(CacheDirectory, directory);
+    }
+
+    public static void SetInjectionEnabled(string directory, bool enabled)
+        => ReShadeInjectionDeployment.SetEnabled(CacheDirectory, directory, enabled, CachedDllPath);
+
+    public static void RemoveInjection(string directory)
+        => ReShadeInjectionDeployment.Remove(CacheDirectory, directory);
+
+    public static async Task<string> InstallForInjectionAsync(string directory, CancellationToken cancellationToken)
+    {
+        string dll = await EnsureDllAsync(null, cancellationToken);
+        ReShadeInjectionDeployment.SetEnabled(CacheDirectory, directory, true, dll);
+        string ini = Path.Combine(directory, "ReShade.ini");
+        if (!File.Exists(ini)) ReShadeProfile.CreateNew(ini).Save();
+        return ReShadeInjectionDeployment.DllPath(CacheDirectory, directory);
+    }
+
     /// <summary>这个目录里是不是本启动器装的原版 ReShade（认安装标记，且文件还在）</summary>
     public static bool IsInstalled(string? directory)
     {
@@ -346,39 +373,6 @@ internal static class VanillaReShade
 
         Logger.LogInformation("原版 ReShade 已下载：{Path}", CachedDllPath);
         return CachedDllPath;
-    }
-
-    /// <summary>
-    /// 装到游戏目录：ReShade64.dll 以 <c>dxgi.dll</c> 的名字铺进去（DX11 / DX12 游戏都会被它拦到），
-    /// 没有 ReShade.ini 就补一份最小的，并写安装标记（供 <see cref="RemoveFromGame"/> 只删自己那份）。
-    /// <para>
-    /// 目录必须传 <b>游戏本体进程所在目录</b> —— 鸣潮这类「注册 exe 是启动器壳」的游戏要用
-    /// <see cref="ResolveTargetDirectory"/> 解析真身目录，否则 dxgi.dll 不会被游戏加载。
-    /// </para>
-    /// 返回装好的游戏目录。
-    /// </summary>
-    public static async Task<string> InstallToGameAsync(string gameDirectory, IProgress<string>? progress, CancellationToken cancellationToken)
-    {
-        string dll = await EnsureDllAsync(progress, cancellationToken);
-
-        Directory.CreateDirectory(gameDirectory);
-
-        string target = Path.Combine(gameDirectory, "dxgi.dll");
-        string staged = target + ".hysx-new";
-        File.Copy(dll, staged, overwrite: true);
-        File.Move(staged, target, overwrite: true);
-
-        string ini = Path.Combine(gameDirectory, "ReShade.ini");
-
-        if (!File.Exists(ini))
-        {
-            ReShadeProfile.CreateNew(ini).Save();
-        }
-
-        WriteMarker(gameDirectory, target);
-
-        Logger.LogInformation("原版 ReShade 已装进游戏目录：{Dir}", gameDirectory);
-        return gameDirectory;
     }
 
     /// <summary>从自解压安装器里把 ReShade64.dll 抠出来（见类注释的结构说明）</summary>

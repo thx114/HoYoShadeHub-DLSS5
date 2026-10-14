@@ -11,7 +11,7 @@ public static class RocketIntegration
     public const string DefaultRocketConfigPath = @"D:\APPS\Rocket 管理器最新版\backing\config.ini";
     public const string WaitingText = "等待 Rocket 启动游戏";
     public const string BridgeChainFileName = "Dx11FsrBridge.chain.txt";
-    public sealed record PrepareResult(bool Success, string Message, string? ConfigPath = null, string? BackupPath = null);
+    public sealed record PrepareResult(bool Success, string Message, string? ConfigPath = null, string? BackupPath = null, IReadOnlyList<string>? DllPaths = null);
     /// <summary>原神专用（FSR 桥链）——火箭的 d3d11 主 DLL 是 GIMI，链只对原神成立。</summary>
     public static bool SupportsGame(string? biz) => biz?.StartsWith("hk4e_", StringComparison.OrdinalIgnoreCase) == true;
 
@@ -105,52 +105,108 @@ public static class RocketIntegration
         catch (Exception ex) { return new(false, "准备桥加载链失败：" + ex.Message); }
     }
 
-    /// <summary>Reject unknown formats; preserve all unrelated Rocket options byte-for-byte.</summary>
+    /// <summary>
+    /// 写 <c>[用户设置] 原神DLL路径</c> 和 <c>[注入设置] 原神第三方DLL启用</c>：
+    /// 键已存在就改值（空值/火箭占位值同样整体替换）；键整条缺失就补进对应节末尾
+    /// （Rocket 从没配置过 DLL 路径时配置项可能不存在）。目标节本身缺失仍拒绝——
+    /// 那通常意味着选错了 config.ini。其余行逐字节保留；重复键拒绝歧义。
+    /// </summary>
     public static byte[] BuildRocketConfiguration(byte[] original, string bridgeDllPath)
     {
         RequireDll(bridgeDllPath, "Dx11FsrBridge.dll");
+        byte[] withPath = RewriteKeyInSection(original, "用户设置", "原神DLL路径", Path.GetFullPath(bridgeDllPath));
+        return RewriteKeyInSection(withPath, "注入设置", "原神第三方DLL启用", "true");
+    }
+
+    /// <summary>
+    /// 写 <c>[注入设置] &lt;游戏名&gt;第三方DLL启用</c>——火箭按游戏名的第三方 DLL 注入总开关，
+    /// 插件 DLL 列表只有在它为 <c>true</c> 时才生效。键缺失整条补全、逐字节保留、重复键/缺节拒绝，同上。
+    /// </summary>
+    public static byte[] BuildThirdPartyEnableConfiguration(byte[] original, string gameName, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(gameName)) throw new InvalidDataException("缺少火箭配置里的游戏名。");
+        return RewriteKeyInSection(original, "注入设置", gameName + "第三方DLL启用", enabled ? "true" : "false");
+    }
+
+    /// <summary>把 <paramref name="sectionName"/> 节里的 <paramref name="key"/> 改成 <paramref name="wanted"/>：
+    /// 键整条缺失就补在节内最后一个内容行之后；节缺失或键重复抛 <see cref="InvalidDataException"/>。
+    /// 其余内容逐字节保留（含 BOM 与换行风格）。</summary>
+    private static byte[] RewriteKeyInSection(byte[] original, string sectionName, string key, string wanted)
+    {
         bool bom = original.Length >= 3 && original[0] == 0xEF && original[1] == 0xBB && original[2] == 0xBF;
         string text = new UTF8Encoding(false, true).GetString(original, bom ? 3 : 0, original.Length - (bom ? 3 : 0));
-        string section = "";
-        int pathCount = 0, enabledCount = 0;
-        string updated = Regex.Replace(text, @"[^\r\n]+", match =>
+        string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+
+        var lines = new List<string>();
+        foreach (Match match in Regex.Matches(text, @"[^\r\n]*(?:\r\n|\n|\r|$)"))
         {
-            string line = match.Value, trimmed = line.Trim();
-            if (trimmed.StartsWith('[') && trimmed.EndsWith(']')) { section = trimmed[1..^1].Trim(); return line; }
-            if (trimmed.StartsWith(';') || trimmed.StartsWith('#')) return line;
-            int equal = line.IndexOf('='); if (equal < 0) return line;
-            string key = line[..equal].Trim(); string? wanted = null;
-            if (section == "用户设置" && key == "原神DLL路径") { ++pathCount; wanted = Path.GetFullPath(bridgeDllPath); }
-            if (section == "注入设置" && key == "原神第三方DLL启用") { ++enabledCount; wanted = "true"; }
-            if (wanted is null || string.Equals(line[(equal + 1)..].Trim(), wanted, StringComparison.Ordinal)) return line;
-            int valueStart = equal + 1; while (valueStart < line.Length && char.IsWhiteSpace(line[valueStart])) ++valueStart;
-            return line[..valueStart] + wanted;
-        });
-        if (pathCount != 1 || enabledCount != 1)
-            throw new InvalidDataException("Rocket 配置格式不明确：必须各有一个 [用户设置] 原神DLL路径和 [注入设置] 原神第三方DLL启用；未修改配置。");
-        if (text == updated) return original;
+            if (match.Length > 0) lines.Add(match.Value);
+        }
+
+        string section = "";
+        bool haveSection = false;
+        int insertAfter = -1, count = 0;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            string line = lines[i], trimmed = line.Trim();
+            if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+            {
+                section = trimmed[1..^1].Trim();
+                if (section == sectionName) { haveSection = true; insertAfter = i; }
+                continue;
+            }
+            if (section != sectionName) continue;
+            if (trimmed.Length > 0) insertAfter = i;
+            if (trimmed.Length == 0 || trimmed.StartsWith(';') || trimmed.StartsWith('#')) continue;
+            int equal = line.IndexOf('='); if (equal < 0) continue;
+            if (line[..equal].Trim() != key) continue;
+            ++count; if (count > 1) continue;
+            if (string.Equals(line[(equal + 1)..].Trim(), wanted, StringComparison.Ordinal)) continue;
+            int valueStart = equal + 1;
+            // Empty values still contain the physical line ending. Never consume CR/LF.
+            while (valueStart < line.Length && line[valueStart] is ' ' or '\t') ++valueStart;
+            lines[i] = line[..valueStart] + wanted + NewlineOf(line);
+        }
+
+        if (count > 1)
+            throw new InvalidDataException("Rocket 配置里 [" + sectionName + "] 的 " + key + " 键重复，拒绝猜哪个生效；未修改配置。");
+        if (!haveSection)
+            throw new InvalidDataException("Rocket 配置缺少 [" + sectionName + "] 节，无法补全 " + key + "；未修改配置。");
+        if (count == 0)
+        {
+            // 键整条缺失时补在节内最后一个内容行之后（不越过节尾空行）。
+            string anchor = lines[insertAfter], added = key + " = " + wanted + newline;
+            lines[insertAfter] = anchor + (NewlineOf(anchor).Length == 0 ? newline : "") + added;
+        }
+        string updated = string.Concat(lines);
+        if (string.Equals(updated, text, StringComparison.Ordinal)) return original;
         byte[] content = Encoding.UTF8.GetBytes(updated);
         return bom ? Encoding.UTF8.GetPreamble().Concat(content).ToArray() : content;
     }
-
     /// <summary>
     /// 写「<c>&lt;游戏名&gt;插件DLL列表</c>」和「<c>&lt;游戏名&gt;插件启用列表</c>」（都在 <c>[用户设置]</c> 节）：
     /// 火箭按这个列表把多份第三方 DLL 注进游戏进程，列表顺序 = 注入顺序（OptiScaler 在前、ReShade 在后，
     /// 和原神链一致）。键不存在就插到 <c>[用户设置]</c> 节末尾，其余行逐字节保留。
+    /// 同时把 <c>[注入设置] &lt;游戏名&gt;第三方DLL启用</c> 写成 <c>true</c>——这是火箭的注入总开关，
+    /// 缺了它火箭不会注列表里的任何 DLL；键缺失同样整条补全。
     /// </summary>
     public static byte[] BuildPluginListConfiguration(byte[] original, string gameName, IReadOnlyList<string> dllPaths)
     {
         if (string.IsNullOrWhiteSpace(gameName)) throw new InvalidDataException("缺少火箭配置里的游戏名。");
         if (dllPaths.Count == 0) throw new InvalidDataException("插件 DLL 列表为空。");
         foreach (string path in dllPaths) RequirePluginDll(path);
-        return BuildPluginListValues(original, gameName,
+        byte[] listed = BuildPluginListValues(original, gameName,
             string.Join(PluginListSeparator, dllPaths.Select(Path.GetFullPath)),
             string.Join(PluginListSeparator, dllPaths.Select(_ => "1")), insertIfMissing: true);
+        byte[] updated = BuildThirdPartyEnableConfiguration(listed, gameName, enabled: true);
+        VerifyPluginListConfiguration(updated, gameName, dllPaths);
+        return updated;
     }
-
     /// <summary>
     /// 把插件列表清空（取消勾选火箭模式时的可逆动作）：值留空 = Rocket 没东西可注。
     /// 键本来就不存在时**不插空键**（只返回原样），所以对没用过这个机制的游戏是彻底的空操作。
+    /// 不动 <c>[注入设置] &lt;游戏名&gt;第三方DLL启用</c> 总开关：那是 Rocket 界面里的用户设置，
+    /// 空列表已经等于没东西可注，翻它只会覆盖用户在 Rocket 里亲手选的开关状态。
     /// </summary>
     public static byte[] BuildClearedPluginListConfiguration(byte[] original, string gameName)
     {
@@ -177,7 +233,7 @@ public static class RocketIntegration
         string section = "";
         bool haveUserSection = false;
         int dllCount = 0, enabledCount = 0;
-        int insertAfter = -1;   // [用户设置] 里最后一个非空行之后 = 插新键的位置（不越过尾随空行）
+        int insertAfter = -1;   // 行索引，不用修改值之前的字符偏移（不越过尾随空行）
         for (int i = 0; i < lines.Count; i++)
         {
             (int start, int length, string line) = lines[i];
@@ -185,11 +241,11 @@ public static class RocketIntegration
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
             {
                 section = trimmed[1..^1].Trim();
-                if (section == "用户设置") haveUserSection = true;
+                if (section == "用户设置") { haveUserSection = true; insertAfter = i; }
                 continue;
             }
             if (section != "用户设置") continue;
-            if (trimmed.Length > 0) insertAfter = start + length;
+            if (trimmed.Length > 0) insertAfter = i;
             if (trimmed.StartsWith(';') || trimmed.StartsWith('#')) continue;
             int equal = line.IndexOf('=');
             if (equal < 0) continue;
@@ -200,7 +256,8 @@ public static class RocketIntegration
             if (wanted is null || dllCount > 1 || enabledCount > 1) continue;
             if (string.Equals(line[(equal + 1)..].Trim(), wanted, StringComparison.Ordinal)) continue;
             int valueStart = equal + 1;
-            while (valueStart < line.Length && char.IsWhiteSpace(line[valueStart])) ++valueStart;
+            // Empty values still contain the physical line ending. Never consume CR/LF.
+            while (valueStart < line.Length && line[valueStart] is ' ' or '\t') ++valueStart;
             lines[i] = (start, length, line[..valueStart] + wanted + NewlineOf(line));
         }
 
@@ -221,7 +278,9 @@ public static class RocketIntegration
             }
             else
             {
-                updated = updated[..insertAfter] + added + updated[insertAfter..];
+                int offset = lines.Take(insertAfter + 1).Sum(x => x.Text.Length);
+                string separator = NewlineOf(lines[insertAfter].Text).Length == 0 ? newline : "";
+                updated = updated[..offset] + separator + added + updated[offset..];
             }
         }
 
@@ -232,6 +291,49 @@ public static class RocketIntegration
 
     private static string NewlineOf(string line) =>
         line.EndsWith("\r\n", StringComparison.Ordinal) ? "\r\n" : line.EndsWith('\n') ? "\n" : line.EndsWith('\r') ? "\r" : "";
+
+    // Match Rocket's physical INI key/value lines, not a substring somewhere in the file.
+    // Reject historical orphan continuations before writing; do not guess which lines to delete.
+    private static void VerifyPluginListConfiguration(byte[] bytes, string gameName, IReadOnlyList<string> dllPaths)
+    {
+        bool bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+        string text = new UTF8Encoding(false, true).GetString(bytes, bom ? 3 : 0, bytes.Length - (bom ? 3 : 0));
+        string section = "";
+        string? paths = null, enabled = null, thirdParty = null;
+        int pathCount = 0, enabledCount = 0, thirdPartyCount = 0;
+        foreach (string line in Regex.Split(text, @"\r\n|\n|\r"))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith(';') || trimmed.StartsWith('#')) continue;
+            if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
+            {
+                section = trimmed[1..^1].Trim();
+                continue;
+            }
+            int equal = line.IndexOf('=');
+            if (section == "用户设置")
+            {
+                if (equal < 0)
+                    throw new InvalidDataException("Rocket [用户设置] 有孤立值行，请先从备份恢复有效配置；未猜测删除内容。");
+                string key = line[..equal].Trim();
+                string value = line[(equal + 1)..].Trim(' ', '\t');
+                if (key == gameName + "插件DLL列表") { paths = value; ++pathCount; }
+                else if (key == gameName + "插件启用列表") { enabled = value; ++enabledCount; }
+            }
+            else if (section == "注入设置" && equal >= 0)
+            {
+                string key = line[..equal].Trim();
+                if (key == gameName + "第三方DLL启用") { thirdParty = line[(equal + 1)..].Trim(' ', '\t'); ++thirdPartyCount; }
+            }
+        }
+        string expectedPaths = string.Join(PluginListSeparator, dllPaths.Select(Path.GetFullPath));
+        string expectedEnabled = string.Join(PluginListSeparator, dllPaths.Select(_ => "1"));
+        if (pathCount != 1 || enabledCount != 1 || thirdPartyCount != 1
+            || !string.Equals(paths, expectedPaths, StringComparison.Ordinal)
+            || !string.Equals(enabled, expectedEnabled, StringComparison.Ordinal)
+            || !string.Equals(thirdParty, "true", StringComparison.Ordinal))
+            throw new InvalidDataException("Rocket 插件列表语义回读失败：DLL 路径/顺序、启用列表或 [注入设置] 注入总开关与所选模块不一致。");
+    }
 
     private static void RequirePluginDll(string path)
     {
@@ -246,16 +348,20 @@ public static class RocketIntegration
     /// <summary>写插件 DLL 列表（带备份、回读验证）。</summary>
     public static PrepareResult PreparePluginList(string? configPath, string gameName, IReadOnlyList<string> dllPaths)
     {
+        string? backup = null;
         try
         {
             if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
                 return new(false, "找不到 Rocket config.ini，请在 Rocket 设置中选择安装目录。", configPath);
             byte[] original = File.ReadAllBytes(configPath);
             byte[] updated = BuildPluginListConfiguration(original, gameName, dllPaths);
-            string? backup = WriteBackedUp(configPath, updated, "hysx-rocket", original);
+            backup = WriteBackedUp(configPath, updated, "hysx-rocket", original);
+            byte[] readback = File.ReadAllBytes(configPath);
+            VerifyPluginListConfiguration(readback, gameName, dllPaths);
+            if (!readback.SequenceEqual(updated)) throw new IOException("Rocket 配置在写入后改变，请重新准备。");
             return new(true, WaitingText, Path.GetFullPath(configPath), backup);
         }
-        catch (Exception ex) { return new(false, "准备 Rocket 插件列表失败：" + ex.Message, configPath); }
+        catch (Exception ex) { return new(false, "准备 Rocket 插件列表失败：" + ex.Message, configPath, backup); }
     }
 
     /// <summary>

@@ -41,6 +41,9 @@ def main():
         for name in framework.namelist():
             if not name.startswith('HoYoShade/') or name.endswith('/') or '/Addons/' in name:
                 continue
+            # Also exclude it when the framework comes from an older ZIP.
+            if name.replace('\\', '/').rsplit('/', 1)[-1].casefold() == 'gravity.fx':
+                continue
             if name.lower().endswith(('.log', '.bak', '.dmp', '.db')):
                 continue
             data = framework.read(name)
@@ -71,6 +74,7 @@ def main():
             if archive == ordinary:
                 assert not any(n.startswith('HoYoShade/') for n in names)
             else:
+                assert not any(n.replace('\\', '/').rsplit('/', 1)[-1].casefold() == 'gravity.fx' for n in names)
                 assert 'HoYoShade/ReShade64.dll' in names
                 assert 'Language=zh-CN' in z.read('HoYoShade/ReShade.ini').decode('utf-8')
             records.append({'zip':str(archive.resolve()), 'size':archive.stat().st_size, 'sha256':digest(archive.read_bytes()), 'files':len(names), 'uploadToGithub':archive == ordinary})

@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace HoYoShadeHub.Features.Plugins;
@@ -22,6 +21,15 @@ public static class PackActionConsent
 {
     private static string HashKey(string gameBiz) => $"pack_auto_consent_{gameBiz}";
     private static string DisabledKey(string gameBiz) => $"pack_auto_disabled_{gameBiz}";
+    private static string RecordKey(string gameBiz) => $"pack_auto_consent_record_{gameBiz}";
+
+    private static PackConsentRecord? Read(string gameBiz)
+    {
+        string? raw = AppConfig.GetValue<string>(null, RecordKey(gameBiz));
+        return raw is not null ? PackConsentRecord.Parse(raw)
+            : PackConsentRecord.ParseLegacy(AppConfig.GetValue<string>(null, HashKey(gameBiz)),
+                AppConfig.GetValue<string>(null, DisabledKey(gameBiz)));
+    }
 
     /// <summary>auto.json 的内容 hash；没有文件返回空串</summary>
     public static string ComputeHash(string? packRoot)
@@ -39,7 +47,7 @@ public static class PackActionConsent
                 return string.Empty;
             }
 
-            return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+            return PackAutoActionSnapshot.ComputeHash(File.ReadAllBytes(path));
         }
         catch
         {
@@ -49,38 +57,23 @@ public static class PackActionConsent
 
     public static bool IsConsented(string gameBiz, string hash)
         => hash.Length > 0
-           && string.Equals(AppConfig.GetValue<string>(null, HashKey(gameBiz)), hash, StringComparison.Ordinal);
+           && Read(gameBiz) is { } record && string.Equals(record.Hash, hash, StringComparison.Ordinal);
 
     /// <summary>这个 hash 下被用户禁用的动作名（hash 对不上 = 还没问过 → 空集）</summary>
     public static HashSet<string> DisabledActions(string gameBiz, string hash)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        string? raw = AppConfig.GetValue<string>(null, DisabledKey(gameBiz));
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return result;
-        }
-
-        int split = raw.IndexOf(':');
-        if (split <= 0
-            || !string.Equals(raw[..split], hash, StringComparison.Ordinal))
-        {
-            return result;
-        }
-
-        foreach (string name in raw[(split + 1)..].Split('|', StringSplitOptions.RemoveEmptyEntries))
-        {
-            result.Add(name);
-        }
-
-        return result;
+        PackConsentRecord? record = Read(gameBiz);
+        if (record is null || record.Hash != hash)
+            throw new InvalidDataException("覆盖包同意记录缺失或损坏；拒绝执行。");
+        return record.Disabled;
     }
 
     /// <summary>记住这次同意：hash + 没勾选的动作名（disabled 为空 = 全装）</summary>
     public static void Save(string gameBiz, string hash, IEnumerable<string> disabledNames)
     {
-        AppConfig.SetValue<string>(hash, HashKey(gameBiz));
-        AppConfig.SetValue<string>(hash + ":" + string.Join('|', disabledNames), DisabledKey(gameBiz));
+        string raw = PackConsentRecord.Serialize(hash, disabledNames);
+        if (!AppConfig.TrySetValue(RecordKey(gameBiz), raw))
+            throw new IOException("覆盖包同意记录未持久化；拒绝执行。");
     }
 }
 

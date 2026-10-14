@@ -1,4 +1,4 @@
-using HoYoShadeHub.Extensions.Games;
+﻿using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
@@ -196,6 +196,31 @@ internal static class GameIniBootstrapTests
             File.WriteAllText(coexistIni, "[General]\nFinalRuntimeOnly=1\n");
             GameIniBootstrap.Ensure(coexist, host, true);
             Check(Load(coexist).GetValue("INPUT", "KeyOverlay") == "0,0,0,0", "关闭共存恢复 DX11 抑制");
+
+            // DX11-only menu must remain usable with the depth controller disabled.
+            GameEntry sourceOnly = Entry("dx11-only-home");
+            GameIniBootstrap.Ensure(sourceOnly, host, true);
+            IniDocument sourceOnlyIni = Load(sourceOnly);
+            sourceOnlyIni.SetValue("ADDON", "AddonPath", coexistAddons);
+            sourceOnlyIni.SetValue("ADDON", "DisabledAddons", "FSR Bridge Depth Provider@FsrBridgeDepthAddon.addon64,Other@other.addon64");
+            sourceOnlyIni.SetValue("INPUT", "KeyOverlay", "0,0,0,0");
+            sourceOnlyIni.Save(sourceOnly.ReShadeIniPath!);
+            File.WriteAllText(coexistIni, "[General]\nEffectsOwner=DX11PreNR\nFinalRuntimeOnly=0\nDx11ReShadeOnly=1\n");
+            GameIniBootstrap.Ensure(sourceOnly, host, true);
+            Check(Load(sourceOnly).GetValue("INPUT", "KeyOverlay") == "36,0,0,0", "DX11单runtime禁用controller时仍恢复Home");
+            Check(Load(sourceOnly).GetValue("ADDON", "DisabledAddons") == "FSR Bridge Depth Provider@FsrBridgeDepthAddon.addon64,Other@other.addon64", "Home修复不重新开启controller或其他插件");
+            Check(IniDocument.Load(Secondary(sourceOnly)).GetValue("INPUT", "KeyOverlay") == "0,0,0,0"
+                && !IniDocument.Load(Secondary(sourceOnly)).ContainsKey("OVERLAY", "HoYoShadeHomeOverlay"), "DX11单runtime最终层不争用Home");
+            Check(!GameIniBootstrap.Ensure(sourceOnly, host, true).ChangedAnything, "DX11单runtime Home准备幂等");
+            sourceOnlyIni = Load(sourceOnly);
+            sourceOnlyIni.SetValue("INPUT", "KeyOverlay", "113,1,0,0");
+            sourceOnlyIni.Save(sourceOnly.ReShadeIniPath!);
+            GameIniBootstrap.Ensure(sourceOnly, host, true);
+            Check(Load(sourceOnly).GetValue("INPUT", "KeyOverlay") == "113,1,0,0", "DX11单runtime保留用户自定义菜单键与修饰键");
+            Check(Load(sourceOnly).GetValue("INSTALL", "MaxEffectRuntimes") == "1", "单runtime明确设置cap=1");
+            File.WriteAllText(coexistIni, "[General]\nFinalRuntimeOnly=1\n");
+            GameIniBootstrap.Ensure(sourceOnly, host, true);
+            Check(!Load(sourceOnly).ContainsKey("INSTALL", "MaxEffectRuntimes"), "退出受管理单runtime清除cap");
 
             // A real preset is required for initial migration; all files stay in this fixture.
             const string singleConfig = "[General]\nEffectsOwner=DX11PreNR\nFinalRuntimeOnly=0\n";

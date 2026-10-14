@@ -53,8 +53,35 @@ public sealed partial class GameLauncherPage : PageBase
     private readonly HoYoPlayService _hoYoPlayService ;
     private readonly HoYoShadeVersionService _versionService ;
 
-    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _dispatchTimer;
     private bool _isApplyingSavedLaunchOptions;
+    private bool _isLauncherPageLoaded;
+    private readonly LatestRequestGate _versionRequests = new();
+    private readonly LatestRequestGate _dx12Requests = new();
+    private readonly LatestRequestGate _backgroundRequests = new();
+    private readonly LatestRequestGate _runningRequests = new();
+    private readonly LatestRequestGate _shadeRequests = new();
+    private readonly LatestRequestGate _locateRequests = new();
+    private readonly LatestRequestGate _serverRequests = new();
+
+    private GameId? SnapshotGameId() => CurrentGameId is { } gameId
+        ? new() { Id = gameId.Id, GameBiz = gameId.GameBiz }
+        : null;
+
+    private bool IsPageRequestCurrent(LatestRequestGate requests, long request, GameId gameId) =>
+        _isLauncherPageLoaded && requests.IsCurrent(request)
+        && CurrentGameId is { } currentGame
+        && currentGame.Id == gameId.Id && CurrentGameBiz == gameId.GameBiz;
+
+    private void InvalidatePageRequests()
+    {
+        _versionRequests.Invalidate();
+        _dx12Requests.Invalidate();
+        _backgroundRequests.Invalidate();
+        _runningRequests.Invalidate();
+        _shadeRequests.Invalidate();
+        _locateRequests.Invalidate();
+        _serverRequests.Invalidate();
+    }
 
     /// <summary>
     /// 获取本地化的游戏名称
@@ -77,13 +104,13 @@ public sealed partial class GameLauncherPage : PageBase
         _backgroundService = AppConfig.GetService<BackgroundService>();
         _hoYoPlayService = AppConfig.GetService<HoYoPlayService>();
         _versionService = new HoYoShadeVersionService(AppConfig.UserDataFolder);
-        _dispatchTimer = DispatcherQueue.CreateTimer();
-        _dispatchTimer.Interval = TimeSpan.FromMilliseconds(100);
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        _pageLaunchCts?.Cancel();
+        InvalidatePageRequests();
         LoadLaunchOptionsForCurrentClient();
     }
 
@@ -97,6 +124,8 @@ public sealed partial class GameLauncherPage : PageBase
 
     protected override void OnLoaded()
     {
+        if (_isLauncherPageLoaded || CurrentGameId is null) return;
+        _isLauncherPageLoaded = true;
         InitializeGameFeature();
         CheckGameVersion();
         // 火箭模式那类「Hub 不启动游戏」的路线：自己找进程，进了游戏才有状态、才有会话日志
@@ -116,10 +145,14 @@ public sealed partial class GameLauncherPage : PageBase
 
     protected override void OnUnloaded()
     {
+        _isLauncherPageLoaded = false;
+        InvalidatePageRequests();
         WeakReferenceMessenger.Default.UnregisterAll(this);
-        _dispatchTimer.Stop();
         StopExternalGameWatch();
-        BackgroundImages = null!;
+        _pageLaunchCts?.Cancel();
+        processTimer?.Stop();
+        processTimer = null;
+        BackgroundImages = [];
     }
 
 
@@ -133,6 +166,9 @@ public sealed partial class GameLauncherPage : PageBase
 
     private async void CheckShadeInstallation()
     {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _shadeRequests.Begin();
+        if (!IsPageRequestCurrent(_shadeRequests, request, gameId)) return;
         try
         {
             // Check HoYoShade installation
@@ -149,11 +185,13 @@ public sealed partial class GameLauncherPage : PageBase
             try 
             {
                 var manifest = await _versionService.LoadManifestAsync();
+                if (!IsPageRequestCurrent(_shadeRequests, request, gameId)) return;
                 HoYoShadeVersion = IsHoYoShadeInstalled ? (manifest.HoYoShade?.Version ?? "") : "";
                 OpenHoYoShadeVersion = IsOpenHoYoShadeInstalled ? (manifest.OpenHoYoShade?.Version ?? "") : "";
             }
             catch (Exception ex)
             {
+                if (!IsPageRequestCurrent(_shadeRequests, request, gameId)) return;
                 _logger.LogWarning(ex, "Failed to load shade versions");
                 HoYoShadeVersion = "";
                 OpenHoYoShadeVersion = "";
@@ -676,6 +714,9 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 OnPropertyChanged(nameof(CanSkipShadeInjector));
                 NotifyLaunchModeChanged();
+                OnPropertyChanged(nameof(CanUseSmoothMotion));
+                OnPropertyChanged(nameof(SmoothMotionToolTip));
+                if (!_isApplyingSavedLaunchOptions) LoadSmoothMotionForCurrentClient();
             }
         }
     }

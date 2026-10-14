@@ -42,6 +42,9 @@ readme='''HoYoShadeHub 1.4.1.2 本地完整版测试包
 应用代码构建成功，扩展805项测试通过。NR guide匹配/menu/resize/CPU同步修正保持，失败GPUWait优化未包含。不保证NR两pass性能提升。
 '''
 entries['README-LOCAL-TEST.txt']=('bytes',readme.encode('utf-8'))
+# Historical local-full composition must not reintroduce the excluded shader.
+entries = {name: value for name, value in entries.items()
+           if name.replace('\\', '/').rsplit('/', 1)[-1].casefold() != 'gravity.fx'}
 checks=[]
 with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as dest:
  for name,source in entries.items():

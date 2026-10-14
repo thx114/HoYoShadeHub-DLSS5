@@ -14,6 +14,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace HoYoShadeHub.Features.GameLauncher;
@@ -325,7 +326,27 @@ internal partial class GameLauncherService
     {
         int currentSessionId = Process.GetCurrentProcess().SessionId;
         var name = (await GetGameExeNameAsync(gameId)).Replace(".exe", "");
-        return Process.GetProcessesByName(name).Where(x => x.SessionId == currentSessionId && !IsProcessPending(x)).FirstOrDefault();
+
+        // 已退出的进程必须排除：Hub 自己握着句柄（GameProcess、会话日志挂的 Exited 钩子）时，
+        // 进程对象在退出后仍会出现在 GetProcessesByName 里，而 IsProcessPending 对已退出的进程
+        // 返回 false（"不挂起"）—— 于是刚退出的游戏被反复"发现"：退出回写一遍遍重跑、
+        // 会话日志还给同一个 pid 再开一局（实测 2026-10-10 日志：profile stored 连刷 5 次 + 重复会话目录）。
+        return Process.GetProcessesByName(name)
+            .Where(x => !HasExited(x) && x.SessionId == currentSessionId && !IsProcessPending(x))
+            .FirstOrDefault();
+    }
+
+    /// <summary>进程是否已退出。拿不到状态也算退出 —— 宁可不认它，也别把死进程当成游戏在跑。</summary>
+    private static bool HasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     /// <summary>等游戏进程出现（用启动器/CMD 拉游戏时，真实进程会晚几秒），超时返回 null</summary>
@@ -364,7 +385,7 @@ internal partial class GameLauncherService
             }
             foreach (ProcessThread thread in process.Threads)
             {
-                if (thread.ThreadState is not ThreadState.Wait)
+                if (thread.ThreadState is not System.Diagnostics.ThreadState.Wait)
                 {
                     return false;
                 }
@@ -385,8 +406,16 @@ internal partial class GameLauncherService
     /// 启动游戏
     /// </summary>
     /// <returns></returns>
-    public async Task<Process?> StartGameAsync(GameId gameId, string? installPath = null)
+    public async Task<Process?> StartGameAsync(GameId gameId, string? installPath = null, CancellationToken cancellationToken = default)
     {
+        using var reservation = GameLaunchReservation.Acquire(gameId.GameBiz.ToString(), cancellationToken);
+        return await StartReservedGameAsync(gameId, reservation, installPath, cancellationToken);
+    }
+
+    internal async Task<Process?> StartReservedGameAsync(GameId gameId, GameLaunchReservation reservation,
+        string? installPath = null, CancellationToken cancellationToken = default)
+    {
+        reservation.Validate(gameId.GameBiz.ToString(), cancellationToken);
         const int ERROR_CANCELLED = 0x000004C7;
         try
         {
@@ -474,6 +503,7 @@ internal partial class GameLauncherService
                 info.CreateNoWindow = true;
                 info.WindowStyle = ProcessWindowStyle.Hidden;
             }
+            reservation.Validate(gameId.GameBiz.ToString(), cancellationToken);
             Process? process = Process.Start(info);
             if (process != null)
             {
@@ -568,9 +598,9 @@ internal partial class GameLauncherService
             else if (result.ChangedAnything)
             {
                 _logger.LogInformation(
-                    "Bootstrapped game ReShade.ini for {Game}: template={Template}, tutorial={Tutorial}, secondary={Secondary}, aligned={Aligned} ({Keys})",
+                    "Bootstrapped game ReShade.ini for {Game}: template={Template}, tutorial={Tutorial}, secondary={Secondary}, aligned={Aligned}, hotkeys={Hotkeys} ({Keys})",
                     gameId, result.CreatedFromTemplate, result.TutorialMarkedDone, result.CreatedSecondary,
-                    result.Aligned, string.Join(", ", result.AlignKeys));
+                    result.Aligned, result.RepairedHotkeys, string.Join(", ", result.AlignKeys));
             }
         }
         catch (Exception ex)

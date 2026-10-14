@@ -18,4 +18,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="..\HoYoShadeHub\Helpers\LauncherCommandLine.cs" Link="LauncherCommandLine.cs" />
+    <Compile Include="..\HoYoShadeHub\Helpers\PortableUpdatePolicy.cs" Link="PortableUpdatePolicy.cs" />
+  </ItemGroup>
 </Project>

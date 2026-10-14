@@ -48,6 +48,7 @@ public sealed partial class AboutSetting : PageBase
     }
 
     private bool _versionsLoaded;
+    private bool _versionsLoading;
 
     /// <summary>
     /// 用户点开「版本」下拉时才去拉列表。
@@ -56,12 +57,11 @@ public sealed partial class AboutSetting : PageBase
     /// </summary>
     private async void ComboBox_GithubVersions_DropDownOpened(object sender, object e)
     {
-        if (_versionsLoaded)
+        if (_versionsLoaded || _versionsLoading)
         {
             return;
         }
 
-        _versionsLoaded = true;
         await RefreshGithubVersionsAsync();
     }
     
@@ -266,6 +266,9 @@ public sealed partial class AboutSetting : PageBase
     [RelayCommand]
     private async Task RefreshGithubVersionsAsync()
     {
+        if (_versionsLoading)
+            return;
+        _versionsLoading = true;
         try
         {
             GithubStatusText = "正在读 GitHub Release…";
@@ -278,6 +281,7 @@ public sealed partial class AboutSetting : PageBase
             }
 
             SelectedGithubVersion = versions.FirstOrDefault(v => v.IsCurrent) ?? versions.FirstOrDefault();
+            _versionsLoaded = versions.Count > 0;
 
             GithubStatusText = versions.Count == 0
                 ? "没读到版本 —— 仓库里还没有 Release，或者网络不通。"
@@ -285,8 +289,13 @@ public sealed partial class AboutSetting : PageBase
         }
         catch (Exception ex)
         {
+            _versionsLoaded = false;
             GithubStatusText = "读取失败：" + ex.Message;
             _logger.LogError(ex, "List GitHub versions");
+        }
+        finally
+        {
+            _versionsLoading = false;
         }
     }
 

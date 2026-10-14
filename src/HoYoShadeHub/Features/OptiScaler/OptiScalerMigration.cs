@@ -19,6 +19,9 @@ namespace HoYoShadeHub.Features.OptiScaler;
 internal static class OptiScalerMigration
 {
     public static void Run(GameId gameId)
+        => Run(gameId, null, false);
+
+    public static void Run(GameId gameId, OptiScalerBuild? selectedBuild, bool preloaded = true)
     {
         try
         {
@@ -35,7 +38,9 @@ internal static class OptiScalerMigration
                 return;
             }
 
-            OptiScalerBuild? build = new OptiScalerLibrary(root).GetSelected();
+            // A per-game choice already exists: navigation must not replace it.
+            if (!string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerId(gameId))) return;
+            OptiScalerBuild? build = preloaded ? selectedBuild : new OptiScalerLibrary(root).GetSelected();
             if (build is null)
             {
                 return;

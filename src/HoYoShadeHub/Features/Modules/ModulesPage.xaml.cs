@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using HoYoShadeHub.Features.ViewHost;
@@ -11,7 +12,9 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using HoYoShadeHub.Extensions.ReShade;
 
 namespace HoYoShadeHub.Features.Modules;
 
@@ -88,6 +91,36 @@ public sealed partial class ModuleChoiceItem : ObservableObject
     /// <summary>注入时机变化回调（输入框走 TwoWay 绑定）</summary>
     public Action<ModuleChoiceItem, int?>? OnInjectDelayChanged { get; init; }
 
+    // ===================== FSR 桥卡片扩展配置 =====================
+
+    /// <summary>这个模块是不是 FSR 桥（genshin-fsr-bridge）：只有它带扩展配置</summary>
+    public bool IsFsrBridge { get; init; }
+
+    /// <summary>桥 DLL 同目录的 Dx11FsrBridge.ini（展开配置读写它）</summary>
+    public string? BridgeIniPath { get; set; }
+
+    [ObservableProperty]
+    private bool expanded;
+
+    partial void OnExpandedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ExpandedVisibility));
+        OnPropertyChanged(nameof(ExpandButtonVisibility));
+        OnPropertyChanged(nameof(CollapseButtonVisibility));
+        if (value) BridgeReloadRequested?.Invoke(this);
+    }
+
+    public Visibility ExpandedVisibility => Expanded ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility ExpandButtonVisibility
+        => IsFsrBridge && !Expanded ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility CollapseButtonVisibility
+        => IsFsrBridge && Expanded ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>展开时通知页面重读桥 ini 的当前值</summary>
+    internal Action<ModuleChoiceItem>? BridgeReloadRequested { get; set; }
+
+    public ObservableCollection<FsrBridgeItemViewModel> BridgeItems { get; } = [];
+
     private double _injectDelayValue = double.NaN;
 
     /// <summary>NaN = 留空 = 跟随全局默认</summary>
@@ -103,6 +136,108 @@ public sealed partial class ModuleChoiceItem : ObservableObject
                     : (int)Math.Clamp(Math.Round(value), 0, AppConfig.MaxInjectionWarmupSeconds);
                 OnInjectDelayChanged?.Invoke(this, seconds);
             }
+        }
+    }
+}
+
+/// <summary>FSR 桥扩展配置里的一行（勾选 / 选项 / 数字三种形态）</summary>
+public sealed partial class FsrBridgeItemViewModel : ObservableObject
+{
+    private readonly FsrBridgeDescriptor _descriptor;
+    private readonly Func<FsrBridgeDescriptor, string, bool> _commit;
+    private bool _suppress;
+    private string? _lastValue;
+
+    internal FsrBridgeItemViewModel(FsrBridgeDescriptor descriptor, Func<FsrBridgeDescriptor, string, bool> commit)
+    {
+        _descriptor = descriptor;
+        _commit = commit;
+    }
+
+    public FsrBridgeDescriptor Descriptor => _descriptor;
+    public string Label => _descriptor.Label;
+    public string ToolTip => _descriptor.ToolTip;
+    public IReadOnlyList<string> ChoiceList
+        => _descriptor.Choices?.Select(c => c.Label).ToList() ?? [];
+    public double NumberMinimum => _descriptor.NumberMin;
+    public double NumberMaximum => _descriptor.NumberMax;
+
+    public Visibility BoolVisibility => _descriptor.Kind == FsrBridgeOptionKind.Bool ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility OptionVisibility => _descriptor.Kind == FsrBridgeOptionKind.Option ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility NumberVisibility => _descriptor.Kind == FsrBridgeOptionKind.Number ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>勾选框（桥 ini 是 0/1，勾选写 1，不勾写 0）</summary>
+    [ObservableProperty]
+    private bool? boolValue;
+
+    partial void OnBoolValueChanged(bool? value) => Commit(value == true ? "1" : "0");
+
+    [ObservableProperty]
+    private int optionIndex;
+
+    partial void OnOptionIndexChanged(int value)
+    {
+        var choices = _descriptor.Choices;
+        if (choices is not null && value >= 0 && value < choices.Length) Commit(choices[value].Value);
+    }
+
+    [ObservableProperty]
+    private double numberValue = double.NaN;
+
+    partial void OnNumberValueChanged(double value)
+    {
+        if (double.IsFinite(value))
+        {
+            double rounded = _descriptor.NumberInteger ? Math.Round(value) : value;
+            rounded = Math.Clamp(rounded, _descriptor.NumberMin, _descriptor.NumberMax);
+            Commit(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{rounded}"));
+        }
+        else
+        {
+            Commit(_descriptor.DefaultValue);
+        }
+    }
+
+    private void Commit(string value)
+    {
+        if (_suppress) return;
+        if (_commit(_descriptor, value)) _lastValue = value;
+        else LoadValue(_lastValue);
+    }
+
+    /// <summary>把 ini 当前值填进控件（DefaultValue = 键不存在时桥的默认值）</summary>
+    public void LoadValue(string? iniValue)
+    {
+        _lastValue = iniValue;
+        _suppress = true;
+        try
+        {
+            string raw = (iniValue ?? _descriptor.DefaultValue).Trim();
+            switch (_descriptor.Kind)
+            {
+                case FsrBridgeOptionKind.Bool:
+                    BoolValue = raw == "1" || raw.Equals("true", StringComparison.OrdinalIgnoreCase);
+                    break;
+                case FsrBridgeOptionKind.Option:
+                    int found = (_descriptor.Choices ?? [])
+                        .Select((c, i) => (c, i))
+                        .Where(t => string.Equals(t.c.Value, raw, StringComparison.OrdinalIgnoreCase))
+                        .Select(t => t.i)
+                        .FirstOrDefault(-1);
+                    OptionIndex = found;
+                    break;
+                case FsrBridgeOptionKind.Number:
+                    NumberValue = double.TryParse(raw,
+                        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                        out double parsed)
+                        ? parsed
+                        : double.NaN;
+                    break;
+            }
+        }
+        finally
+        {
+            _suppress = false;
         }
     }
 }
@@ -186,9 +321,10 @@ public sealed partial class ModulesPage : PageBase
                 int? injectDelay = AppConfig.GetModuleInjectDelaySeconds(entry.Key);
                 int globalDefault = AppConfig.GetDefaultInjectionDelaySeconds(_gameId.GameBiz);
 
-                _items.Add(new ModuleChoiceItem
+                var moduleItem = new ModuleChoiceItem
                 {
                     Key = entry.Key,
+                    IsFsrBridge = IsFsrBridgeModule(entry),
                     Name = entry.Name,
                     Description = entry.Description,
                     TagsText = entry.Tags is { Length: > 0 } ? string.Join(" · ", entry.Tags) : string.Empty,
@@ -206,7 +342,21 @@ public sealed partial class ModulesPage : PageBase
                         ? $"跟随全局默认（{globalDefault} 秒）"
                         : injectDelay <= 0 ? "立即注入" : $"等 {injectDelay} 秒",
                     InjectDelayValue = injectDelay is int delay ? delay : double.NaN,
-                });
+                };
+
+                // FSR 桥（genshin-fsr-bridge）卡片带扩展配置：桥 DLL 同目录的 Dx11FsrBridge.ini
+                string? bridgeDll = entry.Definition is { } bridgeDefinition
+                    ? ModuleRegistry.ResolveDllPath(bridgeDefinition, AppConfig.GetModuleVersion(_gameId, entry.Key))
+                    : entry.DllPath;
+                if (IsFsrBridgeModule(entry) && !string.IsNullOrWhiteSpace(bridgeDll)
+                    && Path.GetDirectoryName(bridgeDll) is { Length: > 0 } moduleDir)
+                {
+                    moduleItem.BridgeIniPath = Path.Combine(moduleDir, FsrBridgeOptions.IniFileName);
+                    EnsureBridgeItems(moduleItem);
+                    ReloadBridgeValues(moduleItem);
+                }
+
+                _items.Add(moduleItem);
             }
 
             int used = _items.Count(i => i.Used);
@@ -223,6 +373,82 @@ public sealed partial class ModulesPage : PageBase
             _loading = false;
         }
     }
+
+    #region FSR 桥扩展配置
+
+    private static bool IsFsrBridgeModule(ModuleEntry entry)
+        => string.Equals(entry.Definition?.Id, "genshin-fsr-bridge", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(Path.GetFileName(entry.DllPath), OptiScalerRuntime.FsrBridgeDllName,
+               StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>点卡片右下角箭头展开 / 收起（两个静态按钮靠 Visibility 切换）</summary>
+    private void Button_ExpandBridge_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ModuleChoiceItem item })
+        {
+            item.Expanded = !item.Expanded;
+            if (item.Expanded) ReloadBridgeValues(item);
+            MotionAnimations.PlayItemAreaExpand(ListView_Modules, item, "BridgeQuickConfig", item.Expanded);
+        }
+    }
+
+    private void EnsureBridgeItems(ModuleChoiceItem item)
+    {
+        if (item.BridgeItems.Count > 0)
+        {
+            return;
+        }
+
+        foreach (FsrBridgeDescriptor descriptor in FsrBridgeOptions.Descriptors)
+        {
+            item.BridgeItems.Add(new FsrBridgeItemViewModel(descriptor,
+                (desc, value) => CommitBridgeValue(item, desc, value)));
+        }
+    }
+
+    /// <summary>展开（或加载）时从 Dx11FsrBridge.ini 重读当前值；文件不存在按默认值展示</summary>
+    private void ReloadBridgeValues(ModuleChoiceItem item)
+    {
+        if (item.BridgeIniPath is not { } iniPath)
+        {
+            return;
+        }
+
+        EnsureBridgeItems(item);
+        try
+        {
+            IniDocument ini = File.Exists(iniPath) ? IniDocument.Load(iniPath) : IniDocument.CreateEmpty();
+            foreach (FsrBridgeItemViewModel bridgeItem in item.BridgeItems)
+            {
+                bridgeItem.LoadValue(FsrBridgeOptions.ReadValue(ini, bridgeItem.Descriptor));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reload FSR bridge options");
+            TextBlock_Status.Text = "桥配置读取失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>写一项进 Dx11FsrBridge.ini（只动目标行，注释和其它键保留）</summary>
+    private bool CommitBridgeValue(ModuleChoiceItem item, FsrBridgeDescriptor descriptor, string value)
+    {
+        if (_loading || item.BridgeIniPath is not { } iniPath)
+        {
+            return false;
+        }
+
+        if (!FsrBridgeOptions.WriteValue(iniPath, descriptor, value))
+        {
+            TextBlock_Status.Text = $"桥配置写入失败（{descriptor.Key}）。文件被占用？游戏先退出再改。";
+            return false;
+        }
+
+        TextBlock_Status.Text = $"已写入 Dx11FsrBridge.ini：{descriptor.Key} = {value}（下次启动游戏生效）。";
+        return true;
+    }
+
+    #endregion
 
     private void Button_Refresh_Click(object sender, RoutedEventArgs e) => Load();
 
@@ -364,6 +590,15 @@ public sealed partial class ModulesPage : PageBase
         }
 
         AppConfig.SetModuleVersion(_gameId, item.Key, version);
+        if (item.IsFsrBridge)
+        {
+            ModuleEntry? entry = ModuleRegistry.List().FirstOrDefault(e => e.Key == item.Key);
+            string? dll = entry?.Definition is { } definition
+                ? ModuleRegistry.ResolveDllPath(definition, version)
+                : entry?.DllPath;
+            item.BridgeIniPath = dll is null ? null : Path.Combine(Path.GetDirectoryName(dll)!, FsrBridgeOptions.IniFileName);
+            ReloadBridgeValues(item);
+        }
         TextBlock_Status.Text = string.IsNullOrWhiteSpace(version)
             ? $"「{item.Name}」改用默认版本（模块目录里最新装的那份）。"
             : $"「{item.Name}」这个游戏改用 {version}。";

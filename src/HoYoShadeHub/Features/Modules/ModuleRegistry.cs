@@ -343,7 +343,7 @@ public static class ModuleRegistry
         // Prepare it here as soon as the Bridge is associated with the game, so a later
         // injection-list mismatch cannot leave the game with only Bridge hooks and no Opti.
         string bridgeDirectory = Path.GetDirectoryName(bridgeDll)!;
-        OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, 0.6f);
+        OptiScalerRuntime.EnsureFsrBridgeRenderScale(bridgeDirectory, AppConfig.GetGenshinBridgeRenderScale(gameId));
         if (AppConfig.GetUseOptiScalerLaunchOption(gameId)
             && AppConfig.GetSelectedOptiScalerDll(gameId) is { Length: > 0 } selectedOpti)
         {
@@ -476,6 +476,16 @@ public static class ModuleRegistry
                 continue;
             }
 
+            // Genshin FSR Bridge is game-specific. A stale per-game selection or
+            // a manually added Dx11FsrBridge.dll must never enter Star Rail/Zzz.
+            bool isGenshinBridge = string.Equals(entry.Key, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(entry.Definition?.Id, GenshinFsrBridgeId, StringComparison.OrdinalIgnoreCase)
+                || IsGenshinFsrBridgeDll(entry.DllPath);
+            if (isGenshinBridge && !IsGenshin(gameId))
+            {
+                continue;
+            }
+
             // 原神的 Bridge 是启动器随包的唯一实例。旧配置里可能还留着手动
             // 添加的 Dx11FsrBridge.dll；不能把两个同名 Bridge 同时注入目标进程。
             if (IsGenshin(gameId)
@@ -488,9 +498,14 @@ public static class ModuleRegistry
             // 这个游戏给这个模块选了版本 → 注入那一份（没选就注入默认/最新装的那份）
             string dllPath = entry.DllPath;
             if (entry.Definition is { } definition
-                && AppConfig.GetModuleVersion(gameId, definition.Id) is { Length: > 0 } tag
-                && ResolveDllPath(definition, tag) is { } versionDll)
+                && AppConfig.GetModuleVersion(gameId, definition.Id) is { Length: > 0 } tag)
             {
+                string? versionDll = ResolveDllPath(definition, tag);
+                if (versionDll is null)
+                {
+                    _logger.LogWarning("{Module}: selected version {Version} is unavailable; skipping injection instead of using another version", definition.Name, tag);
+                    continue;
+                }
                 dllPath = versionDll;
             }
 
@@ -664,6 +679,15 @@ public static class ModuleRegistry
     {
         if (module.IsBundled)
             return EnsureBundledModuleInstalled(module);
+
+        // An explicit per-game selection must not be overridden by a global path
+        // or silently fall back to a different installed build.
+        if (!string.IsNullOrWhiteSpace(versionTag))
+        {
+            string? picked = VersionDirectory(module, versionTag);
+            string? pickedDll = picked is null ? null : FindModuleInjectDll(module, picked);
+            return pickedDll is not null && IsAcceptedModuleDll(module, pickedDll) ? pickedDll : null;
+        }
         // 用户手动指定的 dll 永远优先
         string? chosen = AppConfig.GetModuleDllPath(module.Id);
         if (!string.IsNullOrWhiteSpace(chosen) && File.Exists(chosen)
@@ -672,15 +696,17 @@ public static class ModuleRegistry
             return chosen;
         }
 
-        // 1) 指定版本：只认那个版本目录
-        if (!string.IsNullOrWhiteSpace(versionTag)
-            && VersionDirectory(module, versionTag!) is { } picked
-            && FindModuleInjectDll(module, picked) is { } pickedDll)
+        // 2) 扁平模块根（只看顶层）：覆盖包 / 随包 / 安装程序直装的「现役」文件在这里。
+        // 版本目录（<id>\<版本>）只是下载器的归档，可能比覆盖包旧 —— 让归档赢会把刚覆盖的
+        // 新文件挡掉（实测：覆盖包装了 2.3.5，注入的却是归档里的 2.3.4）。显式选版本（第 1 步）
+        // 仍然优先；归档只在扁平根没有可用 DLL 时才上场。
+        if (FindModuleInjectDllFlat(module, module.Directory) is { } flatDll
+            && IsAcceptedModuleDll(module, flatDll))
         {
-            return IsAcceptedModuleDll(module, pickedDll) ? pickedDll : null;
+            return flatDll;
         }
 
-        // 2) 多版本共存：List() 按安装时间倒序 → 取最新装的那份
+        // 3) 多版本共存：List() 按安装时间倒序 → 取最新装的那份
         if (!module.IsDirect)
         {
             foreach (OptiScalerBuild build in new OptiScalerLibrary(module.Directory).List())
@@ -693,7 +719,7 @@ public static class ModuleRegistry
             }
         }
 
-        // 3) 兜底：整个模块目录递归找（安装程序型模块的文件直接铺在根目录里）
+        // 4) 兜底：整个模块目录递归找（安装程序型模块的文件直接铺在根目录里）
         string? inModuleDir = FindModuleInjectDll(module, module.Directory);
         if (inModuleDir is not null && IsAcceptedModuleDll(module, inModuleDir))
         {
@@ -924,6 +950,60 @@ public static class ModuleRegistry
     }
 
     /// <summary>
+    /// 只看模块根目录的**顶层**（不递归进 <c>&lt;id&gt;\&lt;版本&gt;</c> 归档）找要注入的 DLL：
+    /// 扁平部署（覆盖包 / 随包 / 安装程序直装）的判定用。名字匹配顺序和
+    /// <see cref="FindModuleInjectDll"/> 一致（正身名 → 别名 → 代理名 → 唯一 DLL）。
+    /// </summary>
+    private static string? FindModuleInjectDllFlat(ModuleDefinition module, string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        List<string> dlls;
+        try
+        {
+            dlls = [.. Directory.EnumerateFiles(directory, "*.dll", SearchOption.TopDirectoryOnly)];
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (dlls.Count == 0)
+        {
+            return null;
+        }
+
+        var names = new List<string>();
+        if (!string.IsNullOrWhiteSpace(module.CanonicalDllName))
+        {
+            names.Add(module.CanonicalDllName!);
+        }
+        if (!string.IsNullOrWhiteSpace(module.DllHint))
+        {
+            names.Add(module.DllHint);
+        }
+        if (module.AliasDllNames is { } aliases)
+        {
+            names.AddRange(aliases.Where(a => !string.IsNullOrWhiteSpace(a))!);
+        }
+        names.AddRange(OptiScalerLibrary.ProxyDllNames);
+
+        foreach (string name in names.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            string? hit = dlls.FirstOrDefault(f => string.Equals(Path.GetFileName(f), name, StringComparison.OrdinalIgnoreCase));
+            if (hit is not null)
+            {
+                return hit;
+            }
+        }
+
+        return dlls.Count == 1 ? dlls[0] : null;
+    }
+
+    /// <summary>
     /// 这个模块当前装着的是哪个 tag（下载器写的 build.json）；读不到返回 null。
     /// 已装模块卡片的版本下拉用它标「(当前)」并默认选中。
     /// </summary>
@@ -1094,6 +1174,24 @@ public static class ModuleRegistry
         }
 
         await downloader.InstallAsync(source, chosenTag, asset, library, progress, cancellationToken, confirmBeforeRun);
+
+        // 装完把新版本的注入 DLL 同步到扁平模块根：扁平根是「现役」部署（ResolveDllPath 优先认它），
+        // 不同步的话覆盖包/随包留下的旧 DLL 会一直压着刚下载的新版本。只带注入 DLL ——
+        // ini/说明那些留在归档里，别盖掉覆盖包写好的配置。安装程序型（.exe）不动：产物由安装程序自己落位。
+        if (!asset.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            && FindModuleInjectDll(module, library.DirectoryFor(source.Id, chosenTag)) is { } freshDll)
+        {
+            try
+            {
+                File.Copy(freshDll,
+                    Path.Combine(AppConfig.ModuleDirectory(module.Id), Path.GetFileName(freshDll)),
+                    overwrite: true);
+            }
+            catch (IOException)
+            {
+                // 游戏正跑、DLL 被占：这次先不同步，下次安装/启动再跟上
+            }
+        }
 
         // 旧版本**保留**（用户要求：多个版本共存，反复切换不用重新下载）。
         // 具体注入哪一份由每个游戏选的版本决定（见 ResolveInjectionDlls）。

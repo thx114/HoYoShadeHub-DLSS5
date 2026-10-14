@@ -209,6 +209,13 @@
                                             <mxi:ControlStoryboardAction Storyboard="{StaticResource PointerOutStoryboard}" />
                                         </mxi:EventTriggerBehavior>
                                     </mxi:Interaction.Behaviors>
+                                    <Grid.ContextFlyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Click="GameDisplay_RemoveCustom_Click"
+                                                            Text="移除自定义游戏"
+                                                            Visibility="{x:Bind IsCustom}" />
+                                        </MenuFlyout>
+                                    </Grid.ContextFlyout>
                                     <!--  服务器列表  -->
                                     <FlyoutBase.AttachedFlyout>
                                         <Flyout>
@@ -232,6 +239,10 @@
                                                                                     Text="固定到顶部"
                                                                                     Visibility="{x:Bind NotPinned}" />
                                                                     <MenuFlyoutSeparator />
+                                                                    <MenuFlyoutItem Click="GameIcon_RemoveCustom_Click"
+                                                                                    Text="移除自定义游戏"
+                                                                                    Visibility="{x:Bind IsCustom}" />
+                                                                    <MenuFlyoutSeparator Visibility="{x:Bind IsCustom}" />
                                                                     <MenuFlyoutItem Click="GameIcon_UninstallShade_Click" Text="删除 HoYoShade（这个客户端）" />
                                                                 </MenuFlyout>
                                                             </Button.ContextFlyout>
@@ -566,6 +577,9 @@
                                     <!--  自定义游戏的背景图（用户要求：放在顶部游戏栏的右键菜单里）  -->
                                     <MenuFlyoutItem Click="Button_ChangeGameBackground_Click"
                                                     Text="设置背景图…"
+                                                    Visibility="{x:Bind IsCustom}" />
+                                    <MenuFlyoutItem Click="GameIcon_RemoveCustom_Click"
+                                                    Text="移除自定义游戏"
                                                     Visibility="{x:Bind IsCustom}" />
                                     <MenuFlyoutSeparator />
                                     <MenuFlyoutItem Click="GameIcon_UninstallShade_Click" Text="删除 HoYoShade（这个客户端）" />

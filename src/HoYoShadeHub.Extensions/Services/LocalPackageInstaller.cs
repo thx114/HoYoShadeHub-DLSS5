@@ -167,8 +167,9 @@ public sealed class LocalPackageInstaller
         // 打包工具常把整包再套一层同名目录（「星穹铁道6倍覆盖包_1.1/…」），再算一份脱壳后的
         List<string> names = StripCommonWrapper(raw);
 
-        if (names.Any(n => string.Equals(Path.GetFileName(n), "manifest.json", StringComparison.OrdinalIgnoreCase)
-                           || string.Equals(Path.GetFileName(n), "hysx.json", StringComparison.OrdinalIgnoreCase)))
+        // 只认根上（或套一层壳）的 manifest.json / hysx.json：嵌套目录里同名的
+        // （如 OptiScaler\redist\streamline\manifest.json，Streamline SDK 自带）不是扩展包清单。
+        if (names.Any(IsTopLevelManifest))
         {
             return LocalPackageKind.Extension;
         }
@@ -196,6 +197,19 @@ public sealed class LocalPackageInstaller
         }
 
         return LocalPackageKind.Module;
+    }
+
+    /// <summary>manifest.json / hysx.json 只在根上（或套一层壳）才算扩展包清单；深目录同名文件不算</summary>
+    private static bool IsTopLevelManifest(string normalizedName)
+    {
+        if (normalizedName.Count(c => c == '/') > 1)
+        {
+            return false;
+        }
+
+        string fileName = Path.GetFileName(normalizedName);
+        return string.Equals(fileName, "manifest.json", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(fileName, "hysx.json", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>包内路径统一成 <c>a/b/c</c> 形式，去掉 <c>.\</c> 前缀，便于按顶层目录判断</summary>
@@ -294,24 +308,33 @@ public sealed class LocalPackageInstaller
     }
 
     /// <summary>识别并安装一个本地文件（zip / addon / dll）。</summary>
-    public async Task<LocalPackageInstallResult> InstallAsync(
+    public Task<LocalPackageInstallResult> InstallAsync(
         string file,
         LocalPackageKind? kindOverride = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<LocalInstallProgress>? progress = null)
+        => Task.Run(() => InstallCoreAsync(file, kindOverride, cancellationToken, progress), cancellationToken);
+
+    private async Task<LocalPackageInstallResult> InstallCoreAsync(
+        string file, LocalPackageKind? kindOverride, CancellationToken cancellationToken,
+        IProgress<LocalInstallProgress>? progress)
     {
         if (!File.Exists(file))
         {
             throw new FileNotFoundException("找不到这个文件", file);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
+        progress?.Report(new(0, "正在识别安装包…"));
         LocalPackageKind kind = kindOverride ?? DetectKind(file);
 
         return kind switch
         {
             LocalPackageKind.Addon => await InstallAddonAsync(file, cancellationToken),
             LocalPackageKind.OptiScaler => await InstallOptiScalerAsync(file, cancellationToken),
-            LocalPackageKind.Module => InstallModule(file),
-            LocalPackageKind.Overlay => await InstallOverlayAsync(file, cancellationToken),
+            LocalPackageKind.Module => InstallModule(file, cancellationToken),
+            LocalPackageKind.Overlay => await InstallOverlayAsync(file, cancellationToken, progress),
             LocalPackageKind.AppPackage => throw new NotSupportedException(
                 "这是启动器本体的包（根上有 version.ini / app- 目录），不是插件覆盖包；"
                 + "把它解压覆盖到启动器目录，或者用「检查更新」。"),
@@ -395,6 +418,7 @@ public sealed class LocalPackageInstaller
 
         string version;
         string target;
+        List<string> details;
 
         if (Path.GetExtension(file).Equals(".zip", StringComparison.OrdinalIgnoreCase))
         {
@@ -402,30 +426,29 @@ public sealed class LocalPackageInstaller
             target = Path.Combine(_optiscalerRoot, OptiScalerLibrary.Sanitize(sourceId),
                 OptiScalerLibrary.Sanitize(version));
 
-            if (Directory.Exists(target))
-            {
-                HysxUtil.TryDeleteDirectory(target);
-            }
-
-            Directory.CreateDirectory(target);
-
-            string extract = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+            string extract = PackageTree.CreateStage(target);
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);
-                CopyTree(extract, target);
+                PackageTree.ValidateTree(extract);
 
                 // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll。
                 // 原神 FSR 桥的包不走这条路：它的正身名（Dx11FsrBridge.dll）被改掉之后，
                 // 模块解析 / ini / 启动体检就都找不到桥了（见 FsrBridgePayload）。
-                if (FsrBridgePayload.LooksLikeBridgeDirectory(target))
+                if (FsrBridgePayload.LooksLikeBridgeDirectory(extract))
                 {
-                    FsrBridgePayload.NormalizeDll(target);
+                    FsrBridgePayload.NormalizeDll(extract);
                 }
                 else
                 {
-                    OptiScalerLibrary.NormalizePrimaryDll(target);
+                    OptiScalerLibrary.NormalizePrimaryDll(extract);
                 }
+                cancellationToken.ThrowIfCancellationRequested();
+                WriteBuildManifest(extract, sourceId, version, Path.GetFileName(file));
+                details = await CompleteOptiScalerBuildAsync(extract, cancellationToken);
+                RetargetStagedOptiConfig(extract, target);
+                cancellationToken.ThrowIfCancellationRequested();
+                PackageTree.Commit(extract, target);
             }
             finally
             {
@@ -439,11 +462,9 @@ public sealed class LocalPackageInstaller
                 OptiScalerLibrary.Sanitize(version));
             Directory.CreateDirectory(target);
             File.Copy(file, Path.Combine(target, Path.GetFileName(file)), overwrite: true);
+            WriteBuildManifest(target, sourceId, version, Path.GetFileName(file));
+            details = await CompleteOptiScalerBuildAsync(target, cancellationToken);
         }
-
-        WriteBuildManifest(target, sourceId, version, Path.GetFileName(file));
-
-        var details = await CompleteOptiScalerBuildAsync(target, cancellationToken);
 
         return new LocalPackageInstallResult(
             LocalPackageKind.OptiScaler,
@@ -451,6 +472,24 @@ public sealed class LocalPackageInstaller
             version,
             target,
             details);
+    }
+
+    private static void RetargetStagedOptiConfig(string staged, string target)
+    {
+        string ini = Path.Combine(staged, "OptiScaler.ini");
+        if (!File.Exists(ini)) return;
+        string[] lines = File.ReadAllLines(ini);
+        bool libraries = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i].Trim();
+            if (line.StartsWith('[') && line.EndsWith(']'))
+                libraries = line.Equals("[Libraries]", StringComparison.OrdinalIgnoreCase);
+            int separator = line.IndexOf('=');
+            if (libraries && separator > 0 && line[..separator].Trim().Equals("OptiDllPath", StringComparison.OrdinalIgnoreCase))
+                lines[i] = "OptiDllPath = " + Path.Combine(target, "OptiScaler");
+        }
+        File.WriteAllLines(ini, lines);
     }
 
     /// <summary>装完构建后补齐依赖，返回给界面的明细。</summary>
@@ -502,7 +541,7 @@ public sealed class LocalPackageInstaller
     /// 安装模块：zip 解到 <c>Modules\&lt;名字&gt;</c>；裸 dll 复制进模块目录。
     /// 模块是全局开关，装完直接启用。
     /// </summary>
-    private LocalPackageInstallResult InstallModule(string file)
+    private LocalPackageInstallResult InstallModule(string file, CancellationToken cancellationToken)
     {
         string id;
         string target;
@@ -514,18 +553,12 @@ public sealed class LocalPackageInstaller
             id = Path.GetFileNameWithoutExtension(file);
             target = Path.Combine(_modulesRoot, OptiScalerLibrary.Sanitize(id));
 
-            if (Directory.Exists(target))
-            {
-                HysxUtil.TryDeleteDirectory(target);
-            }
-
-            Directory.CreateDirectory(target);
-
-            string extract = Path.Combine(TemporaryFolder.Path, "HoYoShadeHub.Local", Guid.NewGuid().ToString("N"));
+            string extract = PackageTree.CreateStage(target);
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);
-                CopyTree(extract, target);
+                cancellationToken.ThrowIfCancellationRequested();
+                PackageTree.Commit(extract, target);
             }
             finally
             {
@@ -566,7 +599,8 @@ public sealed class LocalPackageInstaller
     /// 没有清单的老包才退回按目录结构猜。清单是「这个包是什么」的唯一权威，猜只是兼容手段。
     /// </para>
     /// </summary>
-    private async Task<LocalPackageInstallResult> InstallOverlayAsync(string file, CancellationToken cancellationToken)
+    private async Task<LocalPackageInstallResult> InstallOverlayAsync(string file, CancellationToken cancellationToken,
+        IProgress<LocalInstallProgress>? progress)
     {
         if (!Path.GetExtension(file).Equals(".zip", StringComparison.OrdinalIgnoreCase))
         {
@@ -584,10 +618,32 @@ public sealed class LocalPackageInstaller
         try
         {
             string payload = Path.Combine(work, "payload");
-            ZipExtractor.ExtractToDirectory(file, payload);
+            progress?.Report(new(2, "正在解压覆盖包…"));
+            ZipExtractor.ExtractToDirectory(file, payload, cancellationToken,
+                fraction => progress?.Report(new(fraction is null ? null : 2 + fraction * 43, "正在解压覆盖包…")));
             string root = DescendSingleWrapper(payload);
 
+            progress?.Report(new(45, "正在校验安装目标与包内容…"));
+
             OverlayManifest? manifest = OverlayManifest.Load(root);
+            cancellationToken.ThrowIfCancellationRequested();
+            PackageTree.ValidateTree(root);
+            manifest?.ValidatePaths(root);
+            string incomingGamePack = Path.Combine(root, "GamePack");
+            if (Directory.Exists(incomingGamePack))
+                foreach (string incoming in Directory.EnumerateFiles(incomingGamePack, "*", SearchOption.AllDirectories))
+                    if (Path.GetFileName(incoming).StartsWith(".hysx_once", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("GamePack cannot contain a local once ledger.");
+            foreach (string destinationRoot in new[] { _shadeRoot, _optiscalerRoot, _modulesRoot })
+                if (Directory.Exists(destinationRoot)) PackageTree.ValidateTree(destinationRoot);
+            if (manifest?.Game is { } pendingGame && _cacheRoot.Length > 0)
+            {
+                string games = PackageTree.ResolveRelative(_cacheRoot, "games");
+                string pendingRoot = PackageTree.ResolveRelative(games, ".pending-gamepacks");
+                string pending = PackageTree.ResolveRelative(pendingRoot, pendingGame);
+                if (Directory.Exists(pending)) PackageTree.ValidateTree(pending);
+                // Only the game's destination is validated, not every unrelated game's cache.
+            }
 
             // 包里带 HoYoShade 那一半、但本机还没定位到 HoYoShade 目录：直接说清楚，别默默只装一半。
             // （实测：全新便携包里先导覆盖包 → 只有 OptiScaler 那半进去，DLL 页报「缺必需文件」，
@@ -607,6 +663,18 @@ public sealed class LocalPackageInstaller
             var stuck = new List<string>();
             string target = _shadeRoot.Length > 0 ? _shadeRoot : _optiscalerRoot;
             int total = 0;
+            int copiedProgress = 0;
+            int copyTotal = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Count();
+            long lastProgress = 0;
+            void ReportCopy(string relative)
+            {
+                copiedProgress++;
+                long now = Environment.TickCount64;
+                if (now - lastProgress < 100 && copiedProgress < copyTotal) return;
+                lastProgress = now;
+                progress?.Report(new(45 + 35d * Math.Min(copiedProgress, copyTotal) / Math.Max(1, copyTotal),
+                    $"正在复制文件… {copiedProgress}/{copyTotal} · {relative}"));
+            }
 
             if (manifest is not null)
             {
@@ -616,7 +684,7 @@ public sealed class LocalPackageInstaller
 
                 foreach ((string from, string to) in ResolveTargets(manifest))
                 {
-                    string source = Path.Combine(root, from.Replace('/', Path.DirectorySeparatorChar));
+                    string source = PackageTree.ResolveRelative(root, from);
 
                     if (!Directory.Exists(source))
                     {
@@ -637,7 +705,7 @@ public sealed class LocalPackageInstaller
                         continue;
                     }
 
-                    OverlayCopyResult copied = OverlayTree(source, destination, stuck);
+                    OverlayCopyResult copied = OverlayTree(source, destination, stuck, cancellationToken, ReportCopy);
                     total += copied.Copied;
                     details.Add($"{from} → {TargetNameOf(to)}：{copied.Copied} 个文件"
                                 + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
@@ -649,7 +717,7 @@ public sealed class LocalPackageInstaller
                 string? shadeSource = ResolveOverlayFolder(root, ShadeOverlayFolder, "ReShade64.dll");
                 if (shadeSource is not null && _shadeRoot.Length > 0)
                 {
-                    OverlayCopyResult copied = OverlayTree(shadeSource, _shadeRoot, stuck);
+                    OverlayCopyResult copied = OverlayTree(shadeSource, _shadeRoot, stuck, cancellationToken, ReportCopy);
                     total += copied.Copied;
                     details.Add($"HoYoShade 框架覆盖 {copied.Copied} 个文件"
                                 + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
@@ -658,7 +726,7 @@ public sealed class LocalPackageInstaller
                 string? optiSource = ResolveOverlayFolder(root, OptiOverlayFolder, OptiScalerLibrary.StateFileName);
                 if (optiSource is not null && _optiscalerRoot.Length > 0)
                 {
-                    OverlayCopyResult copied = OverlayTree(optiSource, _optiscalerRoot, stuck);
+                    OverlayCopyResult copied = OverlayTree(optiSource, _optiscalerRoot, stuck, cancellationToken, ReportCopy);
                     total += copied.Copied;
                     details.Add($"OptiScaler 库覆盖 {copied.Copied} 个文件"
                                 + (copied.Failed > 0 ? $"（{copied.Failed} 个没换成）" : string.Empty));
@@ -695,19 +763,7 @@ public sealed class LocalPackageInstaller
                             continue;
                         string packDir = GameAddonPack.PackDirectory(_cacheRoot, gameKey);
                         Directory.CreateDirectory(packDir);
-                        int copied = 0;
-                        foreach (string packFile in Directory.EnumerateFiles(gamePackSource))
-                        {
-                            try
-                            {
-                                File.Copy(packFile, Path.Combine(packDir, Path.GetFileName(packFile)), overwrite: true);
-                                copied++;
-                            }
-                            catch
-                            {
-                                // 单个文件占用不挡其它
-                            }
-                        }
+                        int copied = PackageTree.Copy(gamePackSource, packDir, cancellationToken);
                         if (copied > 0)
                         {
                             placed = true;
@@ -724,23 +780,24 @@ public sealed class LocalPackageInstaller
 
                 {
 
-                    string pending = Path.Combine(gamesRoot, ".pending-gamepacks", gameHint);
-
-                    if (Directory.Exists(pending))
-
-                        Directory.Delete(pending, recursive: true);
-
-                    Directory.CreateDirectory(pending);
-
-                    foreach (string packFile in Directory.EnumerateFiles(gamePackSource))
-
-                        File.Copy(packFile, Path.Combine(pending, Path.GetFileName(packFile)), overwrite: true);
+                    string pendingRoot = PackageTree.ResolveRelative(gamesRoot, ".pending-gamepacks");
+                    string pending = PackageTree.ResolveRelative(pendingRoot, gameHint);
+                    string pendingStage = PackageTree.CreateStage(pending);
+                    try
+                    {
+                        PackageTree.Copy(gamePackSource, pendingStage, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        pending = PackageTree.ResolveRelative(pendingRoot, gameHint);
+                        PackageTree.Commit(pendingStage, pending);
+                    }
+                    finally { HysxUtil.TryDeleteDirectory(pendingStage); }
 
                     details.Add($"GamePack 已暂存（游戏 {gameHint}* 尚未注册）；游戏出现后会自动铺进其覆盖包目录");
 
             }
                 }
             // 归档：让 DLL 页 / 插件页认下「盘上这份是哪个版本」
+            progress?.Report(new(82, "正在归档版本与登记安装结果…"));
             var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             details.AddRange(ArchiveRuntimeDlls(handled));
 
@@ -754,6 +811,7 @@ public sealed class LocalPackageInstaller
 
             OptiScalerBuild? selected = new OptiScalerLibrary(_optiscalerRoot).GetSelected();
 
+            progress?.Report(new(90, "文件安装完成，正在准备刷新…"));
             return new LocalPackageInstallResult(
                 LocalPackageKind.Overlay,
                 manifest?.DisplayName ?? Path.GetFileNameWithoutExtension(file),
@@ -1032,15 +1090,18 @@ public sealed class LocalPackageInstaller
     /// 老版本就白归档了。换 inode 之后被占用的文件会失败，所以逐个 catch 并记下来，不让整包失败。
     /// </para>
     /// </summary>
-    private static OverlayCopyResult OverlayTree(string source, string destination, List<string> failed)
+    private static OverlayCopyResult OverlayTree(string source, string destination, List<string> failed,
+        CancellationToken cancellationToken, Action<string> report)
     {
         Directory.CreateDirectory(destination);
 
         int copied = 0;
         int failures = 0;
+        var createdDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (string file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string relative = Path.GetRelativePath(source, file);
 
             // 账本 / 备份是我们自己的状态，包里的那份不要盖掉用户的
@@ -1052,15 +1113,16 @@ public sealed class LocalPackageInstaller
 
             string target = Path.Combine(destination, relative);
 
+            string staged = target + ".hysx-new-" + Guid.NewGuid().ToString("N");
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                string staged = target + ".hysx-new";
+                string directory = Path.GetDirectoryName(target)!;
+                if (createdDirectories.Add(directory)) Directory.CreateDirectory(directory);
                 File.Copy(file, staged, overwrite: true);
                 File.Move(staged, target, overwrite: true);
                 copied++;
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 failures++;
 
@@ -1069,6 +1131,11 @@ public sealed class LocalPackageInstaller
                     failed.Add(relative);
                 }
             }
+            finally
+            {
+                if (File.Exists(staged)) { try { File.Delete(staged); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            }
+            report(relative);
         }
 
         return new OverlayCopyResult(copied, failures);

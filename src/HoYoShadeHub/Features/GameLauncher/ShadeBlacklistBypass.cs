@@ -58,8 +58,8 @@ internal static class ShadeBlacklistBypass
 
     /// <summary>
     /// 鸣潮真身游戏目录。ReShade64.dll 从**进程 exe 旁边**找 ReShade.ini，而注册 exe 是根目录的壳，
-    /// 所以要注的 ini 得放在真身目录（&lt;安装&gt;\Wuthering Waves Game\Binaries\Win64）。
-    /// 认不出 / 目录不存在返回 null。
+    /// 所以要注的 ini 得放在真身目录（官方 PC 版是 <c>&lt;安装&gt;\Wuthering Waves Game\Client\Binaries\Win64</c>，
+    /// 各渠道层级见 <see cref="WutheringLaunchPaths"/>）。认不出 / 目录不存在返回 null。
     /// </summary>
     public static string? RealGameDirectory(GameEntry? entry)
     {
@@ -70,8 +70,7 @@ internal static class ShadeBlacklistBypass
 
         try
         {
-            string candidate = Path.Combine(root, "Wuthering Waves Game", "Binaries", "Win64");
-            return File.Exists(Path.Combine(candidate, "Client-Win64-Shipping.exe")) ? candidate : null;
+            return WutheringLaunchPaths.ResolveClientDirectory(root);
         }
         catch
         {

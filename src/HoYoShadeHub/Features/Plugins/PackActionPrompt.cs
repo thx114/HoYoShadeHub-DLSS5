@@ -1,4 +1,4 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
@@ -23,9 +23,19 @@ namespace HoYoShadeHub.Features.Plugins;
 /// </summary>
 public static class PackActionConsentDialog
 {
+    private static int _showing;
+
     /// <param name="gameNames">这批动作会落到哪些游戏上（导入时可能一次多个服）；null = 当前游戏</param>
     /// <returns>null = 下次再说（不记同意，下次还会问）；否则是用户**没勾选**的动作名（空 = 全装）</returns>
     public static async Task<List<string>?> ShowAsync(XamlRoot xamlRoot, string packRoot, List<PackAutoAction> actions, string? gameNames = null)
+    {
+        if (System.Threading.Interlocked.CompareExchange(ref _showing, 1, 0) != 0) return null;
+        try { return await ShowCoreAsync(xamlRoot, packRoot, actions, gameNames); }
+        finally { System.Threading.Interlocked.Exchange(ref _showing, 0); }
+    }
+
+    private static async Task<List<string>?> ShowCoreAsync(XamlRoot xamlRoot, string packRoot,
+        List<PackAutoAction> actions, string? gameNames)
     {
         var panel = new StackPanel { Spacing = 10 };
         panel.Children.Add(new TextBlock
@@ -113,7 +123,7 @@ public static class PackActionExecutor
     /// </summary>
     public static LauncherActionContext BuildContext(
         GameId gameId, GameEntry? entry, ShadeHost? host, string? packRoot,
-        XamlRoot? xamlRoot, bool interactive, Action<string>? report)
+        XamlRoot? xamlRoot, bool interactive, Action<string>? report, PackAutoActionSnapshot snapshot)
     {
         GamePluginService? plugins = null;
         if (entry is not null)
@@ -136,6 +146,8 @@ public static class PackActionExecutor
             Host = host,
             Plugins = plugins,
             PackRoot = packRoot,
+            PackSnapshot = snapshot,
+            ExpectedPackHash = snapshot.Hash,
             XamlRoot = xamlRoot,
             Interactive = interactive,
             Report = report,
@@ -147,16 +159,14 @@ public static class PackActionExecutor
         IEnumerable<PackAutoAction> actions, IReadOnlySet<string> disabled, LauncherActionContext context)
     {
         var results = new List<string>();
-        foreach (PackAutoAction action in actions)
-        {
-            if (disabled.Contains(action.Name))
+        List<PackActionOncePolicy.ExecutionResult> batch = await PackActionOncePolicy.RunBatchAsync(
+            actions.Where(action => !disabled.Contains(action.Name)),
+            async action =>
             {
-                continue;
-            }
-
-            string summary = await LauncherActionRunner.RunAsync(action, context);
-            results.Add($"「{action.Name}」：{summary}");
-        }
+                var result = await LauncherActionRunner.RunResultAsync(action, context, isPackAction: true);
+                return result with { Summary = $"「{action.Name}」：{result.Summary}" };
+            });
+        foreach (var result in batch) results.Add(result.Summary);
 
         return results;
     }
@@ -181,7 +191,8 @@ public static class OverlayPackActionPrompter
     public static async Task<string> PromptAndRunAsync(XamlRoot xamlRoot, ShadeHost? host, Action<string>? report)
     {
         // 按 auto.json 内容 hash 分组：同一份包内容（多个服共用一份）只弹一次窗
-        var groups = new Dictionary<string, (string PackRoot, string Hash, List<PackAutoAction> Actions, List<(GameId Id, GameEntry Entry)> Games)>();
+        var groups = new Dictionary<string, (string PackRoot, string Hash, List<PackAutoAction> Actions,
+            List<(GameId Id, GameEntry Entry, PackAutoActionSnapshot Snapshot)> Games)>();
 
         string cacheRoot = AppConfig.CacheRoot;
         if (string.IsNullOrWhiteSpace(cacheRoot))
@@ -226,13 +237,13 @@ public static class OverlayPackActionPrompter
                 // 全新实例导入时 cache\games\ 还没有这个游戏的目录，不铺的话弹窗永远不会在导入当场弹
                 PlacePendingGamePacks(cacheRoot, gameKey, packRoot);
 
-                List<PackAutoAction> actions = PackAutoActionFile.Load(packRoot);
-                if (actions.Count == 0)
+                PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
+                if (snapshot is null)
                 {
                     continue;
                 }
-
-                string hash = PackActionConsent.ComputeHash(packRoot);
+                List<PackAutoAction> actions = snapshot.LoadActions();
+                string hash = snapshot.Hash;
                 if (PackActionConsent.IsConsented(gameKey, hash))
                 {
                     continue;
@@ -244,7 +255,7 @@ public static class OverlayPackActionPrompter
                     groups[hash] = group;
                 }
 
-                group.Games.Add((id, entry));
+                group.Games.Add((id, entry, snapshot));
             }
         }
         catch (Exception ex)
@@ -259,7 +270,7 @@ public static class OverlayPackActionPrompter
         }
 
         var summaries = new List<string>();
-        foreach ((string packRoot, string hash, List<PackAutoAction> actions, List<(GameId Id, GameEntry Entry)> games) in groups.Values)
+        foreach (var (packRoot, hash, actions, games) in groups.Values)
         {
             string gameNames = string.Join("、", games.Select(g => g.Entry.DisplayName));
             List<string>? disabled;
@@ -275,14 +286,21 @@ public static class OverlayPackActionPrompter
 
             if (disabled is null)
             {
-                continue;   // 下次再说：不记同意，插件页进页还会问
+                continue;   // 下次再说：不记同意，插件页仅显示显式确认入口
             }
 
             var disabledSet = new HashSet<string>(disabled, StringComparer.Ordinal);
-            foreach ((GameId id, GameEntry entry) in games)
+            foreach ((GameId id, GameEntry entry, PackAutoActionSnapshot snapshot) in games)
             {
                 try
                 {
+                    // 分组只共享弹窗，不共享账本；每个游戏必须使用自己的包根。
+                    string gamePackRoot = GameAddonPack.PackDirectory(cacheRoot, id.GameBiz.Value);
+                    if (snapshot.Hash != hash || !snapshot.IsCurrent(gamePackRoot))
+                    {
+                        summaries.Add($"【{entry.DisplayName}】包内容已变化，需显式重新确认；未执行。");
+                        continue;
+                    }
                     PackActionConsent.Save(id.GameBiz.Value, hash, disabled);
 
                     // 先把这个游戏的 ini 定向好、包 Addons 铺好，再跑动作：
@@ -308,8 +326,8 @@ public static class OverlayPackActionPrompter
                     }
 
                     LauncherActionContext context = PackActionExecutor.BuildContext(
-                        id, entry, host, packRoot, xamlRoot, interactive: true, report);
-                    List<string> results = await PackActionExecutor.RunAsync(actions, disabledSet, context);
+                        id, entry, host, gamePackRoot, xamlRoot, interactive: true, report, snapshot);
+                    List<string> results = await PackActionExecutor.RunAsync(snapshot.LoadActions(), disabledSet, context);
                     if (results.Count > 0)
                     {
                         summaries.Add($"【{entry.DisplayName}】\n" + string.Join("\n", results));

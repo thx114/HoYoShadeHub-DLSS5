@@ -796,6 +796,8 @@ public sealed partial class UpdateWindow : WindowEx
                 {
                     FileName = launcher,
                     WorkingDirectory = Path.GetDirectoryName(launcher),
+                    Arguments = LauncherCommandLine.BuildRestartArguments(),
+                    UseShellExecute = false,
                 });
                 Environment.Exit(0);
             }

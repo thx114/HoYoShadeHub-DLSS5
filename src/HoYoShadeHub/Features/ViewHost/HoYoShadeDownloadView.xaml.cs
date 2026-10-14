@@ -582,10 +582,19 @@ public sealed partial class HoYoShadeDownloadView : UserControl
         return proxies.OrderBy(_ => Random.Shared.Next()).ToArray();
     }
 
-    private static bool IsGitHubRateLimitExceeded(HttpRequestException ex)
+    private static bool IsGitHubRateLimitExceeded(Exception ex)
     {
-        return ex.StatusCode == HttpStatusCode.Forbidden &&
-            ex.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
+        // 上游 4a070dd：429/403 都算限流；有的 403 消息里不带 "rate limit" 字样，但确实被 GitHub 拒了。
+        if (ex is HttpRequestException httpEx)
+        {
+            if (httpEx.StatusCode == HttpStatusCode.Forbidden || httpEx.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                return true;
+            }
+        }
+
+        return ex.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("403", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

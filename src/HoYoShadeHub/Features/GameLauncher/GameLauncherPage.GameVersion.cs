@@ -152,6 +152,14 @@ public sealed partial class GameLauncherPage : PageBase
 
     private async void CheckGameVersion()
     {
+        await CheckGameVersionAsync();
+    }
+
+    private async Task CheckGameVersionAsync()
+    {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _versionRequests.Begin();
+        if (!IsPageRequestCurrent(_versionRequests, request, gameId)) return;
         try
         {
             // 自定义游戏：Hub 的数据库里没有它，安装目录 = exe 所在目录，状态直接给「开始游戏」
@@ -182,8 +190,13 @@ public sealed partial class GameLauncherPage : PageBase
                 GameState = GameState.InstallGame;
                 return;
             }
-            isGameExeExists = await _gameLauncherService.IsGameExeExistsAsync(CurrentGameId);
-            localGameVersion = await _gameLauncherService.GetLocalGameVersionAsync(CurrentGameId);
+            string checkedPath = GameInstallPath;
+            bool exeExists = await _gameLauncherService.IsGameExeExistsAsync(gameId);
+            if (!IsPageRequestCurrent(_versionRequests, request, gameId) || GameInstallPath != checkedPath) return;
+            Version? version = await _gameLauncherService.GetLocalGameVersionAsync(gameId);
+            if (!IsPageRequestCurrent(_versionRequests, request, gameId) || GameInstallPath != checkedPath) return;
+            isGameExeExists = exeExists;
+            localGameVersion = version;
             // 正式服：exe 在就算装了。config.ini 缺失（拷贝过来的目录 / 清理过）时读不出版本，也不挡启动，
             // 版本只影响 FPS 解锁数据同步等旁路逻辑，那些调用点都已容忍 null
             bool canStart = isGameExeExists;
@@ -213,8 +226,13 @@ public sealed partial class GameLauncherPage : PageBase
     /// </summary>
     private async Task CheckDX12ConfigAsync()
     {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _dx12Requests.Begin();
+        if (!IsPageRequestCurrent(_dx12Requests, request, gameId)) return;
+        var cancellationToken = PageCancellationToken;
         try
         {
+            _dxConfig = null;
             IsDX12OptionVisible = false;
             EnableDX12 = AppConfig.GetEnableDX12(CurrentGameBiz);
 
@@ -233,14 +251,17 @@ public sealed partial class GameLauncherPage : PageBase
                         DX12PreviewImage = "",
                         I18nIntro = "以 DX12 启动鸣潮，可体验光线追踪、DLSS 4 等画质增强；若游戏出现异常或闪退，请关闭此选项。",
                     };
+                    OnPropertyChanged(nameof(Dx12IntroText));
                 }
                 return;
             }
 
-            List<GameDXConfig> dxConfigs = await _hoYoPlayService.GetGameDXConfigsAsync([CurrentGameId]);
-            _dxConfig = dxConfigs?.FirstOrDefault(x => x.GameId == CurrentGameId);
+            List<GameDXConfig> dxConfigs = await _hoYoPlayService.GetGameDXConfigsAsync([gameId], cancellationToken);
+            if (!IsPageRequestCurrent(_dx12Requests, request, gameId)) return;
+            _dxConfig = dxConfigs?.FirstOrDefault(x => x.GameId == gameId);
 
-            bool gameSupportsDX12 = _dxConfig?.EnableDXSwitch is true || await _hoYoPlayService.IsGameSupportDX12Async(CurrentGameId);
+            bool gameSupportsDX12 = _dxConfig?.EnableDXSwitch is true || await _hoYoPlayService.IsGameSupportDX12Async(gameId, cancellationToken);
+            if (!IsPageRequestCurrent(_dx12Requests, request, gameId)) return;
             bool ignoreCheck = gameSupportsDX12 && AppConfig.GetIgnoreDX12Check(CurrentGameBiz);
 
             if (EnableDX12 && (_dxConfig?.EnableDXSwitch is true || ignoreCheck))
@@ -253,7 +274,8 @@ public sealed partial class GameLauncherPage : PageBase
                 IsDX12OptionVisible = true;
                 if (_dxConfig is null || !_dxConfig.EnableDXSwitch)
                 {
-                    var refConfig = await _hoYoPlayService.GetGameDX12ReferenceConfigAsync(CurrentGameId);
+                    var refConfig = await _hoYoPlayService.GetGameDX12ReferenceConfigAsync(gameId, cancellationToken);
+                    if (!IsPageRequestCurrent(_dx12Requests, request, gameId)) return;
                     if (_dxConfig is null)
                     {
                         _dxConfig = new GameDXConfig
@@ -292,10 +314,11 @@ public sealed partial class GameLauncherPage : PageBase
             {
                 IsDX12OptionVisible = false;
             }
+            OnPropertyChanged(nameof(Dx12IntroText));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Check DX12 config");
+            if (ex is not OperationCanceledException) _logger.LogError(ex, "Check DX12 config");
         }
     }
 
@@ -333,9 +356,13 @@ public sealed partial class GameLauncherPage : PageBase
     /// <returns></returns>
     private async Task LocateGameAsync()
     {
+        if (SnapshotGameId() is not { } gameId) return;
+        long request = _locateRequests.Begin();
+        if (!IsPageRequestCurrent(_locateRequests, request, gameId)) return;
         try
         {
             string? folder = await FileDialogHelper.PickFolderAsync(this.XamlRoot);
+            if (!IsPageRequestCurrent(_locateRequests, request, gameId)) return;
             if (!string.IsNullOrWhiteSpace(folder))
             {
                 if (DriveHelper.GetDriveType(folder) is DriveType.Network && !new Uri(folder).IsUnc)
@@ -345,13 +372,15 @@ public sealed partial class GameLauncherPage : PageBase
                 else
                 {
                     // 验证游戏exe是否存在
-                    var exeName = await _gameLauncherService.GetGameExeNameAsync(CurrentGameId);
+                    var exeName = await _gameLauncherService.GetGameExeNameAsync(gameId);
+                    if (!IsPageRequestCurrent(_locateRequests, request, gameId)) return;
 
                     // 选成上层目录（例如 miHoYo Launcher 根目录）时，往里面看两层目录名再试一次
                     string? gameFolder = folder;
                     if (!File.Exists(Path.Combine(folder, exeName)))
                     {
-                        GameFolderSearchResult nested = GameFolderLocator.Locate(folder, exeName);
+                        GameFolderSearchResult nested = await Task.Run(() => GameFolderLocator.Locate(folder, exeName));
+                        if (!IsPageRequestCurrent(_locateRequests, request, gameId)) return;
                         if (nested.Found)
                         {
                             _logger.LogInformation("Game folder nested under {Picked}: {Found} (depth {Depth}, scanned {Scanned})",

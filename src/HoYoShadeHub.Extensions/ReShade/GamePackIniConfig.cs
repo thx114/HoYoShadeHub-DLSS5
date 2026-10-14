@@ -129,9 +129,15 @@ public sealed class GamePackIniConfig
             {
                 foreach ((string key, string value) in keys)
                 {
-                    if (!string.Equals(ini.GetValue(section, key), value, StringComparison.Ordinal))
+                    // 包里写成 36,,0,,0,,0 的热键值会让 ReShade 直接不绑这个键（Home 打不开菜单），
+                    // 而且这是**每次启动都重新写**的一条路 —— 用户手改 ini 会被它一直盖回坏值。
+                    string wanted = ReShadeHotkeys.TryNormalize(section, key, value, out string repaired)
+                        ? repaired
+                        : value;
+
+                    if (!string.Equals(ini.GetValue(section, key), wanted, StringComparison.Ordinal))
                     {
-                        ini.SetValue(section, key, value);
+                        ini.SetValue(section, key, wanted);
                         changed = true;
                     }
                 }

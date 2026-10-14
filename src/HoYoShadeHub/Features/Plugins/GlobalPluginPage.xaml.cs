@@ -3147,15 +3147,36 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         if (manifest is not null)
         {
             manifest.Source = new ExtensionSource { Type = ExtensionSourceType.Local, Url = file };
-            await RunInstallAsync(manifest);
+            await RunInstallAsync(manifest, operationAlreadyOwned: true);
             return;
         }
 
         LocalPackageInstaller installer = CreateLocalPackageInstaller();
 
-        LocalPackageInstallResult result = await installer.InstallAsync(file);
+        await InstallLocalFileWithProgressAsync(installer, file);
+    }
 
-        await ApplyLocalInstallResultAsync(result, file);
+    private async Task InstallLocalFileWithProgressAsync(LocalPackageInstaller installer, string file)
+    {
+        bool acceptingProgress = true;
+        var progress = new LocalInstallProgressReporter(p => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!acceptingProgress) return;
+            ProgressBar_Overall.IsIndeterminate = p.Percent is null;
+            ProgressBar_Overall.Value = p.Percent ?? 0;
+            TextBlock_Status.Text = p.Percent is null ? p.Message : $"{p.Message}  {p.Percent:F0}%";
+        }));
+        try
+        {
+            LocalPackageInstallResult result = await installer.InstallAsync(file, progress: progress);
+            acceptingProgress = false;
+            ProgressBar_Overall.IsIndeterminate = false;
+            ProgressBar_Overall.Value = 92;
+            TextBlock_Status.Text = "文件安装完成，正在刷新插件与确认覆盖包动作…";
+            await ApplyLocalInstallResultAsync(result, file);
+            ProgressBar_Overall.Value = 100;
+        }
+        finally { acceptingProgress = false; }
     }
 
     #region 显示名 / 版本号覆盖（只改显示，不动磁盘）
@@ -3609,15 +3630,13 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
             if (manifest is not null)
             {
                 manifest.Source = new ExtensionSource { Type = ExtensionSourceType.Local, Url = file };
-                await RunInstallAsync(manifest);
+                await RunInstallAsync(manifest, operationAlreadyOwned: true);
                 return;
             }
 
             LocalPackageInstaller installer = CreateLocalPackageInstaller();
 
-            LocalPackageInstallResult result = await installer.InstallAsync(file);
-
-            await ApplyLocalInstallResultAsync(result, file);
+            await InstallLocalFileWithProgressAsync(installer, file);
         });
     }
 
@@ -4139,9 +4158,13 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         return cleaned;
     }
 
-    private async Task RunInstallAsync(ExtensionManifest manifest, string? tagOverride = null)
+    private async Task RunInstallAsync(ExtensionManifest manifest, string? tagOverride = null, bool operationAlreadyOwned = false)
     {
-        if (_manager is null || _isWorking)
+        if (operationAlreadyOwned && _manager is null)
+            _manager = PluginHostLocator.ResolveManager(out _);
+        if (operationAlreadyOwned && _manager is null)
+            throw new InvalidOperationException("未找到 HoYoShade 目录，无法安装扩展包。");
+        if (_manager is null || (_isWorking && !operationAlreadyOwned))
         {
             return;
         }
@@ -4149,7 +4172,7 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         PluginItemViewModel? item = Items.FirstOrDefault(
             i => string.Equals(i.Manifest.Id, manifest.Id, StringComparison.OrdinalIgnoreCase));
 
-        await RunAsync(async () =>
+        async Task InstallCoreAsync()
         {
             using var job = BeginDownloadJob($"\u6b63\u5728\u83b7\u53d6\u300c{manifest.Name}\u300d");
 
@@ -4204,22 +4227,21 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
             }
             finally
             {
-                if (item is not null)
                 if (job.IsCancellationRequested)
                 {
                     TextBlock_Status.Text = $"\u5df2\u53d6\u6d88\u5b89\u88c5\u300c{manifest.Name}\u300d\u3002";
                 }
 
-                {
-                    item.IsBusy = false;
-
+                if (item is not null) item.IsBusy = false;
                 Button_CancelDownload.IsEnabled = true;
                 EndDownloadJob();
-                }
             }
 
             await ReloadPluginDataAsync();
-        });
+            TextBlock_Status.Text = $"「{manifest.Name}」安装完成。";
+        }
+        if (operationAlreadyOwned) await InstallCoreAsync();
+        else await RunAsync(InstallCoreAsync);
     }
 
     /// <summary>
@@ -4237,9 +4259,10 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         try
         {
             using var archive = ZipFile.OpenRead(file);
-            var entry = archive.Entries.FirstOrDefault(
-                e => string.Equals(Path.GetFileName(e.FullName), "manifest.json", StringComparison.OrdinalIgnoreCase)
-                     || string.Equals(Path.GetFileName(e.FullName), "hysx.json", StringComparison.OrdinalIgnoreCase));
+            // 只认**根上**（或套一层同名壳）的 manifest.json / hysx.json：
+            // 覆盖包 OptiScaler\redist\streamline\ 里带着 Streamline SDK 自己的 manifest.json，
+            // 按文件名瞎配会把整个覆盖包误判成标准扩展包，走进扩展安装流程挂死（实测 2026-10-09）。
+            var entry = archive.Entries.FirstOrDefault(e => IsTopLevelManifestEntry(e.FullName));
 
             if (entry is null)
             {
@@ -4262,6 +4285,21 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
     }
 
 
+
+    /// <summary>manifest.json / hysx.json 只在 zip 根上（或套一层壳）才算扩展包清单；嵌套深目录里同名文件（如 Streamline SDK redist）不算</summary>
+    private static bool IsTopLevelManifestEntry(string fullName)
+    {
+        string n = fullName.Replace('\\', '/').TrimStart('.', '/');
+        int depth = n.Count(c => c == '/');
+        if (depth > 1)
+        {
+            return false;
+        }
+
+        string fileName = Path.GetFileName(n);
+        return string.Equals(fileName, "manifest.json", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(fileName, "hysx.json", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>看头 4 个字节是不是 zip 的本地文件头（避免拿 .addon64 去当 zip 解）</summary>
     private static bool LooksLikeZip(string file)
@@ -4415,6 +4453,7 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         }
 
         _isWorking = true;
+        ProgressBar_Overall.Value = 0;
         ProgressBar_Overall.IsIndeterminate = true;
         ProgressBar_Overall.Visibility = Visibility.Visible;
 

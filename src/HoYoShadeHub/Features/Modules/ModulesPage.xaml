@@ -65,16 +65,22 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
 
                             <CheckBox Grid.Column="0"
+                                      Grid.Row="0"
                                       MinWidth="0"
                                       VerticalAlignment="Center"
                                       IsChecked="{x:Bind Used, Mode=TwoWay}"
                                       IsEnabled="{x:Bind CanUse}"
                                       Click="CheckBox_Module_Click" />
 
-                            <StackPanel Grid.Column="1" Spacing="3">
+                            <StackPanel Grid.Column="1" Grid.Row="0" Spacing="3">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBlock VerticalAlignment="Center"
                                                Style="{ThemeResource BodyStrongTextBlockStyle}"
@@ -135,6 +141,82 @@
                                            Text="{x:Bind MissingText}"
                                            Visibility="{x:Bind MissingVisibility}"
                                            TextWrapping="Wrap" />
+                            </StackPanel>
+
+                            <!--  FSR 桥卡片：展开 / 收起「扩展配置」（只有桥有这个箭头；按钮内容不能挂 x:Bind）  -->
+                            <Button Grid.Column="2"
+                                    Grid.Row="0"
+                                    MinWidth="32"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Click="Button_ExpandBridge_Click"
+                                    Tag="{x:Bind}"
+                                    ToolTipService.ToolTip="展开桥扩展配置（深度翻转 / jitter / 锐化等 13 项）"
+                                    Visibility="{x:Bind ExpandButtonVisibility, Mode=OneWay}">
+                                <FontIcon FontSize="12" Glyph="&#xE70D;" />
+                            </Button>
+                            <Button Grid.Column="2"
+                                    Grid.Row="0"
+                                    MinWidth="32"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Click="Button_ExpandBridge_Click"
+                                    Tag="{x:Bind}"
+                                    ToolTipService.ToolTip="缩回去"
+                                    Visibility="{x:Bind CollapseButtonVisibility, Mode=OneWay}">
+                                <FontIcon FontSize="12" Glyph="&#xE70E;" />
+                            </Button>
+
+                            <!--  扩展配置：写进桥 DLL 同目录的 Dx11FsrBridge.ini  -->
+                            <StackPanel x:Name="BridgeQuickConfig" Grid.Row="1"
+                                        Grid.ColumnSpan="3"
+                                        Margin="0,6,0,0"
+                                        Spacing="6"
+                                        Visibility="{x:Bind ExpandedVisibility, Mode=OneWay}">
+                                <MenuFlyoutSeparator />
+                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="扩展配置（写进 Dx11FsrBridge.ini；未勾选 = 0）"
+                                           TextWrapping="Wrap" />
+                                <ItemsControl ItemsSource="{x:Bind BridgeItems, Mode=OneWay}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:FsrBridgeItemViewModel">
+                                            <Grid ColumnSpacing="8" Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="210" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0"
+                                                           VerticalAlignment="Center"
+                                                           Text="{x:Bind Label, Mode=OneWay}"
+                                                           TextWrapping="Wrap"
+                                                           ToolTipService.ToolTip="{x:Bind ToolTip, Mode=OneWay}" />
+                                                <CheckBox Grid.Column="1"
+                                                          MinWidth="0"
+                                                          IsChecked="{x:Bind BoolValue, Mode=TwoWay}"
+                                                          Visibility="{x:Bind BoolVisibility, Mode=OneWay}" />
+                                                <ComboBox Grid.Column="1"
+                                                          MinWidth="170"
+                                                          ItemsSource="{x:Bind ChoiceList, Mode=OneWay}"
+                                                          SelectedIndex="{x:Bind OptionIndex, Mode=TwoWay}"
+                                                          Visibility="{x:Bind OptionVisibility, Mode=OneWay}" />
+                                                <NumberBox Grid.Column="1"
+                                                           MinWidth="170"
+                                                           Maximum="{x:Bind NumberMaximum}"
+                                                           Minimum="{x:Bind NumberMinimum}"
+                                                           SpinButtonPlacementMode="Compact"
+                                                           Value="{x:Bind NumberValue, Mode=TwoWay}"
+                                                           Visibility="{x:Bind NumberVisibility, Mode=OneWay}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </StackPanel>
                         </Grid>
                     </Border>

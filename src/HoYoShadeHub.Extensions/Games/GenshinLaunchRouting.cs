@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace HoYoShadeHub.Extensions.Games;
 
 public static class GenshinLaunchRouting
@@ -5,6 +8,56 @@ public static class GenshinLaunchRouting
     /// <summary>XXMI manual launch uses the ordinary Hub injection/start sequence.</summary>
     public static bool UseEarlyGraphicsLaunch(bool injectMode, bool starward, bool xxmiEnabled) =>
         !injectMode && !starward && !xxmiEnabled;
+
+    /// <summary>
+    /// 普通（非 XXMI）原神由 Hub 自己创建 EXE 时，是否走同一个 CreateProcess 句柄的有序早期批注入。
+    /// bridgeAvailable 必须来自 ResolveInjectionDlls（全局启用且当前原神已勾选）。
+    /// </summary>
+    public static bool CanUseGenshinExeInjection(
+        bool isGenshin, bool injectMode, bool starward, bool xxmiEnabled,
+        bool optiScalerEnabled, bool bridgeAvailable, bool optiScalerAvailable, string? gameInstallPath) =>
+        isGenshin && !injectMode && !starward && !xxmiEnabled
+        && optiScalerEnabled && bridgeAvailable && optiScalerAvailable
+        && !string.IsNullOrWhiteSpace(gameInstallPath);
+
+    /// <summary>
+    /// 普通原神 EXE 早期批注入清单。顺序与旧桥链的图形层先后一致：
+    /// Bridge → 用户勾选的额外模块 → FFX12 → OptiScaler → ReShade。
+    /// <c>DllInjector.InjectIntoHandle</c> 会按列表逐个创建远端 <c>LoadLibraryW</c> 并等待上一个结束，
+    /// 所以这里不是无序同时注入；ReShade 也会在 OptiScaler 加载返回后才开始注入。
+    /// </summary>
+    public static List<string> BuildExeInjectionPlan(
+        string bridgeDll,
+        string? ffx12Dll,
+        string optiDll,
+        string? shadeDll,
+        IReadOnlyList<string>? extraDlls = null)
+    {
+        var dlls = new List<string>();
+
+        void Add(string? dll)
+        {
+            if (!string.IsNullOrWhiteSpace(dll)
+                && !dlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
+            {
+                dlls.Add(dll);
+            }
+        }
+
+        Add(bridgeDll);
+        if (extraDlls is not null)
+        {
+            foreach (string extra in extraDlls)
+            {
+                Add(extra);
+            }
+        }
+
+        Add(ffx12Dll);
+        Add(optiDll);
+        Add(shadeDll);
+        return dlls;
+    }
 
     /// <summary>
     /// 能不能走「有序注入链」：外部只在 CreateProcess 那一刻注桥，其余各层由桥在游戏进程内按
