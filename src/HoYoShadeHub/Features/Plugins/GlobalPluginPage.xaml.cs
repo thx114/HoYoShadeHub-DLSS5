@@ -4259,23 +4259,7 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
         try
         {
             using var archive = ZipFile.OpenRead(file);
-            // 只认**根上**（或套一层同名壳）的 manifest.json / hysx.json：
-            // 覆盖包 OptiScaler\redist\streamline\ 里带着 Streamline SDK 自己的 manifest.json，
-            // 按文件名瞎配会把整个覆盖包误判成标准扩展包，走进扩展安装流程挂死（实测 2026-10-09）。
-            var entry = archive.Entries.FirstOrDefault(e => IsTopLevelManifestEntry(e.FullName));
-
-            if (entry is null)
-            {
-                return null;
-            }
-
-            using Stream stream = entry.Open();
-            return JsonSerializer.Deserialize<ExtensionManifest>(stream, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                ReadCommentHandling = JsonCommentHandling.Skip,
-                AllowTrailingCommas = true,
-            });
+            return LocalPackageInstaller.ReadExtensionManifest(archive);
         }
         catch (InvalidDataException)
         {
@@ -4285,21 +4269,6 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
     }
 
 
-
-    /// <summary>manifest.json / hysx.json 只在 zip 根上（或套一层壳）才算扩展包清单；嵌套深目录里同名文件（如 Streamline SDK redist）不算</summary>
-    private static bool IsTopLevelManifestEntry(string fullName)
-    {
-        string n = fullName.Replace('\\', '/').TrimStart('.', '/');
-        int depth = n.Count(c => c == '/');
-        if (depth > 1)
-        {
-            return false;
-        }
-
-        string fileName = Path.GetFileName(n);
-        return string.Equals(fileName, "manifest.json", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(fileName, "hysx.json", StringComparison.OrdinalIgnoreCase);
-    }
 
     /// <summary>看头 4 个字节是不是 zip 的本地文件头（避免拿 .addon64 去当 zip 解）</summary>
     private static bool LooksLikeZip(string file)

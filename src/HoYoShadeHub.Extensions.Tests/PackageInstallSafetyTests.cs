@@ -11,6 +11,52 @@ internal static class PackageInstallSafetyTests
         Directory.CreateDirectory(root);
         try
         {
+            foreach (string wrapper in new[] { "", "Wrapped/" })
+            {
+                string package = Path.Combine(root, "manifest-" + (wrapper.Length == 0 ? "root" : "wrapped") + ".zip");
+                using (var zip = ZipFile.Open(package, ZipArchiveMode.Create))
+                {
+                    foreach (var entry in new[]
+                    {
+                        ("manifest.json", "{\"sdkVersion\":\"2.0\"}"),
+                        ("filelist.json", "{\"hysxOverlay\":1,\"targets\":[{\"from\":\"Payload\",\"to\":\"modules\"}]}"),
+                        ("Payload/probe.txt", "installed")
+                    })
+                    {
+                        using var writer = new StreamWriter(zip.CreateEntry(wrapper + entry.Item1).Open());
+                        writer.Write(entry.Item2);
+                    }
+                }
+                using (var zip = ZipFile.OpenRead(package))
+                    Check(LocalPackageInstaller.ReadExtensionManifest(zip) is null, "Overlay mistaken for extension");
+                Check(LocalPackageInstaller.DetectKind(package) == LocalPackageKind.Overlay, "Manifest overrode overlay detection");
+                string fixtureRoot = Path.Combine(root, "manifest-install-" + wrapper.Length);
+                var result = await new LocalPackageInstaller(Path.Combine(fixtureRoot, "opti"), "",
+                    Path.Combine(fixtureRoot, "modules"), cacheRoot: Path.Combine(fixtureRoot, "cache")).InstallAsync(package);
+                Check(result.Kind == LocalPackageKind.Overlay && File.ReadAllText(Path.Combine(fixtureRoot, "modules", "probe.txt")) == "installed",
+                    "Overlay with third-party manifest did not install");
+            }
+            foreach (var fixture in new[]
+            {
+                ("manifest.json", "{\"sdkVersion\":1}", false),
+                ("manifest.json", "{bad", false),
+                ("Payload/manifest.json", "{}", false),
+                ("manifest.json", "{\"id\":\"test.extension\",\"rules\":[{\"match\":\"*.addon64\"}]}", true),
+                ("Wrapped/hysx.json", "{\"id\":\"test.extension\",\"rules\":[{}]}", true)
+            })
+            {
+                using var buffer = new MemoryStream();
+                using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+                {
+                    using (var writer = new StreamWriter(zip.CreateEntry(fixture.Item1).Open())) writer.Write(fixture.Item2);
+                    zip.CreateEntry(fixture.Item1.StartsWith("Wrapped/") ? "Wrapped/plugin.addon64" : "plugin.addon64");
+                }
+                buffer.Position = 0;
+                using var read = new ZipArchive(buffer, ZipArchiveMode.Read);
+                Check((LocalPackageInstaller.ReadExtensionManifest(read) is not null) == fixture.Item3,
+                    "Extension manifest content or wrapper detection failed: " + fixture.Item1);
+            }
+
             foreach (string game in new[] { "../..", "..\\..", "C:\\outside", "hk4e/child", ".", "" })
                 Reject(() => new OverlayManifest { Schema = 1, Game = game }.ValidatePaths(root));
             foreach (string from in new[] { "../outside", "C:\\outside", "\\outside", "a/../../outside" })

@@ -587,7 +587,7 @@ public static class GameIniBootstrap
                 return;
             }
 
-            if (GamePackIniConfig.Load(packRoot) is { } config && config.Apply(ini))
+            if (GamePackIniConfig.Load(packRoot) is { } config && config.ApplyOnce(packRoot, ini))
             {
                 result.AppliedPackIniConfig = true;
             }

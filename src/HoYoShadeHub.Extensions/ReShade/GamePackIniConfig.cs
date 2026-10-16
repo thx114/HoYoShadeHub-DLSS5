@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.ReShade;
@@ -13,13 +14,14 @@ namespace HoYoShadeHub.Extensions.ReShade;
 ///   "remove": { "SECTION": ["Key1", "Key2"] }
 /// }
 /// </code>
-/// <c>set</c> 的键每次启动都重新写入（ReShade 退出时会把自己的内存配置写回 ini，
-/// 不重复 enforce 的话包里的配置只生效一次）；<c>remove</c> 的键从 ini 里摘掉
+/// <c>set</c> 和 <c>remove</c> 每次安装覆盖包后只自动应用一次；
+/// <c>remove</c> 的键从 ini 里摘掉
 /// （死键清理）。两个都可选、可为空；文件不存在 / 解析失败 = 没有配置。
 /// </para>
 /// </summary>
 public sealed class GamePackIniConfig
 {
+    private const string AppliedMarker = ".hysx_ini_config_applied";
     /// <summary>节 → 键 → 值（写入）</summary>
     public Dictionary<string, Dictionary<string, string>> Set { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -160,6 +162,32 @@ public sealed class GamePackIniConfig
                 ini.Save(iniPath);
             }
 
+            return changed;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>按覆盖包安装事务执行一次；后续启动拒绝重复写回游戏 ini。</summary>
+    public bool ApplyOnce(string packRoot, string iniPath)
+    {
+        if (string.IsNullOrWhiteSpace(packRoot) || !Directory.Exists(packRoot)) return false;
+        string configPath = Path.Combine(packRoot, GameAddonPackUserContent.IniConfigFileName);
+        if (!File.Exists(configPath)) return false;
+
+        try
+        {
+            string markerPath = Path.Combine(packRoot, AppliedMarker);
+            if (File.Exists(markerPath))
+                return false;
+
+            bool changed = Apply(iniPath);
+            string temporary = markerPath + ".tmp-" + Guid.NewGuid().ToString("N");
+            File.WriteAllText(temporary, "applied" + Environment.NewLine, new UTF8Encoding(false));
+            if (File.Exists(markerPath)) File.Replace(temporary, markerPath, null);
+            else File.Move(temporary, markerPath);
             return changed;
         }
         catch
