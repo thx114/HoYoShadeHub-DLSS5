@@ -81,10 +81,8 @@ internal static class GameIniBootstrapTests
                 """);
             relativeShaderSource=Load(relativeShaders);relativeShaderSource.SetValue("ADDON","AddonPath",relativePackAddons);
             relativeShaderSource.Save(relativeShaders.ReShadeIniPath!);
-            Check(GamePackIniConfig.ApplyForInstall(relativePackRoot, relativeShaders.ReShadeIniPath!),
-                "明确安装覆盖包写入相对滤镜路径");
             var packRelativeFix=GameIniBootstrap.Ensure(relativeShaders, host);
-            Check(!packRelativeFix.AppliedPackIniConfig && !packRelativeFix.Failed
+            Check(packRelativeFix.AppliedPackIniConfig && !packRelativeFix.Failed
                 && Load(relativeShaders).GetValue("GENERAL","EffectSearchPaths")==expectedShaders,
                 "插件包重新写入相对路径后仍最终归一化滤镜路径");
             Check(Load(relativeShaders).GetValue("ADDON","AddonPath")==relativePackAddons,
@@ -526,8 +524,8 @@ internal static class GameIniBootstrapTests
             singleSource.Save(single.ReShadeIniPath!);
             Preset(single, "PackDefault.ini", "Pack@Pack.fx");
             var enforced = GameIniBootstrap.Ensure(single, host, true);
-            Check(!enforced.Failed && !enforced.AppliedPackIniConfig && Load(single).GetValue("GENERAL", "PresetPath") == "ChangedFinal.ini"
-                && IniDocument.Load(Secondary(single)).GetValue("GENERAL", "PresetPath") == "ChangedFinal.ini", "启动不执行 ini_config，保留用户共享预设");
+            Check(!enforced.Failed && enforced.AppliedPackIniConfig && Load(single).GetValue("GENERAL", "PresetPath") == "ChangedFinal.ini"
+                && IniDocument.Load(Secondary(single)).GetValue("GENERAL", "PresetPath") == "ChangedFinal.ini", "真实 ini_config 覆写及移除迁移标志不丢失用户共享预设");
             Check(!GameIniBootstrap.Ensure(single, host, true).Failed && Load(single).GetValue("GENERAL", "PresetPath") == "ChangedFinal.ini"
                 && Load(single).GetValue("GENERAL", "HoYoShadeEffectsStage") == "1" && Load(single).GetValue("GENERAL", "NoReloadOnInit") == "0",
                 "带包强制配置的反复启动仍保留用户选择并确保 stage 和加载");

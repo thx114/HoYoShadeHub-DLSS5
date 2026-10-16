@@ -1,10 +1,9 @@
-using System.Text;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.ReShade;
 
 /// <summary>
-/// 覆盖包的 <c>ini_config.json</c>：仅明确安装时写进这个游戏 ReShade.ini 的节 / 键。
+/// 覆盖包的 <c>ini_config.json</c>：每次启动游戏时写进这个游戏 ReShade.ini 的节 / 键。
 ///
 /// <para>
 /// 格式：
@@ -14,14 +13,13 @@ namespace HoYoShadeHub.Extensions.ReShade;
 ///   "remove": { "SECTION": ["Key1", "Key2"] }
 /// }
 /// </code>
-/// <c>set</c> 和 <c>remove</c> 每次明确安装覆盖包时应用一次；
-/// <c>remove</c> 的键从 ini 里摘掉
+/// <c>set</c> 的键每次启动都重新写入（ReShade 退出时会把自己的内存配置写回 ini，
+/// 不重复 enforce 的话包里的配置只生效一次）；<c>remove</c> 的键从 ini 里摘掉
 /// （死键清理）。两个都可选、可为空；文件不存在 / 解析失败 = 没有配置。
 /// </para>
 /// </summary>
 public sealed class GamePackIniConfig
 {
-    private const string AppliedMarker = ".hysx_ini_config_applied";
     /// <summary>节 → 键 → 值（写入）</summary>
     public Dictionary<string, Dictionary<string, string>> Set { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -32,9 +30,6 @@ public sealed class GamePackIniConfig
 
     /// <summary>读包里的 ini_config.json；没有 / 读不了返回 null（= 没配置）</summary>
     public static GamePackIniConfig? Load(string? packRoot)
-        => LoadCore(packRoot, throwOnError: false);
-
-    private static GamePackIniConfig? LoadCore(string? packRoot, bool throwOnError)
     {
         if (packRoot is null)
         {
@@ -53,7 +48,6 @@ public sealed class GamePackIniConfig
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                if (throwOnError) throw new InvalidDataException("ini_config.json must contain an object.");
                 return null;
             }
 
@@ -111,7 +105,7 @@ public sealed class GamePackIniConfig
 
             return config.IsEmpty ? null : config;
         }
-        catch when (!throwOnError)
+        catch
         {
             // 写坏了就当没有配置 —— 不能让一个 json 把启动挡了
             return null;
@@ -121,15 +115,8 @@ public sealed class GamePackIniConfig
     /// <summary>把这个配置写进游戏 ini（幂等；有实际改动才落盘）。返回有没有写入。</summary>
     public bool Apply(string iniPath)
     {
-        try { return ApplyCore(iniPath, throwOnError: false); }
-        catch { return false; }
-    }
-
-    private bool ApplyCore(string iniPath, bool throwOnError)
-    {
         if (IsEmpty || string.IsNullOrWhiteSpace(iniPath) || !File.Exists(iniPath))
         {
-            if (throwOnError && !IsEmpty) throw new FileNotFoundException("The target ReShade INI was not created before package installation.", iniPath);
             return false;
         }
 
@@ -143,7 +130,7 @@ public sealed class GamePackIniConfig
                 foreach ((string key, string value) in keys)
                 {
                     // 包里写成 36,,0,,0,,0 的热键值会让 ReShade 直接不绑这个键（Home 打不开菜单），
-                    // 在安装时统一修复，保留用户之后的手动修改。
+                    // 而且这是**每次启动都重新写**的一条路 —— 用户手改 ini 会被它一直盖回坏值。
                     string wanted = ReShadeHotkeys.TryNormalize(section, key, value, out string repaired)
                         ? repaired
                         : value;
@@ -173,57 +160,6 @@ public sealed class GamePackIniConfig
                 ini.Save(iniPath);
             }
 
-            return changed;
-        }
-        catch when (!throwOnError)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>Explicit installation only. Every call applies this package, including reinstallations.</summary>
-    public bool ApplyForInstall(string iniPath)
-    {
-        try { return ApplyCore(iniPath, throwOnError: true); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            throw new InvalidDataException($"Failed to apply package INI settings to '{iniPath}': {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>Explicit installation only. Every call applies this package, including reinstallations.</summary>
-    public static bool ApplyForInstall(string packRoot, string iniPath)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(packRoot);
-        try
-        {
-            GamePackIniConfig? config = LoadCore(packRoot, throwOnError: true);
-            return config?.ApplyCore(iniPath, throwOnError: true) ?? false;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            throw new InvalidDataException($"Failed to install ini_config.json from '{packRoot}' into '{iniPath}': {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>按覆盖包安装事务执行一次；后续启动拒绝重复写回游戏 ini。</summary>
-    public bool ApplyOnce(string packRoot, string iniPath)
-    {
-        if (string.IsNullOrWhiteSpace(packRoot) || !Directory.Exists(packRoot)) return false;
-        string configPath = Path.Combine(packRoot, GameAddonPackUserContent.IniConfigFileName);
-        if (!File.Exists(configPath)) return false;
-
-        try
-        {
-            string markerPath = Path.Combine(packRoot, AppliedMarker);
-            if (File.Exists(markerPath))
-                return false;
-
-            bool changed = Apply(iniPath);
-            string temporary = markerPath + ".tmp-" + Guid.NewGuid().ToString("N");
-            File.WriteAllText(temporary, "applied" + Environment.NewLine, new UTF8Encoding(false));
-            if (File.Exists(markerPath)) File.Replace(temporary, markerPath, null);
-            else File.Move(temporary, markerPath);
             return changed;
         }
         catch

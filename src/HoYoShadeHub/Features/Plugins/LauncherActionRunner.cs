@@ -683,7 +683,8 @@ public static class LauncherActionRunner
     /// <summary>
     /// set_ini_keys：把任意节/键写进 ini（默认游戏 ReShade.ini；file= 可指游戏目录内的其它 ini，
     /// 相对路径）。set = { "节": { "键": "值" } }，remove = { "节": ["键"] }。
-    /// 覆盖包安装时执行，按本次安装的 once 账本记账；启动游戏不执行包动作。
+    /// once=true 时整个步骤只执行一次 —— 按步骤内容哈希在包根 .hysx_once.json 记账，
+    /// 改包里的步骤内容会自动重新执行。导入覆盖包后"改一次 ini 就放手"靠它。
     /// </summary>
     private static string SetIniKeys(PackActionStep step, LauncherActionContext context)
     {
@@ -771,7 +772,7 @@ public static class LauncherActionRunner
             return "✗ set_ini_keys：没有 set / remove 内容";
         }
 
-        bool changed = config.ApplyForInstall(iniPath);
+        bool changed = config.Apply(iniPath);
 
         return $"已写入 {Path.GetFileName(iniPath)}：set {setCount} 键 / remove {removeCount} 键"
                + (changed ? string.Empty : "（值相同，无改动）");

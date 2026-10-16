@@ -573,8 +573,7 @@ public static class GameIniBootstrap
     }
 
     /// <summary>
-    /// 覆盖包预设同步：游戏 ini 的 AddonPath 指向每游戏插件包时生效。
-    /// ini_config.json 只允许明确安装时应用，启动准备绝不写回包配置。
+    /// 覆盖包用户内容（ini_config.json / presets\）：游戏 ini 的 AddonPath 指向每游戏插件包时生效。
     /// 失败全吞 —— 用户内容只是增强，不挡启动。
     /// </summary>
     private static void ApplyPackUserContent(string ini, GameIniBootstrapResult result)
@@ -586,6 +585,11 @@ public static class GameIniBootstrap
             if (packRoot is null || addonDir is null)
             {
                 return;
+            }
+
+            if (GamePackIniConfig.Load(packRoot) is { } config && config.Apply(ini))
+            {
+                result.AppliedPackIniConfig = true;
             }
 
             int imported = GameAddonPackUserContent.SyncPresets(packRoot, addonDir);

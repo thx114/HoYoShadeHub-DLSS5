@@ -7,7 +7,7 @@ namespace HoYoShadeHub.Extensions.ReShade;
 /// 其余文件都由用户（或扩展包作者）维护，存在即生效。
 ///
 /// <list type="bullet">
-/// <item><c>ini_config.json</c> —— 仅明确安装时写进游戏 ReShade.ini 的节/键（见 <see cref="GamePackIniConfig"/>）；</item>
+/// <item><c>ini_config.json</c> —— 每次启动写进游戏 ReShade.ini 的节/键（见 <see cref="GamePackIniConfig"/>）；</item>
 /// <item><c>auto.json</c> —— 自定义动作（见 <see cref="PackAutoAction"/>）；</item>
 /// <item><c>presets\</c> —— 随包导入的 DLSS5 预设（复制进 <c>Addons\DLSS5-Presets\</c>）；</item>
 /// <item><c>game_files\</c> —— 覆盖到游戏目录的文件（相对结构保持）；</item>

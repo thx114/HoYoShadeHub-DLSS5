@@ -158,7 +158,7 @@ public sealed class LocalPackageInstaller
         return LocalPackageKind.Module;
     }
 
-    /// <summary>按包内文件清单识别类型：启动器包 &gt; 覆盖包 &gt; hysx 清单 &gt; OptiScaler &gt; addon。</summary>
+    /// <summary>按包内文件清单识别类型：hysx 清单 &gt; 启动器包 &gt; 覆盖包 &gt; OptiScaler &gt; addon。</summary>
     public static LocalPackageKind DetectKindFromEntries(IEnumerable<string> entryNames)
     {
         // 打包工具常把整包再套一层同名目录（「星穹铁道6倍覆盖包_1.1/…」），先脱掉那层
@@ -166,6 +166,13 @@ public sealed class LocalPackageInstaller
 
         // 打包工具常把整包再套一层同名目录（「星穹铁道6倍覆盖包_1.1/…」），再算一份脱壳后的
         List<string> names = StripCommonWrapper(raw);
+
+        // 只认根上（或套一层壳）的 manifest.json / hysx.json：嵌套目录里同名的
+        // （如 OptiScaler\redist\streamline\manifest.json，Streamline SDK 自带）不是扩展包清单。
+        if (names.Any(IsTopLevelManifest))
+        {
+            return LocalPackageKind.Extension;
+        }
 
         // 启动器本体包和覆盖包都带着 HoYoShade\，先按根上的特征把两者分开
         if (IsLauncherAppPackage(raw))
@@ -179,11 +186,6 @@ public sealed class LocalPackageInstaller
             return LocalPackageKind.Overlay;
         }
 
-        if (names.Any(IsTopLevelManifest))
-        {
-            return LocalPackageKind.Extension;
-        }
-
         if (names.Any(IsOptiScalerFile))
         {
             return LocalPackageKind.OptiScaler;
@@ -195,35 +197,6 @@ public sealed class LocalPackageInstaller
         }
 
         return LocalPackageKind.Module;
-    }
-
-    public static ExtensionManifest? ReadExtensionManifest(ZipArchive archive)
-    {
-        var paths = archive.Entries.Select(e => e.FullName).ToList();
-        // Overlay payloads can contain third-party manifests, including at the root.
-        if (DetectKindFromEntries(paths) is LocalPackageKind.Overlay or LocalPackageKind.AppPackage)
-            return null;
-
-        var names = StripCommonWrapper(paths.Select(NormalizeEntry).ToList());
-        for (int i = 0; i < names.Count; i++)
-        {
-            if (names[i].Contains('/') || !IsTopLevelManifest(names[i])) continue;
-            try
-            {
-                using var stream = archive.Entries[i].Open();
-                var manifest = JsonSerializer.Deserialize<ExtensionManifest>(stream, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    ReadCommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true,
-                });
-                // Local installation supplies the source; identity and rules belong to the package.
-                if (manifest is not null && !string.IsNullOrWhiteSpace(manifest.Id)
-                    && manifest.Rules is { Length: > 0 }) return manifest;
-            }
-            catch (JsonException) { }
-        }
-        return null;
     }
 
     /// <summary>manifest.json / hysx.json 只在根上（或套一层壳）才算扩展包清单；深目录同名文件不算</summary>
@@ -793,7 +766,6 @@ public sealed class LocalPackageInstaller
                         int copied = PackageTree.Copy(gamePackSource, packDir, cancellationToken);
                         if (copied > 0)
                         {
-                            PackInstallTransaction.Start(packDir);
                             placed = true;
                             details.Add($"GamePack → {gameKey} 覆盖包目录：{copied} 个文件（打开该游戏插件页确认动作后即生效）");
                         }
@@ -814,7 +786,6 @@ public sealed class LocalPackageInstaller
                     try
                     {
                         PackageTree.Copy(gamePackSource, pendingStage, cancellationToken);
-                        PackInstallTransaction.Start(pendingStage);
                         cancellationToken.ThrowIfCancellationRequested();
                         pending = PackageTree.ResolveRelative(pendingRoot, gameHint);
                         PackageTree.Commit(pendingStage, pending);
