@@ -388,6 +388,7 @@ public static class GameLaunchPipeline
             }
 
             ShadeHost? host = PluginHostLocator.Resolve(out _);
+            GameLaunchIniPreparation.EnsurePackActionTarget(entry, host, actions);
             GamePluginService? plugins = null;
             if (entry is not null)
             {
@@ -616,7 +617,9 @@ public static class GameLaunchPipeline
 
                 // 启动前先把挂着的「配置」重放一遍：配置 → profiles\<游戏>.ini → 主 ini。
                 // 以前只在切换下拉时才套用，所以改了配置 / 直接改了 ini，下次启动会被旧 profile 覆盖
-                var preparation = OptiScalerPresets.SyncIntoProfileChecked(buildDirectory, gameKey);
+                var preparation = OptiScalerPresets.SyncIntoProfileForLaunchChecked(buildDirectory, gameKey);
+                if (preparation.RecoveryDirectory is { } recoveryDirectory)
+                    _logger.LogWarning("OptiScaler launch configuration recovery; original files archived at {Directory}", recoveryDirectory);
                 if (!preparation.Succeeded)
                     throw new IOException("OptiScaler config preparation was blocked; game launch stopped.");
                 if (preparation.PresetName is { } launchPreset)

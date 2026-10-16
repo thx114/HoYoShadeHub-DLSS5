@@ -10,7 +10,7 @@ namespace HoYoShadeHub.Extensions.Services;
 /// 注入前把对应游戏的那份激活为主 ini，游戏退出时回写。
 /// </para>
 /// </summary>
-public static class OptiScalerProfiles
+public static partial class OptiScalerProfiles
 {
     private static readonly object Gate = new();
     public const string RuntimeBaselineFileName = ".hub-runtime-baseline";
@@ -137,7 +137,17 @@ public static class OptiScalerProfiles
         {
         if (File.Exists(Path.Combine(buildDirectory, RuntimeTransactionFileName)))
             return new(CollectionStatus.Blocked, RuntimeOwner(buildDirectory));
-        string? owner = RuntimeOwner(buildDirectory);
+        string? owner;
+        try
+        {
+            string ownerPath = Path.Combine(buildDirectory, RuntimeOwnerFileName);
+            owner = File.Exists(ownerPath) ? File.ReadAllText(ownerPath).Trim() : null;
+            if (owner?.Length == 0) owner = null;
+        }
+        catch
+        {
+            return new(CollectionStatus.Failed, null);
+        }
         if (owner is null)
         {
             return new(CollectionStatus.Unchanged, null);

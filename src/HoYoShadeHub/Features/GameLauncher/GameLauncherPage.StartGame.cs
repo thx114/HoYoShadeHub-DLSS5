@@ -1959,6 +1959,7 @@ public sealed partial class GameLauncherPage : PageBase
 
             GameEntry? capturedEntry = _currentGameEntry;
             ShadeHost? host = PluginHostLocator.Resolve(out _);
+            GameLaunchIniPreparation.EnsurePackActionTarget(capturedEntry, host, actions);
             GamePluginService? plugins = null;
             if (capturedEntry is not null)
             {
@@ -2046,7 +2047,9 @@ public sealed partial class GameLauncherPage : PageBase
 
     private string? ApplyLaunchPresetChecked(string buildDirectory, string gameKey)
     {
-        var preparation = OptiScalerPresets.SyncIntoProfileChecked(buildDirectory, gameKey);
+        var preparation = OptiScalerPresets.SyncIntoProfileForLaunchChecked(buildDirectory, gameKey);
+        if (preparation.RecoveryDirectory is { } recoveryDirectory)
+            _logger.LogWarning("OptiScaler launch configuration recovery; original files archived at {Directory}", recoveryDirectory);
         if (!preparation.Succeeded)
         {
             string detail = preparation.FailureReason ?? "OptiScaler 配置准备失败，请检查配置文件。";

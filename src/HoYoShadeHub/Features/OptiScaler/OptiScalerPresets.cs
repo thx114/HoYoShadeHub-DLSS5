@@ -232,7 +232,7 @@ internal static class OptiScalerPresets
                 return false;
             }
 
-            if (!CollectFromRuntimeChecked(buildDirectory).Succeeded) return false;
+            if (!CollectForActivationChecked(buildDirectory, presetName).Succeeded) return false;
 
             string profile = OptiScalerProfiles.ProfilePath(buildDirectory, gameKey);
             Directory.CreateDirectory(Path.GetDirectoryName(profile)!);
@@ -378,17 +378,19 @@ internal static class OptiScalerPresets
         return result.PresetName;
     }
 
-    public readonly record struct PreparationResult(bool Succeeded, string? PresetName, string? FailureReason = null);
+    public readonly record struct PreparationResult(bool Succeeded, string? PresetName, string? FailureReason = null,
+        string? RecoveryDirectory = null);
 
-    public static PreparationResult CollectFromRuntimeChecked(string buildDirectory)
+    public static PreparationResult CollectFromRuntimeChecked(string buildDirectory, string? preservePreset = null)
     {
-        string pending = Path.Combine(buildDirectory, ".hub-preset-sync-pending");
+        string pending = Path.Combine(buildDirectory, OptiScalerProfiles.PresetSyncPendingFileName);
         try
         {
         if (File.Exists(pending))
         {
             string pendingOwner = File.ReadAllText(pending);
-            if (SelectedPreset(pendingOwner, buildDirectory).Length > 0
+            string pendingPreset = SelectedPreset(pendingOwner, buildDirectory);
+            if (pendingPreset.Length > 0 && !string.Equals(pendingPreset, preservePreset, StringComparison.OrdinalIgnoreCase)
                 && Follow(buildDirectory, pendingOwner) is null)
                 return new(false, null, "无法将上次游戏配置保存回所选预设，请检查预设文件的写入权限。");
             File.Delete(pending);
@@ -401,7 +403,7 @@ internal static class OptiScalerPresets
         if (collected.Status != OptiScalerProfiles.CollectionStatus.Collected || collected.Owner is null)
             return new(true, null);
         string selected = SelectedPreset(collected.Owner, buildDirectory);
-        if (selected.Length == 0) return new(true, null);
+        if (selected.Length == 0 || string.Equals(selected, preservePreset, StringComparison.OrdinalIgnoreCase)) return new(true, null);
         WriteTextAtomically(pending, collected.Owner);
         string? followed = Follow(buildDirectory, collected.Owner);
         if (followed is not null) File.Delete(pending);
@@ -427,6 +429,75 @@ internal static class OptiScalerPresets
         var result = SyncIntoProfileChecked(buildDirectory, gameKey);
         if (!result.Succeeded) throw new IOException("OptiScaler profile preparation is blocked or failed.");
         return result.PresetName;
+    }
+
+    public static PreparationResult SyncIntoProfileForLaunchChecked(string buildDirectory, string gameKey)
+    {
+        var preparation = CollectForActivationChecked(buildDirectory);
+        if (!preparation.Succeeded) return preparation;
+        return SyncIntoProfileChecked(buildDirectory, gameKey) with { RecoveryDirectory = preparation.RecoveryDirectory };
+    }
+
+    private static PreparationResult CollectForActivationChecked(string buildDirectory, string? preservePreset = null)
+    {
+        var preparation = CollectFromRuntimeChecked(buildDirectory, preservePreset);
+        if (preparation.Succeeded) return preparation;
+        var recovery = OptiScalerProfiles.RecoverForLaunch(buildDirectory, (owner, backup) =>
+        {
+            string selected = SelectedPreset(owner, buildDirectory);
+            if (selected.Length == 0 || string.Equals(selected, preservePreset, StringComparison.OrdinalIgnoreCase)) return false;
+            ArchiveRecoveredPreset(backup, selected);
+            return true;
+        });
+        if (!recovery.Succeeded)
+            return preparation with
+            {
+                FailureReason = "无法安全恢复 OptiScaler 配置，原始配置已保留。请检查配置及备份目录的访问权限。 "
+                    + recovery.FailureReason,
+                RecoveryDirectory = recovery.BackupDirectory
+            };
+        if (!recovery.Recovered)
+            return preparation with { RecoveryDirectory = recovery.BackupDirectory };
+        try
+        {
+            // Complete normal runtime -> named preset collection before replaying the launch preset.
+            string? owner = recovery.Owner;
+            string selected = owner is not null ? SelectedPreset(owner, buildDirectory) : string.Empty;
+            if (owner is not null && selected.Length > 0
+                && !string.Equals(selected, preservePreset, StringComparison.OrdinalIgnoreCase))
+            {
+                string pending = Path.Combine(buildDirectory, OptiScalerProfiles.PresetSyncPendingFileName);
+                if (Follow(buildDirectory, owner) is null)
+                    return new(false, null, "无法将恢复的游戏配置保存回所选预设，请检查预设文件的访问权限。",
+                        recovery.BackupDirectory);
+                File.Delete(pending);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new(false, null, "无法备份或保存恢复后的预设，已保留原始配置。 " + ex.Message,
+                recovery.BackupDirectory);
+        }
+        return new(true, null, RecoveryDirectory: recovery.BackupDirectory);
+    }
+
+    private static void ArchiveRecoveredPreset(string backup, string name)
+    {
+        string[] sources = [PathOf(name), MetaPathOf(name)];
+        foreach (string source in sources)
+        {
+            if (!File.Exists(source)) continue;
+            byte[] bytes = File.ReadAllBytes(source);
+            string target = Path.Combine(backup, FolderName, Path.GetFileName(source));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            using (var stream = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            if (!File.ReadAllBytes(target).AsSpan().SequenceEqual(bytes))
+                throw new IOException("Recovered preset backup verification failed.");
+        }
     }
 
     public static PreparationResult SyncIntoProfileChecked(string buildDirectory, string gameKey)

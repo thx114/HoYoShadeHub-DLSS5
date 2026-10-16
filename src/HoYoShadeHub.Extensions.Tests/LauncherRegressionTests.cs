@@ -29,6 +29,8 @@ internal static class LauncherRegressionTests
         await Run("Launch reservation", () => Check(GameLaunchReservationTests.Run()));
         await Run("Page request lifetime", async () => { await LatestRequestGateTests.RunAsync(); });
         await Run("Profile integrity", () => { OptiScalerProfileIntegrityTests.Run(); return Task.CompletedTask; });
+        await Run("Launch profile recovery", () => { OptiScalerLaunchRecoveryTests.Run(); return Task.CompletedTask; });
+        await Run("Launch INI target preparation", () => { GameLaunchIniPreparationTests.Run(); return Task.CompletedTask; });
         await Run("Preset selection", () => { OptiScalerPresetSelectionTests.Run(); return Task.CompletedTask; });
         await Run("Package installation", PackageInstallSafetyTests.RunAsync);
         await Run("Download protocol", async () =>
