@@ -87,11 +87,6 @@ public static class GameLaunchPipeline
 
         ApplyForceHookOff(gameId, entry);
 
-        // 和启动页同一步骤：覆盖包 auto.json 里标了 runOnLaunch 的动作（含文件覆盖层）先跑。
-        // 没同意过 / 被单独禁用的不跑 —— 与页面行为一致（CLI 不替用户做同意决定）。
-        if (!await RunPackAutoActionsOnLaunchAsync(gameId, entry, report, ct))
-            throw new InvalidOperationException("覆盖包动作 blocked；后续启动准备已停止，需显式核验迁移。");
-
         bool useOptiScaler = AppConfig.GetUseOptiScalerLaunchOption(gameId);
         var aiInterlock = await OptiSmoothMotionInterlock.EnsureAsync(gameId, entry?.ExePath, useOptiScaler);
         if (!string.IsNullOrWhiteSpace(aiInterlock.Note)) report?.Invoke(aiInterlock.Note);
@@ -360,84 +355,6 @@ public static class GameLaunchPipeline
         }
     }
 
-    // ==================== ①' 覆盖包 runOnLaunch 动作（页面 RunPackAutoActionsOnLaunchAsync 的 headless 版）====================
-
-    private static async Task<bool> RunPackAutoActionsOnLaunchAsync(
-        GameId gameId, GameEntry? entry, Action<string>? report, CancellationToken ct)
-    {
-        try
-        {
-            ct.ThrowIfCancellationRequested();
-            string packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
-
-            // 与页面一致：没同意过（或 auto.json 变了还没重新确认）一律不跑；被单独禁用的跳过
-            PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
-            if (snapshot is null) return true; // 无可授权动作；不 dispatch。
-            string consentHash = snapshot.Hash;
-            if (!PackActionConsent.IsConsented(gameId.GameBiz.Value, consentHash))
-            {
-                return true;
-            }
-
-            HashSet<string> disabled = PackActionConsent.DisabledActions(gameId.GameBiz.Value, consentHash);
-            List<PackAutoAction> actions = [.. snapshot.LoadActions()
-                .Where(a => a.RunOnLaunch && !disabled.Contains(a.Name))];
-            if (actions.Count == 0)
-            {
-                return true;
-            }
-
-            ShadeHost? host = PluginHostLocator.Resolve(out _);
-            GamePluginService? plugins = null;
-            if (entry is not null)
-            {
-                try
-                {
-                    plugins = GamePluginServiceFactory.Create(entry, host);
-                }
-                catch
-                {
-                    // 读不出插件状态就只跑不依赖 ini 的步骤
-                }
-            }
-
-            var context = new LauncherActionContext
-            {
-                GameId = gameId,
-                GameBiz = gameId.GameBiz,
-                Entry = entry,
-                Host = host,
-                Plugins = plugins,
-                LauncherPage = null,
-                PackRoot = packRoot,
-                PackSnapshot = snapshot,
-                ExpectedPackHash = consentHash,
-                XamlRoot = null,
-                Interactive = false,
-                IsContextCurrent = () => !ct.IsCancellationRequested,
-                Report = report ?? (text => _logger.LogInformation("{Text}", text)),
-            };
-
-            foreach (PackAutoAction action in actions)
-            {
-                ct.ThrowIfCancellationRequested();
-                var result = await LauncherActionRunner.RunResultAsync(action, context, isPackAction: true);
-                _logger.LogInformation("runOnLaunch「{Name}」：{Summary} blocked={Blocked} reason={Reason}",
-                    action.Name, result.Summary, result.Blocked, result.Reason);
-                if (result.Blocked) return false;
-            }
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Run pack auto actions on launch blocked (pipeline)");
-            return false;
-        }
-    }
 
     // ==================== ② 游戏目录 dlssg 换 310.9（页面 EnsureGameDlssgForMfg 的移植）====================
 

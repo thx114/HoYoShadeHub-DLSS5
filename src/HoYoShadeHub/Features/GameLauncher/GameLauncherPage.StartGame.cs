@@ -1921,91 +1921,6 @@ public sealed partial class GameLauncherPage : PageBase
                || launcher.StartsWith(game + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// 覆盖包 auto.json 里标了 <c>runOnLaunch</c> 的自定义动作：启动 / 注入前自动执行（不弹窗，结果进日志）。
-    /// pending/partial/未知身份阻断动作批次及后续启动；无同意时只跳过包动作。
-    /// </summary>
-    private async Task<bool> RunPackAutoActionsOnLaunchAsync()
-    {
-        bool unloaded = false;
-        Microsoft.UI.Xaml.RoutedEventHandler onUnloaded = (_, _) => unloaded = true;
-        Unloaded += onUnloaded;
-        try
-        {
-            if (CurrentGameId is not { } gameId)
-            {
-                return true;
-            }
-
-            string packRoot = GameAddonPack.PackDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
-
-            // 没同意过（或 auto.json 内容变了还没重新确认）→ 一律不跑；已同意但被用户单独禁用的动作也跳过
-            PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
-            if (snapshot is null) return true; // 无可授权动作；不 dispatch。
-            string consentHash = snapshot.Hash;
-            if (!PackActionConsent.IsConsented(gameId.GameBiz.Value, consentHash))
-            {
-                return true;
-            }
-
-            HashSet<string> disabled = PackActionConsent.DisabledActions(gameId.GameBiz.Value, consentHash);
-            List<PackAutoAction> actions = [.. snapshot.LoadActions()
-                .Where(a => a.RunOnLaunch && !disabled.Contains(a.Name))];
-            if (actions.Count == 0)
-            {
-                return true;
-            }
-
-            GameEntry? capturedEntry = _currentGameEntry;
-            ShadeHost? host = PluginHostLocator.Resolve(out _);
-            GamePluginService? plugins = null;
-            if (capturedEntry is not null)
-            {
-                try
-                {
-                    plugins = GamePluginServiceFactory.Create(capturedEntry, host);
-                }
-                catch
-                {
-                    // 读不出插件状态就只跑不依赖 ini 的步骤
-                }
-            }
-
-            ILogger logger = AppConfig.GetLogger<GameLauncherPage>();
-            var context = new LauncherActionContext
-            {
-                GameId = gameId,
-                GameBiz = gameId.GameBiz,
-                Entry = capturedEntry,
-                Host = host,
-                Plugins = plugins,
-                LauncherPage = null,
-                PackRoot = packRoot,
-                PackSnapshot = snapshot,
-                ExpectedPackHash = consentHash,
-                XamlRoot = XamlRoot,
-                Interactive = false,
-                IsContextCurrent = () => !unloaded && IsLoaded
-                    && CurrentGameId?.GameBiz.Value == gameId.GameBiz.Value,
-                Report = text => logger.LogInformation("{Text}", text),
-            };
-
-            foreach (PackAutoAction action in actions)
-            {
-                var result = await LauncherActionRunner.RunResultAsync(action, context, isPackAction: true);
-                logger.LogInformation("runOnLaunch「{Name}」：{Summary} blocked={Blocked} reason={Reason}",
-                    action.Name, result.Summary, result.Blocked, result.Reason);
-                if (result.Blocked) return false;
-            }
-            return true;
-        }
-        catch (Exception ex)
-        {
-            AppConfig.GetLogger<GameLauncherPage>().LogWarning(ex, "Run pack auto actions on launch blocked");
-            return false;
-        }
-        finally { Unloaded -= onUnloaded; }
-    }
 
     /// <summary>Observe optional model injection without holding up the graphics launch pipeline.</summary>
     private async Task ObserveXxmiInjectionAsync(int pid, GameId gameId, string? displayName)
@@ -2140,13 +2055,6 @@ public sealed partial class GameLauncherPage : PageBase
             // 缺 DLSS5 的运行时（nvngx_dlssnr.dll）就先弹窗问一下：装了也白装，插件根本加载不了
             if (!await ConfirmDlssRuntimeAsync())
             {
-                return;
-            }
-
-            // Apply imported module/build selections before checking dependencies.
-            if (!await RunPackAutoActionsOnLaunchAsync())
-            {
-                _logger.LogWarning("覆盖包动作 blocked；后续启动准备已停止，需显式核验迁移。");
                 return;
             }
 

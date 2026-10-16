@@ -3107,7 +3107,7 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
                 RefreshOptiScaler();
 
                 // 包里的 GamePack（auto.json）已铺进各游戏包目录：动作确认现在就办，
-                // 确认后立即执行（一次性；启动前的 runOnLaunch 靠 once 记账自动跳过）。
+                // 确认后立即执行；启动游戏时不执行覆盖包动作。
                 // 没有 auto.json 的旧包这里直接返回空串，行为不变。
                 string packSummary = await OverlayPackActionPrompter.PromptAndRunAsync(
                     XamlRoot,
@@ -3115,7 +3115,9 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
                     text => TextBlock_Status.Text = text);
                 if (packSummary.Length > 0)
                 {
-                    ShowInfo("覆盖包动作执行完成", packSummary, InfoBarSeverity.Success);
+                    bool failed = packSummary.Contains("失败", StringComparison.Ordinal) || packSummary.Contains('✗');
+                    ShowInfo(failed ? "覆盖包部分配置未完成" : "覆盖包动作执行完成", packSummary,
+                        failed ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
                 }
                 break;
         }

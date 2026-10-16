@@ -13,6 +13,20 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+if (args.Length == 1 && args[0] == "pack-install-transaction-tests")
+    return await HoYoShadeHub.Extensions.Tests.PackInstallTransactionTests.RunAsync();
+
+if (args.Length == 1 && args[0] == "pack-ini-install-tests")
+{
+    int failures = 0;
+    HoYoShadeHub.Extensions.Tests.PackIniInstallTests.Run((ok, name) =>
+    {
+        Console.WriteLine((ok ? "PASS " : "FAIL ") + name);
+        if (!ok) failures++;
+    });
+    return failures == 0 ? 0 : 1;
+}
+
 if (args.Length == 1 && args[0] == "genshin-graphics-tests")
     return HoYoShadeHub.Extensions.Tests.GenshinGraphicsSettingsTests.Run();
 

@@ -790,13 +790,10 @@ public sealed class LocalPackageInstaller
                             continue;
                         string packDir = GameAddonPack.PackDirectory(_cacheRoot, gameKey);
                         Directory.CreateDirectory(packDir);
-                        // 每次明确安装覆盖包都开启一次新的 ini_config 安装事务；
-                        // 启动后的自动路径仍由新事务标记阻止重复执行。
-                        string iniAppliedMarker = Path.Combine(packDir, ".hysx_ini_config_applied");
-                        try { File.Delete(iniAppliedMarker); } catch { /* locked marker is handled by copy failure */ }
                         int copied = PackageTree.Copy(gamePackSource, packDir, cancellationToken);
                         if (copied > 0)
                         {
+                            PackInstallTransaction.Start(packDir);
                             placed = true;
                             details.Add($"GamePack → {gameKey} 覆盖包目录：{copied} 个文件（打开该游戏插件页确认动作后即生效）");
                         }
@@ -817,6 +814,7 @@ public sealed class LocalPackageInstaller
                     try
                     {
                         PackageTree.Copy(gamePackSource, pendingStage, cancellationToken);
+                        PackInstallTransaction.Start(pendingStage);
                         cancellationToken.ThrowIfCancellationRequested();
                         pending = PackageTree.ResolveRelative(pendingRoot, gameHint);
                         PackageTree.Commit(pendingStage, pending);

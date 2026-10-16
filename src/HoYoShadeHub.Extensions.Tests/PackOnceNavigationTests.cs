@@ -594,30 +594,12 @@ internal static class PackOnceNavigationTests
             && !navigation.Contains("SyncDlss5FeedPreset(") && !navigation.Contains("GamePluginServiceFactory.Create("),
             "Full navigation/LoadGame chain has no pack sync, INI ensure, preset sync or name cache write");
         check(page.Contains("Button_CopyIni_Click") && page.Contains("Button_AlignIni_Click"), "Explicit user INI controls retained");
-        string start = File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Features", "GameLauncher", "GameLauncherPage.StartGame.cs"));
-        string launch = start[start.IndexOf("private async Task<bool> RunPackAutoActionsOnLaunchAsync()", StringComparison.Ordinal)..start.IndexOf("    /// <summary>Observe optional", StringComparison.Ordinal)];
-        check(launch.Contains("LauncherPage = null") && launch.Contains("GameId = gameId") && launch.Contains("Entry = capturedEntry")
-            && launch.Contains("IsContextCurrent = () => !unloaded && IsLoaded") && launch.Contains("Unloaded += onUnloaded")
-            && launch.Contains("Unloaded -= onUnloaded"), "StartGame captured identity + lifecycle callback; no mutable LauncherPage");
-        check(start.Contains("if (!await RunPackAutoActionsOnLaunchAsync())"), "Blocked package stops actual page launch preparation");
-        string pipeline = File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Features", "GameLauncher", "GameLaunchPipeline.cs"));
-        check(pipeline.Contains("if (!await RunPackAutoActionsOnLaunchAsync(gameId, entry, report, ct))"), "Blocked package stops actual headless launch preparation");
-        foreach (string file in new[] { "GameLaunchPipeline.cs", "GameLauncherPage.StartGame.cs" })
-            check(File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Features", "GameLauncher", file))
-                .Contains("LauncherActionRunner.RunResultAsync(action, context, isPackAction: true)"), "Launch caller cannot lose captured pack origin: " + file);
-        foreach (string file in new[] { "GameLaunchPipeline.cs", "GameLauncherPage.StartGame.cs" })
-            check(File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Features", "GameLauncher", file))
-                .Contains("if (result.Blocked) return false;"), "Launch batch stops on structured blocked: " + file);
         foreach (string file in new[] { "GameLaunchPipeline.cs", "GameLauncherPage.StartGame.cs" })
         {
             string source = File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Features", "GameLauncher", file));
-            int begin = source.IndexOf("private " + (file == "GameLaunchPipeline.cs" ? "static " : "") + "async Task<bool> RunPackAutoActionsOnLaunchAsync", StringComparison.Ordinal);
-            int end = source.IndexOf(file == "GameLaunchPipeline.cs" ? "    // ==================== ②" : "    /// <summary>Observe optional", begin, StringComparison.Ordinal);
-            string entry = source[begin..end];
-            check(entry.Contains("PackAutoActionSnapshot.TryLoad(packRoot)") && entry.Contains("string consentHash = snapshot.Hash;")
-                && entry.Contains("snapshot.LoadActions()") && entry.Contains("PackSnapshot = snapshot")
-                && entry.Contains("ExpectedPackHash = consentHash") && !entry.Contains("PackActionConsent.ComputeHash(")
-                && !entry.Contains("PackAutoActionFile.Load("), "Launch consent/action/plan same-read binding: " + file);
+            check(!source.Contains("RunPackAutoActionsOnLaunchAsync")
+                && !source.Contains("LauncherActionRunner.RunResultAsync(action, context, isPackAction: true)"),
+                "Game launch never dispatches or checks package setup actions: " + file);
         }
     }
 }

@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace HoYoShadeHub.Extensions.ReShade;
 
 /// <summary>
-/// 覆盖包的 <c>ini_config.json</c>：每次启动游戏时写进这个游戏 ReShade.ini 的节 / 键。
+/// 覆盖包的 <c>ini_config.json</c>：仅明确安装时写进这个游戏 ReShade.ini 的节 / 键。
 ///
 /// <para>
 /// 格式：
@@ -14,7 +14,7 @@ namespace HoYoShadeHub.Extensions.ReShade;
 ///   "remove": { "SECTION": ["Key1", "Key2"] }
 /// }
 /// </code>
-/// <c>set</c> 和 <c>remove</c> 每次安装覆盖包后只自动应用一次；
+/// <c>set</c> 和 <c>remove</c> 每次明确安装覆盖包时应用一次；
 /// <c>remove</c> 的键从 ini 里摘掉
 /// （死键清理）。两个都可选、可为空；文件不存在 / 解析失败 = 没有配置。
 /// </para>
@@ -32,6 +32,9 @@ public sealed class GamePackIniConfig
 
     /// <summary>读包里的 ini_config.json；没有 / 读不了返回 null（= 没配置）</summary>
     public static GamePackIniConfig? Load(string? packRoot)
+        => LoadCore(packRoot, throwOnError: false);
+
+    private static GamePackIniConfig? LoadCore(string? packRoot, bool throwOnError)
     {
         if (packRoot is null)
         {
@@ -50,6 +53,7 @@ public sealed class GamePackIniConfig
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
+                if (throwOnError) throw new InvalidDataException("ini_config.json must contain an object.");
                 return null;
             }
 
@@ -107,7 +111,7 @@ public sealed class GamePackIniConfig
 
             return config.IsEmpty ? null : config;
         }
-        catch
+        catch when (!throwOnError)
         {
             // 写坏了就当没有配置 —— 不能让一个 json 把启动挡了
             return null;
@@ -117,8 +121,15 @@ public sealed class GamePackIniConfig
     /// <summary>把这个配置写进游戏 ini（幂等；有实际改动才落盘）。返回有没有写入。</summary>
     public bool Apply(string iniPath)
     {
+        try { return ApplyCore(iniPath, throwOnError: false); }
+        catch { return false; }
+    }
+
+    private bool ApplyCore(string iniPath, bool throwOnError)
+    {
         if (IsEmpty || string.IsNullOrWhiteSpace(iniPath) || !File.Exists(iniPath))
         {
+            if (throwOnError && !IsEmpty) throw new FileNotFoundException("The target ReShade INI was not created before package installation.", iniPath);
             return false;
         }
 
@@ -132,7 +143,7 @@ public sealed class GamePackIniConfig
                 foreach ((string key, string value) in keys)
                 {
                     // 包里写成 36,,0,,0,,0 的热键值会让 ReShade 直接不绑这个键（Home 打不开菜单），
-                    // 而且这是**每次启动都重新写**的一条路 —— 用户手改 ini 会被它一直盖回坏值。
+                    // 在安装时统一修复，保留用户之后的手动修改。
                     string wanted = ReShadeHotkeys.TryNormalize(section, key, value, out string repaired)
                         ? repaired
                         : value;
@@ -164,9 +175,34 @@ public sealed class GamePackIniConfig
 
             return changed;
         }
-        catch
+        catch when (!throwOnError)
         {
             return false;
+        }
+    }
+
+    /// <summary>Explicit installation only. Every call applies this package, including reinstallations.</summary>
+    public bool ApplyForInstall(string iniPath)
+    {
+        try { return ApplyCore(iniPath, throwOnError: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException($"Failed to apply package INI settings to '{iniPath}': {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Explicit installation only. Every call applies this package, including reinstallations.</summary>
+    public static bool ApplyForInstall(string packRoot, string iniPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packRoot);
+        try
+        {
+            GamePackIniConfig? config = LoadCore(packRoot, throwOnError: true);
+            return config?.ApplyCore(iniPath, throwOnError: true) ?? false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            throw new InvalidDataException($"Failed to install ini_config.json from '{packRoot}' into '{iniPath}': {ex.Message}", ex);
         }
     }
 

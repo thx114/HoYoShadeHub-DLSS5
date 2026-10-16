@@ -52,7 +52,7 @@ public static class PackActionConsentDialog
             var content = new StackPanel { Spacing = 2 };
             content.Children.Add(new TextBlock
             {
-                Text = action.Name + (action.RunOnLaunch ? "　（每次启动前自动检查）" : string.Empty),
+                Text = action.Name,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,
             });
@@ -174,7 +174,7 @@ public static class PackActionExecutor
 
 /// <summary>
 /// 导入覆盖包后的「动作一并办掉」：扫所有已装游戏的包目录，auto.json 还没同意过的
-/// 现在弹窗；确认后**立即**对这些游戏执行（once 步骤记 .hysx_once.json，启动前自动跑会跳过）。
+/// 现在弹窗；确认后立即对这些游戏执行，本次安装结束后启动游戏不再执行。
 ///
 /// <para>
 /// 游戏已装但 cache\games\ 目录还没生成（全新便携包首导）时，安装器把 GamePack 暂存在
@@ -237,18 +237,18 @@ public static class OverlayPackActionPrompter
                 // 全新实例导入时 cache\games\ 还没有这个游戏的目录，不铺的话弹窗永远不会在导入当场弹
                 PlacePendingGamePacks(cacheRoot, gameKey, packRoot);
 
+                if (!PackInstallTransaction.IsPending(packRoot)) continue;
+
                 PackAutoActionSnapshot? snapshot = PackAutoActionSnapshot.TryLoad(packRoot);
                 if (snapshot is null)
                 {
+                    await PackInstallTransaction.PrepareAsync(packRoot);
+                    PrepareIniForInstall(id, entry, host, packRoot);
+                    PackInstallTransaction.Complete(packRoot);
                     continue;
                 }
                 List<PackAutoAction> actions = snapshot.LoadActions();
                 string hash = snapshot.Hash;
-                if (PackActionConsent.IsConsented(gameKey, hash))
-                {
-                    continue;
-                }
-
                 if (!groups.TryGetValue(hash, out var group))
                 {
                     group = (packRoot, hash, actions, []);
@@ -261,7 +261,7 @@ public static class OverlayPackActionPrompter
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Scan pack actions on import");
-            return string.Empty;
+            return "覆盖包安装配置失败：" + ex.Message;
         }
 
         if (groups.Count == 0)
@@ -302,32 +302,18 @@ public static class OverlayPackActionPrompter
                         continue;
                     }
                     PackActionConsent.Save(id.GameBiz.Value, hash, disabled);
+                    await PackInstallTransaction.PrepareAsync(gamePackRoot);
 
                     // 先把这个游戏的 ini 定向好、包 Addons 铺好，再跑动作：
                     // set_addons 按 AddonPath 目录扫文件写 [ADDON] DisabledAddons，
                     // 目录还没指向包 / 包还没铺时「禁用全部」会扫到空目录或旧目录，白跑一次
                     // （once 记账一立，状态就定格在「全开」——崩铁 mfgunlock 事故）
-                    try
-                    {
-                        GameIniBootstrap.Ensure(entry, host, GameLauncher.GameLauncherService.UsesGenshinFinalDx12(id));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Ensure game ini before pack actions ({Game})", id.GameBiz.Value);
-                    }
-
-                    try
-                    {
-                        GameAddonPackService.Sync(id, entry, host);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Sync addon pack before pack actions ({Game})", id.GameBiz.Value);
-                    }
+                    PrepareIniForInstall(id, entry, host, gamePackRoot);
 
                     LauncherActionContext context = PackActionExecutor.BuildContext(
                         id, entry, host, gamePackRoot, xamlRoot, interactive: true, report, snapshot);
                     List<string> results = await PackActionExecutor.RunAsync(snapshot.LoadActions(), disabledSet, context);
+                    PackInstallTransaction.Complete(gamePackRoot);
                     if (results.Count > 0)
                     {
                         summaries.Add($"【{entry.DisplayName}】\n" + string.Join("\n", results));
@@ -342,6 +328,16 @@ public static class OverlayPackActionPrompter
         }
 
         return string.Join("\n\n", summaries);
+    }
+
+    private static void PrepareIniForInstall(GameId id, GameEntry entry, ShadeHost? host, string packRoot)
+    {
+        var result = GameIniBootstrap.Ensure(entry, host, GameLauncher.GameLauncherService.UsesGenshinFinalDx12(id));
+        if (result.Failed || result.MissingTemplate)
+            throw new IOException("覆盖包安装无法准备游戏 INI，请检查 HoYoShade 模板和游戏目录写入权限。");
+        GameAddonPackService.Sync(id, entry, host);
+        if (entry.ReShadeIniPath is { } ini)
+            GamePackIniConfig.ApplyForInstall(packRoot, ini);
     }
 
     /// <summary>
@@ -366,32 +362,13 @@ public static class OverlayPackActionPrompter
                     continue;
                 }
 
-                Directory.CreateDirectory(packRoot);
-                foreach (string pendingFile in Directory.EnumerateFiles(hintDir))
-                {
-                    try
-                    {
-                        File.Copy(pendingFile, Path.Combine(packRoot, Path.GetFileName(pendingFile)), overwrite: true);
-                    }
-                    catch
-                    {
-                        // 占用中下轮再铺
-                    }
-                }
-
-                try
-                {
-                    Directory.Delete(hintDir, recursive: true);
-                }
-                catch
-                {
-                    // 删不掉就留着，下次再清
-                }
+                if (!PackPendingMigration.TryMigrate(hintDir, packRoot, out string? error))
+                    throw new IOException("覆盖包暂存内容迁移失败：" + error);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // 暂存铺放只是增强，不挡主流程
+            throw new IOException("覆盖包安装无法迁移暂存内容。", ex);
         }
     }
 }
