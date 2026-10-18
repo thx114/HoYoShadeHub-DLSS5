@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-10-10T00:00:00Z",
+  "updatedAt": "2026-10-18T08:06:58Z",
   "_readme": [
     "远端条件表：插件的判定条件 / dll 需求 / OptiScaler 依赖清单全部从这里下发，启动器代码零硬编码。",
     "启动器读不到本文件（离线+无种子）时用内置默认值，行为与硬编码时代完全一致。",
@@ -8,7 +8,6 @@
     "dllRequirements：按扩展目录 tags 里的 tag 名匹配；files 数组内多文件是『与』关系（必须同时在目录里）。",
     "兼容性：旧客户端不认识本文件，照旧走内置默认；新字段缺了按默认补。"
   ],
-
   "addonConditions": [
     {
       "slugPrefix": "renodx-dlss5-super-anus",
@@ -51,13 +50,17 @@
       "note": "GITC Uplift：DLSS-NR 的另一种实现（RenoDX DLSS / DLSS5 的替代品）。设置写在游戏 ReShade.ini 的 [Uplift] 段，不用 RenoDX 那套 hook 点键，所以 hookPointCapable 保持 false；nvngx_dlssnr.dll 要放 Addons\\GITC-Uplift\\（或 addons 目录里），不能放游戏 exe 旁边。"
     }
   ],
-
   "dllRequirements": [
     {
       "tag": "dlss5",
       "required": [
-        ["nvngx_dlssnr.dll"],
-        ["sl.interposer.dll", "sl.dlss_nr.dll"]
+        [
+          "nvngx_dlssnr.dll"
+        ],
+        [
+          "sl.interposer.dll",
+          "sl.dlss_nr.dll"
+        ]
       ],
       "recommended": [],
       "notes": {
@@ -66,14 +69,13 @@
       }
     }
   ],
-
   "dllFamilies": [
     {
       "id": "dlssnr",
       "displayName": "DLSS5 神经渲染运行时",
       "filePattern": "nvngx_dlssnr.dll",
       "level": "required",
-      "note": "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"
+      "note": "DLSS5 插件必须有它。RTX 20/30 默认使用 310.9.16 F5 加速特化版；RTX 40/50 默认使用 SF 通用版。"
     },
     {
       "id": "streamline",
@@ -105,7 +107,6 @@
       "note": "Frame Generation 用的运行时。"
     }
   ],
-
   "dllSources": [
     {
       "id": "rankftw-rhi",
@@ -118,7 +119,6 @@
       ]
     }
   ],
-
   "dllExtras": [
     {
       "family": "dlssnr",
@@ -143,9 +143,22 @@
       "version": "310.8.Lecram",
       "url": "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.Lecram/nvngx_dlssnr_310.8.Lecram.zip",
       "note": "Lecram 修改版（310.8.3，40 系实测 5~10%+，50 系更高）"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.9.16-SF",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-310.9.16/nvngx_dlssnr_310.9.16-SF.zip",
+      "note": "310.9.16 通用兼容版；RTX 40/50 默认使用，未知 NVIDIA 显卡也回退到此版",
+      "sha256": "0C973B9CD94F859551D045B81E38B9101BC1DA54BC8F66F21E2554B0C16DFA36"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.9.16-F5",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-310.9.16/nvngx_dlssnr_310.9.16-F5-RTX20-30.zip",
+      "note": "310.9.16 F5 特化版；仅 RTX 20/30 默认使用",
+      "sha256": "9C3A20CA0F73D59533563524F960E778D39D909D76151271BB175B68F9564187"
     }
   ],
-
   "blockedVersions": [
     {
       "family": "dlssnr",
@@ -153,7 +166,6 @@
       "reason": "该包缺 2 个文件，装上 DLSS5 直接起不来（FAIL_UnableToInitializeFeature）"
     }
   ],
-
   "optiscaler": {
     "streamlineFolder": "streamline",
     "streamlineFiles": [
@@ -166,9 +178,11 @@
       "sl.nis.dll"
     ],
     "dlssgFile": "nvngx_dlssg.dll",
-    "upscalerRuntimeDlls": ["nvngx.dll", "libxess.dll"]
+    "upscalerRuntimeDlls": [
+      "nvngx.dll",
+      "libxess.dll"
+    ]
   },
-
   "internalNames": {
     "renodx-dlss5-super-anus": "RenoDX DLSS_A",
     "renodx-dlss": "RenoDX DLSS",
@@ -176,7 +190,6 @@
     "gitc-uplift": "GITC Uplift",
     "FsrBridgeDepthAddon": "FSR Bridge Depth Provider"
   },
-
   "feedAddon": {
     "slugPrefix": "dlss5-feed",
     "techniques": [
