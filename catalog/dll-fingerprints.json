@@ -57,6 +57,20 @@
       "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-310.9.16/nvngx_dlssnr_310.9.16-F5-RTX20-30.zip",
       "note": "F5 加速特化版；RTX 20/30 默认使用",
       "sha256": "9C3A20CA0F73D59533563524F960E778D39D909D76151271BB175B68F9564187"
+    },
+    {
+      "family": "dlssnr",
+      "version": "原神V2 预设A_3000",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-genshin-v2-3000-20261025/nvngx_dlssnr_GenshinV2-PresetA-3000.zip",
+      "note": "",
+      "sha256": "25560769FA3100F71471CEFEE9B9C4ED8B3DF8DA5AD715D91CC94F22FCC08AD9"
+    },
+    {
+      "family": "dlssnr",
+      "version": "原神V2 3000",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-genshin-v2-3000-20261025/nvngx_dlssnr_GenshinV2-3000.zip",
+      "note": "",
+      "sha256": "E7CA8C7AA0BDA9B8912D72784AA86276A4FDD5ED44005C402C54F10AF09F0033"
     }
   ]
 }
