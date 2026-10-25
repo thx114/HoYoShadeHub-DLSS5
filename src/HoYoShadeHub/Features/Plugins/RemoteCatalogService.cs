@@ -1,4 +1,5 @@
-using HoYoShadeHub.Extensions.Conditions;
+﻿using HoYoShadeHub.Extensions.Conditions;
+using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Networking;
 using HoYoShadeHub.Extensions.Services;
@@ -23,7 +24,7 @@ internal static class RemoteCatalogDefaults
 }
 
 /// <summary>一次拉取的结果</summary>
-internal sealed record RemoteCatalogResult(bool Fetched, bool PluginsUpdated, bool OptiScalerUpdated, bool ModulesUpdated, string Message);
+internal sealed record RemoteCatalogResult(bool Fetched, bool PluginsUpdated, bool OptiScalerUpdated, bool ModulesUpdated, string Message, bool DllFingerprintsUpdated = false);
 
 /// <summary>
 /// 远端目录（插件 + OptiScaler + 模块）的拉取与缓存。
@@ -61,6 +62,14 @@ internal static class RemoteCatalogService
 
     /// <summary>条件表（catalog/conditions.json）的缓存：插件判定 / dll 需求 / OptiScaler 依赖清单</summary>
     public static string ConditionsCachePath => CacheDirectory.Length == 0 ? string.Empty : Path.Combine(CacheDirectory, "conditions.json");
+
+    public static string DllFingerprintsCachePath => CacheDirectory.Length == 0 ? string.Empty
+        : Path.Combine(CacheDirectory, DllFingerprintCatalog.FileName);
+
+    public static void ApplyDllFingerprints()
+    {
+        if (File.Exists(DllFingerprintsCachePath)) DllFingerprintCatalog.TryLoadFile(DllFingerprintsCachePath);
+    }
 
     /// <summary>把缓存里的条件表喂给 Extensions 层的 <see cref="Conditions.AddonConditions"/>（同步、幂等）</summary>
     public static void ApplyConditions()
@@ -121,6 +130,7 @@ internal static class RemoteCatalogService
                 ("optiscaler.json", OptiScalerCachePath),
                 ("modules.json", ModulesCachePath),
                 ("conditions.json", ConditionsCachePath),
+                (DllFingerprintCatalog.FileName, DllFingerprintsCachePath),
             })
             {
                 if (File.Exists(cachePath))
@@ -165,8 +175,9 @@ internal static class RemoteCatalogService
         SeedFromBundle();
         ModuleCatalogFile.Apply(ModulesCachePath);
         ApplyConditions();
+        ApplyDllFingerprints();
 
-        if (!force && !IsRefreshDue)
+        if (!force && !IsRefreshDue && File.Exists(DllFingerprintsCachePath))
         {
             return new RemoteCatalogResult(false, false, false, false, "还没到 24 小时，先不拉。");
         }
@@ -184,9 +195,10 @@ internal static class RemoteCatalogService
         bool optiScaler = await TryDownloadAsync(client, "optiscaler.json", OptiScalerCachePath, cancellationToken);
         bool modules = await TryDownloadAsync(client, "modules.json", ModulesCachePath, cancellationToken);
         bool conditions = await TryDownloadAsync(client, "conditions.json", ConditionsCachePath, cancellationToken);
+        bool fingerprints = await TryDownloadAsync(client, DllFingerprintCatalog.FileName, DllFingerprintsCachePath, cancellationToken);
 
         // 一个都没拿到就不盖时间戳，下次还会再试
-        if (!plugins && !optiScaler && !modules && !conditions)
+        if (!plugins && !optiScaler && !modules && !conditions && !fingerprints)
         {
             _logger.LogWarning("Remote catalog fetch failed (base = {Base})", BaseUrl);
             return new RemoteCatalogResult(false, false, false, false, "拉取失败（网络不通或仓库里还没有 catalog/ 文件）。");
@@ -194,12 +206,13 @@ internal static class RemoteCatalogService
 
         ModuleCatalogFile.Apply(ModulesCachePath);
         ApplyConditions();
+        ApplyDllFingerprints();
 
         AppConfig.LastCatalogFetchUtc = DateTimeOffset.UtcNow;
         _logger.LogInformation("Remote catalog fetched: plugins={Plugins}, optiscaler={Opti}, modules={Modules}", plugins, optiScaler, modules);
 
         return new RemoteCatalogResult(true, plugins, optiScaler, modules,
-            $"目录已更新：插件 {(plugins ? "✓" : "—")}，OptiScaler {(optiScaler ? "✓" : "—")}，模块 {(modules ? "✓" : "—")}。");
+            $"目录已更新：插件 {(plugins ? "✓" : "—")}，OptiScaler {(optiScaler ? "✓" : "—")}，模块 {(modules ? "✓" : "—")}，DLL 指纹 {(fingerprints ? "✓" : "—")}。", fingerprints);
     }
 
     /// <summary>下载一个文件，成功才覆盖（先写临时文件再搬过去，避免半截文件）。</summary>
@@ -230,9 +243,15 @@ internal static class RemoteCatalogService
                     continue;
                 }
 
-                string temp = targetPath + ".tmp";
-                await File.WriteAllTextAsync(temp, json, cancellationToken);
-                File.Move(temp, targetPath, overwrite: true);
+                // 在替换磁盘缓存之前验证 schema 和指纹；错误响应保留上一份可用数据。
+                if (fileName == DllFingerprintCatalog.FileName) _ = DllFingerprintCatalog.Parse(json);
+                string temp = targetPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    await File.WriteAllTextAsync(temp, json, cancellationToken);
+                    File.Move(temp, targetPath, overwrite: true);
+                }
+                finally { if (File.Exists(temp)) File.Delete(temp); }
 
                 if (proxy is not null && !string.Equals(proxy, _lastGoodProxy, StringComparison.OrdinalIgnoreCase))
                 {

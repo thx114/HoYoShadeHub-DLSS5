@@ -1,4 +1,4 @@
-namespace HoYoShadeHub.Extensions.Services;
+﻿namespace HoYoShadeHub.Extensions.Services;
 
 /// <summary>「把 <c>nvngx_dlssnr.dll</c> 放到 OptiScaler 旁边」的结果</summary>
 public enum NrdllPlaceStatus
@@ -24,9 +24,9 @@ public sealed record NrdllPlaceResult(NrdllPlaceStatus Status, string? SourcePat
     public string Message => Status switch
     {
         NrdllPlaceStatus.AlreadyPresent => "构建目录里已经有 nvngx_dlssnr.dll。",
-        NrdllPlaceStatus.Copied => $"已把 nvngx_dlssnr.dll 从 {SourcePath} 复制到构建目录。",
+        NrdllPlaceStatus.Copied => $"已把 nvngx_dlssnr.dll 从 {SourcePath} 硬链接到构建目录。",
         NrdllPlaceStatus.NotFound => "没找到 nvngx_dlssnr.dll —— 先到「DLL 配置」里装一个（或自己放一份到插件目录）。",
-        _ => "复制 nvngx_dlssnr.dll 失败。",
+        _ => "链接 nvngx_dlssnr.dll 失败（请确认目录在同一卷且文件未被占用）。",
     };
 }
 
@@ -417,7 +417,7 @@ public static class OptiScalerRuntime
         {
             try
             {
-                File.Copy(source, target, overwrite: true);
+                HysxFileLink.LinkNeuralRuntime(source, target);
                 return true;
             }
             catch (Exception ex)
@@ -597,7 +597,7 @@ public static class OptiScalerRuntime
         {
             bool sameFile = string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
             bool both = File.Exists(target) && File.Exists(source);
-            if (both && !sameFile && !targetBlocked && new FileInfo(target).Length == new FileInfo(source).Length)
+            if (both && !sameFile && !targetBlocked && HysxFileLink.AreHardLinked(source, target))
             {
                 return new NrdllPlaceResult(NrdllPlaceStatus.AlreadyPresent, source, target);
             }

@@ -1,4 +1,4 @@
-global using HoYoShadeHub.Language;
+﻿global using HoYoShadeHub.Language;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using HoYoShadeHub.Core;
@@ -125,6 +125,9 @@ public static class Program
             }
             catch { }
         }
+
+        RemoteCatalogService.SeedFromBundle();
+        RemoteCatalogService.ApplyDllFingerprints();
 
         if (args.Length > 0)
         {
@@ -401,7 +404,11 @@ public static class Program
         foreach (PackAutoAction action in actions)
         {
             CliPrint("== " + action.Name + " ==");
-            string summary = LauncherActionRunner.RunAsync(action, context).ConfigureAwait(false).GetAwaiter().GetResult();
+            // CLI actions are explicit user commands, not actions loaded from a coverage pack.
+            // Pass the provenance explicitly; the once/consent policy must not treat an
+            // omitted value as a pack action and block launch before it reaches the pipeline.
+            string summary = LauncherActionRunner.RunAsync(action, context, isPackAction: false)
+                .ConfigureAwait(false).GetAwaiter().GetResult();
             CliPrint(summary);
             if (summary.Contains('✗'))
             {

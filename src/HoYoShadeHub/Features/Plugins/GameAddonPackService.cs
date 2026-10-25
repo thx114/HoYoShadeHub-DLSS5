@@ -1,4 +1,5 @@
-using HoYoShadeHub.Core.HoYoPlay;
+﻿using HoYoShadeHub.Core.HoYoPlay;
+using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
@@ -31,7 +32,7 @@ internal static class GameAddonPackService
     /// 同步某个游戏的插件包。<paramref name="entry"/> 给 null 时不会改 ini，只更新包目录。
     /// </summary>
     /// <returns>包目录（这个游戏没有选任何版本时返回 null）</returns>
-    public static string? Sync(GameId? gameId, GameEntry? entry, ShadeHost? host)
+    public static string? Sync(GameId? gameId, GameEntry? entry, ShadeHost? host, bool preserveSettings = false)
     {
         if (gameId is null || host is null)
         {
@@ -91,10 +92,13 @@ internal static class GameAddonPackService
 
         // 覆盖包里有用户内容（ini_config.json / auto.json / presets\ / *_files\）时，
         // 就算没选任何版本包目录也常驻 —— 这些功能都挂在「AddonPath 指向包」上，收掉就全失效了。
-        bool keepPack = GameAddonPackUserContent.HasAny(packDirectory);
+        string? nrVersion = AppConfig.GetGameNrVersion(gameId, "reshade");
+        bool keepPack = GameAddonPackUserContent.HasAny(packDirectory) || nrVersion is not null;
 
         if (selections.Count == 0 && !keepPack)
         {
+            // 后台发现的遗留包仍可能被游戏 INI 引用；不在只更新文件的入口清包。
+            if (preserveSettings) return null;
             // 没有选任何版本 = 回到今天的默认行为：AddonPath 指共享目录，包目录收掉。
             RevertIfPack(iniPath, host);
             if (Directory.Exists(addonsDirectory))
@@ -116,14 +120,35 @@ internal static class GameAddonPackService
             return null;
         }
 
+        if (nrVersion is not null)
+        {
+            string nrSource = NrRuntimeLibrary.VersionFile(cacheRoot, nrVersion);
+            string[] nrTargets = entries.Where(e => HysxFileLink.IsNeuralRuntime(e.FileName))
+                .Select(e => e.FileName).Append(NrRuntimeLibrary.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            entries.RemoveAll(e => HysxFileLink.IsNeuralRuntime(e.FileName));
+            foreach (string target in nrTargets)
+                entries.Add(new AddonPackEntry { FileName = target, SourcePath = nrSource });
+            selections["__nr_runtime"] = nrVersion;
+        }
+
         // 包指纹：源（共享 Addons / 版本归档）没变就不重铺 —— 覆盖包只生效一次，
         // 用户在包目录里改过的插件设置不会被下次启动刷回。装包/升级/降级/换版本才重铺一次。
         var selectionPairs = selections.Select(kv => (kv.Key, kv.Value));
         string identity = GameAddonPack.ComputeIdentity(gameKey, entries, selectionPairs);
-        GameAddonPack.Sync(addonsDirectory, entries, selectionPairs, identity);
+        GameAddonPack.Sync(addonsDirectory, entries, selectionPairs, identity, preserveSettings);
+
+        if (nrVersion is not null)
+        {
+            string source = NrRuntimeLibrary.VersionFile(cacheRoot, nrVersion);
+            HysxFileLink.LinkNeuralRuntime(source, Path.Combine(addonsDirectory, NrRuntimeLibrary.FileName));
+            // 已存在的插件子目录也绑定相同版本。
+            foreach (string nrFile in Directory.EnumerateFiles(addonsDirectory, NrRuntimeLibrary.FileName, SearchOption.AllDirectories))
+                HysxFileLink.LinkNeuralRuntime(source, nrFile);
+        }
 
         // 包 presets\ 随同步进 DLSS5-Presets（启动路径 GameIniBootstrap 也会再做一次兜底）
-        GameAddonPackUserContent.SyncPresets(packDirectory, addonsDirectory);
+        if (!preserveSettings)
+            GameAddonPackUserContent.SyncPresets(packDirectory, addonsDirectory);
 
         if (iniPath is not null)
         {
@@ -158,21 +183,41 @@ internal static class GameAddonPackService
             return 0;
         }
 
-        IReadOnlyList<GameId> games = AppConfig.GetAddonPackGames();
-        if (games.Count == 0)
+        GameDiscoveryService service = GameCatalog.CreateService();
+        List<GameId> games = [.. AppConfig.GetAddonPackGames()];
+        // 覆盖包可以没有版本选择，因此不一定登记在 addon_pack_games 中。
+        // 只补入已发现、且当前实际使用本启动器受管包的游戏。
+        foreach (GameEntry entry in GameCatalog.DiscoverAll(service))
         {
-            return 0;
+            try
+            {
+                GameId? gameId = entry.IsCustom
+                    ? new GameId { Id = entry.CustomBizValue, GameBiz = entry.CustomBiz }
+                    : entry.Biz is { } biz ? GameId.FromGameBiz(biz) : null;
+                if (gameId is null || games.Any(g => g.GameBiz == gameId.GameBiz))
+                    continue;
+
+                string expected = GameAddonPack.AddonDirectory(AppConfig.CacheRoot, gameId.GameBiz.Value);
+                if (entry.HasReShadeIni
+                    && GameAddonPack.IsPackDirectory(expected)
+                    && string.Equals(ReShadeProfile.Load(entry.ReShadeIniPath!).ResolveAddonDirectory(),
+                        expected, StringComparison.OrdinalIgnoreCase))
+                    games.Add(gameId);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 一份游戏 INI 读不了，不阻断其他游戏的插件更新。
+            }
         }
 
-        GameDiscoveryService service = GameCatalog.CreateService();
         int synced = 0;
 
         foreach (GameId gameId in games)
         {
             try
             {
-                GameEntry? entry = GameCatalog.GetOrCreate(service, gameId);
-                if (Sync(gameId, entry, host) is not null)
+                // 后台同步只更新包，不改游戏 INI；切换版本/启动入口才负责路径切换。
+                if (Sync(gameId, null, host, preserveSettings: true) is not null)
                 {
                     synced++;
                 }
@@ -213,6 +258,12 @@ internal static class GameAddonPackService
 
         int gamesCleared = 0;
         GameDiscoveryService service = GameCatalog.CreateService();
+
+        // 用户明确卸载：旧覆盖包尚无 managedFiles，也必须按该扩展的模式清理。
+        // 不依赖版本选择登记；不改游戏 INI 或其他插件文件。
+        string[]? patterns = RemoteCatalogService.LoadCachedPlugins()?.Extensions
+            .FirstOrDefault(e => string.Equals(e.Id, extensionId, StringComparison.OrdinalIgnoreCase))?.AddonPatterns;
+        GameAddonPack.RemoveMatchingAddons(AppConfig.CacheRoot, patterns);
 
         foreach (GameId gameId in AppConfig.GetAddonPackGames())
         {

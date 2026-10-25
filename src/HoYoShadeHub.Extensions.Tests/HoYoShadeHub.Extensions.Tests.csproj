@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -15,8 +15,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\catalog\dll-fingerprints.json" Link="catalog\dll-fingerprints.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\HoYoShadeHub.Extensions\HoYoShadeHub.Extensions.csproj" />
     <Compile Include="..\HoYoShadeHub\Features\OptiScaler\OptiScalerPresets.cs" Link="OptiScalerPresets.cs" />
+    <Compile Include="..\HoYoShadeHub\Features\Xxmi\XxmiModManager.cs" Link="XxmiModManager.cs" />
+    <Compile Include="..\HoYoShadeHub\Features\GameLauncher\GameUidReportServer.cs" Link="GameUidReportServer.cs" />
   </ItemGroup>
 
 </Project>

@@ -88,12 +88,22 @@ internal static class PackOnceNavigationTests
                 });
                 Check(execution.Reservation == PackOnceLedger.Reservation.Reserved && calls == 1, "Fresh pack runs once");
             }
+            Check(PackOnceLedger.ResetForReimport(fresh), "Reimport reset removes prior once ledger");
+            Check(!File.Exists(Path.Combine(fresh, PackOnceLedger.FileName)), "Reimport reset leaves no stale once ledger");
+            using (var session = await PackOnceLedger.OpenAsync(fresh))
+            {
+                Check(session.RegisterPlan(new[] { key }) == PackOnceLedger.PlanRegistration.Registered, "Reimport registers a fresh plan");
+                var rerun = await session.ExecuteAsync(key, PackActionOncePolicy.LegacyKey(oldPath), () =>
+                { calls++; return Task.FromResult("已完成"); });
+                Check(rerun.Reservation == PackOnceLedger.Reservation.Reserved && calls == 2,
+                    "Reimport permits the same logical step to run once again");
+            }
             PackOnceLedger.ApplyFence(fresh, "different-identity|different-auto");
             using (var session = await PackOnceLedger.OpenAsync(fresh))
             {
                 var execution = await session.ExecuteAsync(PackActionOncePolicy.StableKey("setup", 0, newPath), "changed-raw", () =>
                 { calls++; return Task.FromResult("unexpected"); });
-                Check(execution.Reservation == PackOnceLedger.Reservation.Success && calls == 1, "Changed fence/auto/raw/path never reruns completed logical key");
+                Check(execution.Reservation == PackOnceLedger.Reservation.Success && calls == 2, "Changed fence/auto/raw/path never reruns completed logical key");
             }
             string legacy = PackActionOncePolicy.LegacyKey(missing);
             foreach (bool flat in new[] { true, false })
@@ -131,7 +141,7 @@ internal static class PackOnceNavigationTests
                 session.RegisterPlan(new[] { "write-fail" });
                 using var hold = new FileStream(Path.Combine(unwritable, PackOnceLedger.FileName), FileMode.Open, FileAccess.Read, FileShare.None);
                 await Throws(async () => { await session.ExecuteAsync("write-fail", "raw", () => { calls++; return Task.FromResult("已完成"); }); }, "Reservation write failure blocks dispatch");
-                Check(calls == 1, "No side effect when reservation cannot persist");
+                Check(calls == 2, "No side effect when reservation cannot persist");
             }
             foreach (string outcome in new[] { "✗ 失败", "已复制一项；✗ 另一项失败", "可能部分完成", "partial fail" })
             {
@@ -572,17 +582,23 @@ internal static class PackOnceNavigationTests
         check(!runner.Contains("PackAutoActionFile.Load(") && !runner.Contains("PackActionConsent.ComputeHash(")
             && runner.Contains("fromPack ? snapshot!.Hash") && runner.Contains("context.ExpectedPackHash"),
             "Runner cannot stitch live pack actions/hash or authorize old actions with a new hash");
+        string program = File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub", "Program.cs"));
+        check(program.Contains("LauncherActionRunner.RunAsync(action, context, isPackAction: false)"),
+            "CLI actions explicitly carry non-pack provenance and bypass coverage-pack consent gate");
         check(refresh.Contains("snapshot.Pack?.LoadActions()") && page.Contains("PackAutoActionSnapshot.TryLoad(_packRoot)")
             && page.Contains("PackSnapshot = fromPack ? snapshot.Pack") && !page.Contains("PackActionConsent.ComputeHash("),
             "Plugin refresh/buttons/consent share one captured action/hash snapshot");
         string prompt = File.ReadAllText(Path.Combine(dir, "PackActionPrompt.cs"));
         check(prompt.Contains("Interlocked.CompareExchange") && prompt.Contains("isPackAction: true") && prompt.Contains("host, gamePackRoot") && prompt.Contains("PackActionOncePolicy.RunBatchAsync"), "Explicit import preserved with dialog guard and per-game ledger root");
+        check(prompt.Contains("refreshReimportedPack") && prompt.Contains("PackOnceLedger.ResetForReimport")
+            && prompt.Contains("PackActionConsent.ResetForReimport"), "Repeated overlay import refreshes consent and once ledger before prompting");
         check(prompt.Contains("PackAutoActionSnapshot.TryLoad(packRoot)") && prompt.Contains("group.Games.Add((id, entry, snapshot))")
             && prompt.Contains("PackSnapshot = snapshot") && prompt.Contains("RunAsync(snapshot.LoadActions()")
             && !prompt.Contains("PackAutoActionFile.Load(") && !prompt.Contains("PackActionConsent.ComputeHash("),
             "Import groups consent by same-read hash and retains each game's own immutable action snapshot");
         string consent = File.ReadAllText(Path.Combine(dir, "PackActionConsent.cs"));
-        check(consent.Contains("PackAutoActionSnapshot.ComputeHash(File.ReadAllBytes(path))"), "Actual consent class shares original byte SHA256 algorithm");
+        check(consent.Contains("PackAutoActionSnapshot.ComputeHash(File.ReadAllBytes(path))")
+            && consent.Contains("ResetForReimport"), "Actual consent class shares original byte SHA256 algorithm and supports reimport reset");
         string policy = File.ReadAllText(Path.Combine(sourceRoot, "src", "HoYoShadeHub.Extensions", "ReShade", "PackActionOncePolicy.cs"));
         string gate = policy[policy.IndexOf("public static async Task<ExecutionResult> RunSnapshotAsync", StringComparison.Ordinal)..policy.IndexOf("/// <summary>生产与回归共用的步骤链", StringComparison.Ordinal)];
         check(gate.Contains("snapshot.IsCurrent(packRoot, readBytes)") && gate.Contains("PlanKeys(snapshot.LoadActions())")

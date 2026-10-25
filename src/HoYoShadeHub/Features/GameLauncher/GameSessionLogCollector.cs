@@ -56,6 +56,10 @@ internal sealed class GameSessionLogCollector
     /// <summary>所有会话加起来最多占多少磁盘；超了继续从最旧的删。</summary>
     private const long MaxTotalBytes = 256L * 1024 * 1024;
 
+    // Streamline can emit one minidump per failed Present. Keep a bounded set in
+    // the session artifact so a dump storm cannot consume the whole log quota.
+    private const int MaxOptiScalerDumpsPerSession = 4;
+
     private const string ManifestName = "session.txt";
 
     /// <summary>AI 摘要文件名：把本局几 MB 的日志压成几 KB，专门给人/模型快速读。</summary>
@@ -72,6 +76,8 @@ internal sealed class GameSessionLogCollector
     private readonly List<SnapshotSource> _configs;
     private readonly List<string> _bridgeDirectories;
     private readonly List<string> _optiScalerDirectories;
+    private readonly List<string> _optiScalerDumpDirectories;
+    private readonly HashSet<string> _copiedOptiScalerDumps = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>本局开始时刻，快照行里的相对秒数以它为原点。</summary>
     private readonly DateTimeOffset _startedAt = DateTimeOffset.Now;
@@ -159,7 +165,7 @@ internal sealed class GameSessionLogCollector
         SessionDirectory = UniqueSessionDirectory();
         Directory.CreateDirectory(SessionDirectory);
 
-        (_logs, _configs, _bridgeDirectories, _optiScalerDirectories) = Discover(gameId, gameDirectory);
+        (_logs, _configs, _bridgeDirectories, _optiScalerDirectories, _optiScalerDumpDirectories) = Discover(gameId, gameDirectory);
 
         _manifest = new SessionLogManifest(SessionDirectory, ManifestName);
         _entries = BuildEntries();
@@ -191,6 +197,7 @@ internal sealed class GameSessionLogCollector
     public static GameSessionLogCollector? Begin(
         GameId? gameId, int pid, string processName, string? exePath = null, string? commandLine = null, Process? process = null)
     {
+        GameUidReportServer.Begin(gameId, pid);
         if (pid <= 0)
         {
             return null;
@@ -425,6 +432,8 @@ internal sealed class GameSessionLogCollector
                 {
                     TryCopyOne(source);
                 }
+
+                CopyRecentOptiScalerDumps();
             }
 
             foreach (SnapshotSource source in _configs)
@@ -491,7 +500,7 @@ internal sealed class GameSessionLogCollector
         }
     }
 
-    private static (long Written, bool Tail) CopyWithRetry(FileInfo source, string target)
+    private static (long Written, bool Tail) CopyWithRetry(FileInfo source, string target, bool allowTail = true)
     {
         Exception? last = null;
         for (int attempt = 0; attempt < 3; attempt++)
@@ -502,7 +511,7 @@ internal sealed class GameSessionLogCollector
                     source.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
                 long length = input.Length;
-                bool tail = length > MaxCopyBytes;
+                bool tail = allowTail && length > MaxCopyBytes;
                 if (tail)
                 {
                     input.Seek(-MaxCopyBytes, SeekOrigin.End);
@@ -531,6 +540,101 @@ internal sealed class GameSessionLogCollector
         {
             // 丢掉被切断的半行，让快照从整行开始
         }
+    }
+
+    /// <summary>
+    /// 保留本局由 OptiScaler/Streamline 产生的 minidump。Streamline 把 dump
+    /// 写到 ProgramData，而不是 OptiScaler 日志目录；只接收本局时间窗内、
+    /// 非空的最新少量文件，避免异常循环产生数百份大型 dump。
+    /// </summary>
+    private void CopyRecentOptiScalerDumps()
+    {
+        if (_optiScalerDumpDirectories.Count == 0 || _copiedOptiScalerDumps.Count >= MaxOptiScalerDumpsPerSession)
+        {
+            return;
+        }
+
+        try
+        {
+            DateTime startedUtc = _startedAt.UtcDateTime.AddSeconds(-2);
+            DateTime nowUtc = DateTime.UtcNow.AddSeconds(2);
+            var candidates = new List<FileInfo>();
+
+            foreach (string root in _optiScalerDumpDirectories)
+            {
+                if (!Directory.Exists(root))
+                {
+                    continue;
+                }
+
+                foreach (string eventDirectory in Directory.EnumerateDirectories(root))
+                {
+                    foreach (string path in Directory.EnumerateFiles(eventDirectory, "*.dmp", SearchOption.TopDirectoryOnly))
+                    {
+                        try
+                        {
+                            var info = new FileInfo(path);
+                            if (info.Length > 0 && info.LastWriteTimeUtc >= startedUtc && info.LastWriteTimeUtc <= nowUtc)
+                            {
+                                candidates.Add(info);
+                            }
+                        }
+                        catch
+                        {
+                            // A dump may still be finalizing; the next snapshot can retry it.
+                        }
+                    }
+                }
+            }
+
+            foreach (FileInfo source in candidates
+                         .OrderByDescending(f => f.LastWriteTimeUtc)
+                         .ThenByDescending(f => f.FullName, StringComparer.OrdinalIgnoreCase)
+                         .Take(MaxOptiScalerDumpsPerSession))
+            {
+                if (_copiedOptiScalerDumps.Contains(source.FullName))
+                {
+                    continue;
+                }
+
+                string eventTag = Sanitize(source.Directory?.Name ?? "streamline");
+                string targetDirectory = Path.Combine(SessionDirectory, "opti-dumps");
+                Directory.CreateDirectory(targetDirectory);
+                string target = Path.Combine(targetDirectory, UniqueDumpName(targetDirectory, eventTag, source.Name));
+                // A minidump must remain a complete file; never apply the log tail limit.
+                CopyWithRetry(source, target, allowTail: false);
+                _copiedOptiScalerDumps.Add(source.FullName);
+
+                lock (_writeGate)
+                {
+                    _manifest.AppendSection(
+                        "OptiScaler minidump",
+                        $"file={Path.Combine("opti-dumps", Path.GetFileName(target))} source={source.FullName} lastWriteUtc={source.LastWriteTimeUtc:O} bytes={source.Length}");
+                }
+
+                if (_copiedOptiScalerDumps.Count >= MaxOptiScalerDumpsPerSession)
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "复制 OptiScaler minidump 失败：{Directory}", string.Join(";", _optiScalerDumpDirectories));
+        }
+    }
+
+    private static string UniqueDumpName(string directory, string eventTag, string fileName)
+    {
+        string stem = $"opti-{eventTag}-{Path.GetFileNameWithoutExtension(fileName)}";
+        string extension = Path.GetExtension(fileName);
+        string candidate = stem + extension;
+        for (int index = 2; File.Exists(Path.Combine(directory, candidate)); index++)
+        {
+            candidate = $"{stem}-{index}{extension}";
+        }
+
+        return candidate;
     }
 
     /// <summary>文件目录：id 一旦定下就不变，后面的快照只按 id 写变化。</summary>
@@ -612,13 +716,14 @@ internal sealed class GameSessionLogCollector
 
     // ==================== 目录 / 文件发现 ====================
 
-    private (List<SnapshotSource> Logs, List<SnapshotSource> Configs, List<string> BridgeDirectories, List<string> OptiDirectories)
+    private (List<SnapshotSource> Logs, List<SnapshotSource> Configs, List<string> BridgeDirectories, List<string> OptiDirectories, List<string> OptiDumpDirectories)
         Discover(GameId? gameId, string? gameDirectory)
     {
         var logs = new List<SnapshotSource>();
         var configs = new List<SnapshotSource>();
         var bridgeDirectories = new List<string>();
         var optiDirectories = new List<string>();
+        var optiDumpDirectories = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         void Add(List<SnapshotSource> target, string name, string? path)
@@ -791,6 +896,25 @@ internal sealed class GameSessionLogCollector
             Add(configs, $"cfg-{tag}-build.json", Path.Combine(directory, "build.json"));
         }
 
+        // Streamline writes crash minidumps outside the game/OptiScaler tree:
+        // %ProgramData%\NVIDIA\Streamline\<game>\<event>\*.dmp. Discover the
+        // game root once, then CopyRecentOptiScalerDumps filters by this session.
+        string? streamlineGame = OptiScalerDumpPathPolicy.StreamlineGameFolder(
+            gameId?.GameBiz.Value, _processName);
+        if (streamlineGame is not null)
+        {
+            try
+            {
+                string commonData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                string root = Path.Combine(commonData, "NVIDIA", "Streamline", streamlineGame);
+                AddDirectory(optiDumpDirectories, root);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "会话快照：解析 Streamline DMP 路径失败");
+            }
+        }
+
         // ④ Hub 自己当天的日志：一个文件夹里就能拿到全部现场
         try
         {
@@ -804,7 +928,7 @@ internal sealed class GameSessionLogCollector
             // 日志路径读不出来就少一个文件
         }
 
-        return (logs, configs, bridgeDirectories, optiDirectories);
+        return (logs, configs, bridgeDirectories, optiDirectories, optiDumpDirectories);
     }
 
     private static string FolderTag(string directory)
@@ -986,6 +1110,32 @@ internal sealed class GameSessionLogCollector
 }
 
 // Pure path policy kept with the collector so the console regression can compile it without App/UI.
+internal static class OptiScalerDumpPathPolicy
+{
+    internal static string? StreamlineGameFolder(string? gameBiz, string? processName)
+    {
+        string biz = gameBiz?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (biz.StartsWith("hk4e", StringComparison.Ordinal)) return "YuanShen";
+        if (biz.StartsWith("hkrpg", StringComparison.Ordinal)) return "StarRail";
+        if (biz.StartsWith("nap", StringComparison.Ordinal)) return "ZenlessZoneZero";
+
+        string process = System.IO.Path.GetFileNameWithoutExtension(processName ?? string.Empty).ToLowerInvariant();
+        if (process.Contains("yuanshen") || process.Contains("genshin")) return "YuanShen";
+        if (process.Contains("starrail") || process.Contains("hkrpg")) return "StarRail";
+        if (process.Contains("zenless") || process.Contains("zenlesszonezero")) return "ZenlessZoneZero";
+        return null;
+    }
+
+    internal static string Root(string? commonData, string? gameBiz, string? processName)
+    {
+        string basePath = string.IsNullOrWhiteSpace(commonData)
+            ? Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
+            : commonData;
+        string folder = StreamlineGameFolder(gameBiz, processName) ?? "";
+        return System.IO.Path.Combine(basePath, "NVIDIA", "Streamline", folder);
+    }
+}
+
 internal sealed record OptiScalerSessionLogPath(string Path, bool Multiple)
 {
     internal static OptiScalerSessionLogPath Load(string buildDirectory)

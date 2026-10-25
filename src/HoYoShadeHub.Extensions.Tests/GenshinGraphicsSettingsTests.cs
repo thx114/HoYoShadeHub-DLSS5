@@ -119,6 +119,7 @@ internal static class GenshinGraphicsSettingsTests
             }
         }
         finally { Directory.Delete(temp, true); }
+        Check(OptiScalerRuntime.FsrBridgeRenderScales.Contains(0.999f), "Bridge render scale exposes 0.999");
         Console.WriteLine($"Genshin graphics settings: {passed} passed, 0 failed.");
         return 0;
     }

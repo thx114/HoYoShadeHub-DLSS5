@@ -121,7 +121,7 @@
                         <ComboBox MinWidth="160"
                                   ItemsSource="{x:Bind GenshinRenderScaleOptions}"
                                   SelectedIndex="{x:Bind GenshinRenderScaleIndex, Mode=TwoWay}" />
-                        <TextBlock Margin="0,4,0,0" FontWeight="Bold" Text="Bridge 渲染精度" />
+                        <TextBlock Margin="0,4,0,0" FontWeight="Bold" Text="游戏 / FSR Bridge 渲染精度（含 0.999）" />
                         <ComboBox MinWidth="160"
                                   ItemsSource="{x:Bind GenshinBridgeRenderScaleOptions}"
                                   SelectedIndex="{x:Bind GenshinBridgeRenderScaleIndex, Mode=TwoWay}" />

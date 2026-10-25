@@ -231,4 +231,26 @@ public static class PackOnceLedger
         session.Data.Entries[key] = true;
         Write(session.Root, session.Data);
     }
+
+    /// <summary>
+    /// 重新导入同一个覆盖包时开始新的动作批次。保留锁文件用于并发协调，
+    /// 删除的只是本包的完成/待处理记录；下一次执行会重新注册完整 plan。
+    /// </summary>
+    public static bool ResetForReimport(string packRoot)
+    {
+        if (string.IsNullOrWhiteSpace(packRoot) || !Directory.Exists(packRoot))
+        {
+            return false;
+        }
+
+        using Session session = OpenAsync(packRoot).GetAwaiter().GetResult();
+        string path = PathOf(session.Root);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        File.Delete(path);
+        return true;
+    }
 }

@@ -1,4 +1,4 @@
-using HoYoShadeHub.Extensions.Dlls;
+﻿using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.ReShade;
 using HoYoShadeHub.Extensions.Services;
@@ -552,12 +552,12 @@ public sealed class GamePluginService
             try
             {
                 string target = Path.Combine(gameDirectory, dll);
-                if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(source).Length)
+                if (HysxFileLink.AreHardLinked(source, target))
                 {
                     continue;
                 }
 
-                File.Copy(source, target, overwrite: true);
+                HysxFileLink.LinkNeuralRuntime(source, target);
                 copied.Add(dll);
             }
             catch
@@ -759,12 +759,12 @@ public sealed class GamePluginService
                 }
 
                 string target = Path.Combine(gameDirectory, dll);
-                if (File.Exists(target) && new FileInfo(target).Length == new FileInfo(source).Length)
+                if (HysxFileLink.AreHardLinked(source, target))
                 {
                     continue;
                 }
 
-                File.Copy(source, target, overwrite: true);
+                HysxFileLink.LinkNeuralRuntime(source, target);
                 copied.Add(dll);
             }
         }

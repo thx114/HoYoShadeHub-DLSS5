@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Dlls;
@@ -2128,6 +2128,10 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
             _logger.LogInformation("OptiScaler MFG unlock dlssg: ok={Ok} - {Message}",
                 unlockDlssg.Ok, unlockDlssg.Message);
 
+            var nrLinkErrors = await Task.Run(() => NrRuntimeLibrary.Consolidate(AppConfig.CacheRoot,
+                _manager?.Host.AddonsPath, AppConfig.OptiScalerRootPath, AppConfig.CacheRoot));
+            if (nrLinkErrors.Count > 0) throw new IOException("NR 硬链接整理未完成：" + string.Join(Environment.NewLine, nrLinkErrors));
+
             finalStatus = installer
                 ? setupDeclined
                     ? $"安装程序已下载（{build.SizeBytes / 1024d / 1024d:F1} MB），还没运行 —— 点「打开目录」可以自己双击它。"
@@ -3109,10 +3113,16 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
                 // 包里的 GamePack（auto.json）已铺进各游戏包目录：动作确认现在就办，
                 // 确认后立即执行（一次性；启动前的 runOnLaunch 靠 once 记账自动跳过）。
                 // 没有 auto.json 的旧包这里直接返回空串，行为不变。
-                string packSummary = await OverlayPackActionPrompter.PromptAndRunAsync(
-                    XamlRoot,
-                    _manager?.Host ?? PluginHostLocator.Resolve(out _),
-                    text => TextBlock_Status.Text = text);
+                string packSummary = result.GamePackReplaced
+                    ? await OverlayPackActionPrompter.PromptAndRunAsync(
+                        XamlRoot,
+                        _manager?.Host ?? PluginHostLocator.Resolve(out _),
+                        text => TextBlock_Status.Text = text,
+                        result.GamePackGameHints ?? (string.IsNullOrWhiteSpace(result.GamePackGameHint)
+                            ? []
+                            : [result.GamePackGameHint]),
+                        refreshReimportedPack: true)
+                    : string.Empty;
                 if (packSummary.Length > 0)
                 {
                     ShowInfo("覆盖包动作执行完成", packSummary, InfoBarSeverity.Success);
@@ -3617,6 +3627,8 @@ public sealed partial class GlobalPluginPage : PageBase, IShellFileDropTarget
     }
 
     /// <summary>本地安装一个拖进来的文件（OLE 拖入和 shell 拖入共用这一条）</summary>
+    public bool IsReadyForShellDrop => IsLoaded && !_isWorking;
+
     private async Task InstallDroppedFileAsync(string? file)
     {
         await RunAsync(async () =>

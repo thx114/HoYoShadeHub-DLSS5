@@ -1,4 +1,4 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.Games;
 using HoYoShadeHub.Extensions.Models;
@@ -64,6 +64,7 @@ internal static class RocketLaunchPreparation
 
             bool optEnabled = AppConfig.GetUseOptiScalerLaunchOption(gameId);
             bool shadeEnabled = AppConfig.GetUseHoYoShadeLaunchOption(gameId) || AppConfig.GetUseOpenHoYoShadeLaunchOption(gameId);
+            if (optEnabled) GameNrRuntimeService.PrepareOpti(gameId);
             string? opt = optEnabled ? AppConfig.GetSelectedOptiScalerDll(gameId) : null;
             if (optEnabled && (string.IsNullOrWhiteSpace(opt) || !File.Exists(opt))) return new(false, "请先选择已安装的 OptiScaler 构建。");
             await OptiSmoothMotionInterlock.EnsureAsync(gameId, exe, optEnabled);
@@ -73,7 +74,7 @@ internal static class RocketLaunchPreparation
             if (shadeEnabled && !File.Exists(shade)) return new(false, "找不到所选 HoYoShade 的 ReShade64.dll。");
             if (!optEnabled && !shadeEnabled) return new(false, "请至少启用 OptiScaler 或 HoYoShade。");
 
-            // 原神：FSR 桥独占第三方 DLL 槽（桥自己按 chain.txt 拉其余层），原有路线一行不动。
+            // 原神优先使用 FSR Bridge 链；没有 Bridge 时改用 Rocket 的插件 DLL 列表，允许 OptiScaler 独立启动。
             if (RocketIntegration.SupportsGame(gameId.GameBiz.Value))
                 return PrepareGenshin(gameId, entry, config, host, opt, shade, optEnabled);
 
@@ -87,9 +88,16 @@ internal static class RocketLaunchPreparation
     private static RocketIntegration.PrepareResult PrepareGenshin(GameId gameId, GameEntry entry, string config,
         ShadeHost? host, string? opt, string? shade, bool optEnabled)
     {
-        if (!ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId)) return new(false, "找不到受支持的 FSR 桥，请先安装原神模块。");
-        string? bridge = ModuleRegistry.ResolveInjectionDlls(gameId).FirstOrDefault(spec => ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath)).DllPath;
-        if (string.IsNullOrWhiteSpace(bridge) || !File.Exists(bridge)) return new(false, "当前模块选择中没有可用的 Dx11FsrBridge.dll。");
+        // Rocket may use the Bridge only when the user explicitly enabled the
+        // module launch path and selected the Bridge for this game.
+        string? bridge = AppConfig.GetUseModulesLaunchOption(gameId)
+            ? ModuleRegistry.ResolveInjectionDlls(gameId)
+                .FirstOrDefault(spec => ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath)).DllPath
+            : null;
+        if (string.IsNullOrWhiteSpace(bridge) || !File.Exists(bridge))
+        {
+            return PrepareGenshinWithoutBridge(gameId, entry, config, host, opt, shade);
+        }
         string bridgeDirectory = Path.GetDirectoryName(bridge)!;
         // Validate Rocket schema before modifying graphics configuration.
         _ = RocketIntegration.BuildRocketConfiguration(File.ReadAllBytes(config), bridge);
@@ -143,6 +151,56 @@ internal static class RocketLaunchPreparation
             + " 个也在链里（GIMI 之后、OptiScaler 之前）：" + string.Join(" → ", chainExtraModules.Select(Path.GetFileName));
         return result with { DllPaths = new[] { bridge }, Message = RocketIntegration.WaitingText + Environment.NewLine + "桥 DLL：" + bridge + extraNote + addonNote
             + Environment.NewLine + "Rocket 已运行时请在其界面重新读取/确认额外 DLL；Hub 不会自动启动或重启 Rocket。" };
+    }
+
+    /// <summary>原神没有 Bridge 时的 Rocket fallback：保留 GIMI 主 DLL，由 Rocket 插件列表加载 OptiScaler/ReShade。</summary>
+    private static RocketIntegration.PrepareResult PrepareGenshinWithoutBridge(GameId gameId, GameEntry entry, string config,
+        ShadeHost? host, string? opt, string? shade)
+    {
+        var dlls = new List<string>();
+        dlls.AddRange(BridgeChainModules.Resolve(gameId, opt, shade));
+        if (opt is not null) dlls.Add(opt);
+        if (shade is not null) dlls.Add(shade);
+        dlls = dlls
+            .Where(path => !ModuleRegistry.IsGenshinFsrBridgeDll(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (dlls.Count == 0)
+            return new(false, "原神未启用可注入的 OptiScaler、HoYoShade 或其他模块。", config);
+
+        _ = RocketIntegration.BuildPluginListConfiguration(File.ReadAllBytes(config), "原神", dlls);
+        if (opt is not null)
+        {
+            string build = Path.GetDirectoryName(opt)!;
+            OptiScalerPresets.CollectFromRuntime(build);
+            if (!OptiScalerRuntime.PrepareGenshinEarlyConfiguration(build, gameId.GameBiz.Value))
+                return new(false, "准备 OptiScaler profile/依赖路径失败。", config);
+            if (!OptiScalerRuntime.SetRocketMode(build, false))
+                return new(false, "写入 OptiScaler RocketMode=false 失败。", config);
+        }
+        if (host is not null)
+        {
+            GameAddonPackService.Sync(gameId, entry, host);
+            var ini = GameIniBootstrap.Ensure(entry, host, false);
+            if (ini.Failed || ini.MissingTemplate)
+                return new(false, "准备 ReShade 配置失败，尚未配置 Rocket 注入路径。", config);
+            GameAddonPackService.Sync(gameId, entry, host);
+            ini = GameIniBootstrap.Ensure(entry, host, false);
+            if (ini.Failed || ini.MissingTemplate)
+                return new(false, "同步 ReShade 插件配置失败，尚未配置 Rocket 注入路径。", config);
+        }
+
+        var listed = RocketIntegration.PreparePluginList(config, "原神", dlls);
+        if (!listed.Success) return listed;
+        return listed with
+        {
+            DllPaths = dlls,
+            Message = RocketIntegration.WaitingText + Environment.NewLine
+                + "未找到 FSR Bridge；Rocket 将按插件列表独立加载："
+                + string.Join(" → ", dlls.Select(Path.GetFileName))
+                + Environment.NewLine
+                + "Bridge 专属 FSR/NR/链式能力本次不可用。Rocket 已运行时请重新读取配置；Hub 不会自动启动或重启 Rocket。"
+        };
     }
 
     /// <summary>

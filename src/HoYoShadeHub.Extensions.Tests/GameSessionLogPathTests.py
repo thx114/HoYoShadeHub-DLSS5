@@ -57,6 +57,12 @@ try {
     Check(policy.FindCurrent(start, now) == defaultTicks, "default ticks");
     File.Delete(Path.Combine(build, "OptiScaler.ini"));
     Check(!OptiScalerSessionLogPath.Load(build).Multiple, "missing ini defaults");
+    Check(OptiScalerDumpPathPolicy.StreamlineGameFolder("hk4e_cn", "YuanShen.exe") == "YuanShen", "Genshin Streamline folder");
+    Check(OptiScalerDumpPathPolicy.StreamlineGameFolder("hkrpg_bilibili", "StarRail.exe") == "StarRail", "StarRail Streamline folder");
+    Check(OptiScalerDumpPathPolicy.StreamlineGameFolder("nap_global", "ZenlessZoneZero.exe") == "ZenlessZoneZero", "ZZZ Streamline folder");
+    Check(OptiScalerDumpPathPolicy.StreamlineGameFolder(null, "YuanShen.exe") == "YuanShen", "process fallback Streamline folder");
+    Check(OptiScalerDumpPathPolicy.StreamlineGameFolder("custom", "unknown.exe") == null, "unknown game does not scan all Streamline dumps");
+    Check(OptiScalerDumpPathPolicy.Root(Path.Combine(root, "ProgramData"), "hk4e_cn", "YuanShen.exe") == Path.Combine(root, "ProgramData", "NVIDIA", "Streamline", "YuanShen"), "Streamline root shape");
     Console.WriteLine($"PASS {checks} log path checks");
 } finally { Directory.Delete(root, true); }
 ''')

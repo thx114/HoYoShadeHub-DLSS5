@@ -1,9 +1,9 @@
-using HoYoShadeHub.Extensions.Services;
+﻿using HoYoShadeHub.Extensions.Services;
 using System.Text.Json;
 
 namespace HoYoShadeHub.Extensions.ReShade;
 
-/// <summary>每游戏插件包里的一行：共享 Addons 目录里的一个文件名 → 用哪个源文件</summary>
+/// <summary>每游戏插件包里的一行：相对 Addons 的文件路径 → 用哪个源文件</summary>
 public sealed class AddonPackEntry
 {
     public string FileName { get; init; } = string.Empty;
@@ -178,10 +178,10 @@ public static class GameAddonPack
         {
             try
             {
-                foreach (string file in Directory.EnumerateFiles(sharedAddonsDirectory, "*", SearchOption.TopDirectoryOnly))
+                foreach (string file in Directory.EnumerateFiles(sharedAddonsDirectory, "*", SearchOption.AllDirectories))
                 {
-                    string name = Path.GetFileName(file);
-                    if (name.Length > 0)
+                    string name = Path.GetRelativePath(sharedAddonsDirectory, file);
+                    if (name.Length > 0 && !string.Equals(name, MarkerFileName, StringComparison.OrdinalIgnoreCase))
                     {
                         map[name] = new AddonPackEntry { FileName = name, SourcePath = file };
                     }
@@ -204,7 +204,7 @@ public static class GameAddonPack
 
                 foreach (string file in storeFiles(extensionId, tag) ?? [])
                 {
-                    string name = Path.GetFileName(file);
+                    string name = RelativeAddonPath(file);
                     if (string.IsNullOrEmpty(name))
                     {
                         continue;
@@ -221,6 +221,56 @@ public static class GameAddonPack
         }
 
         return [.. map.Values.OrderBy(e => e.FileName, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    // AddonVersionStore 的路径结构固定为 <版本>/reshade-shaders/Addons/<相对路径>。
+    // 从最近的 Addons 祖先取相对路径，保留附属目录；旧调用方的裸文件仍使用文件名。
+    private static string RelativeAddonPath(string file)
+    {
+        for (DirectoryInfo? dir = Directory.GetParent(file); dir is not null; dir = dir.Parent)
+            if (string.Equals(dir.Name, AddonsFolderName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(dir.Parent?.Name, "reshade-shaders", StringComparison.OrdinalIgnoreCase))
+                return Path.GetRelativePath(dir.FullName, file);
+        return Path.GetFileName(file);
+    }
+
+    private static string ResolvePackFile(string directory, string relative)
+    {
+        string root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        string full = Path.GetFullPath(Path.Combine(root, relative));
+        if (Path.IsPathRooted(relative) || relative.Contains(':')
+            || !full.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(full, Path.Combine(root, MarkerFileName), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("无效的插件包相对路径：" + relative);
+        return full;
+    }
+
+    private static string[] ReadManagedFiles(string directory)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, MarkerFileName)));
+            return doc.RootElement.TryGetProperty("managedFiles", out JsonElement files)
+                ? files.EnumerateArray().Select(f => f.GetString()!).Where(f => !string.IsNullOrWhiteSpace(f)).ToArray()
+                : [];
+        }
+        catch { return []; } // 旧标记不认领未知用户文件，不猜测删除。
+    }
+
+    private static bool IsSettingsFile(string path) => Path.GetExtension(path).ToLowerInvariant()
+        is ".ini" or ".cfg" or ".json" or ".toml" or ".yaml" or ".yml";
+
+    /// <summary>明确卸载扩展时，清理所有已有受管包中的对应 addon，兼容未登记版本选择的旧包。</summary>
+    public static void RemoveMatchingAddons(string? cacheRoot, IReadOnlyList<string>? patterns)
+    {
+        string root = GamesRoot(cacheRoot);
+        if (patterns is not { Count: > 0 } || !Directory.Exists(root)) return;
+        foreach (string directory in Directory.EnumerateDirectories(root))
+        {
+            if (Path.GetFileName(directory).StartsWith('.')) continue;
+            string addons = Path.Combine(directory, AddonsFolderName);
+            if (IsPackDirectory(addons)) AddonPatternCleaner.DeleteMatching(addons, patterns);
+        }
     }
 
     /// <summary>
@@ -349,7 +399,8 @@ public static class GameAddonPack
         string addonDirectory,
         IReadOnlyList<AddonPackEntry> entries,
         IEnumerable<(string ExtensionId, string Tag)>? selections = null,
-        string? identity = null)
+        string? identity = null,
+        bool preserveSettings = false)
     {
         if (string.IsNullOrWhiteSpace(addonDirectory))
         {
@@ -357,6 +408,9 @@ public static class GameAddonPack
         }
 
         Directory.CreateDirectory(addonDirectory);
+        // 先验证整个计划，避免坏路径造成部分写入。
+        foreach (AddonPackEntry entry in entries) _ = ResolvePackFile(addonDirectory, entry.FileName);
+        string[] previousFiles = ReadManagedFiles(addonDirectory);
 
         bool knownIdentity = !string.IsNullOrWhiteSpace(identity);
         bool payloadChanged = !knownIdentity
@@ -371,16 +425,35 @@ public static class GameAddonPack
 
         foreach (AddonPackEntry entry in entries)
         {
-            string target = Path.Combine(addonDirectory, entry.FileName);
+            string target = ResolvePackFile(addonDirectory, entry.FileName);
             wanted.Add(entry.FileName);
+
+            // 旧 marker 没有 managedFiles。全局改名时，只迁移内容一致的对侧文件，
+            // 避免旧启用副本与新禁用副本并存；不认领不同内容的用户版本。
+            AddonFileInfo? addon = AddonFileInfo.Parse(Path.GetFileName(entry.FileName));
+            if (addon is not null)
+            {
+                string otherName = addon.IsRenamedDisabled
+                    ? AddonFileSwitcher.EnabledNameOf(entry.FileName)
+                    : AddonFileSwitcher.DisabledNameOf(entry.FileName);
+                string other = ResolvePackFile(addonDirectory, otherName);
+                if (!entries.Any(e => string.Equals(e.FileName, otherName, StringComparison.OrdinalIgnoreCase))
+                    && File.Exists(other) && HysxFileLink.IsUpToDate(entry.SourcePath, other))
+                {
+                    File.Delete(other);
+                    removed++;
+                }
+            }
 
             if (File.Exists(target))
             {
                 // 包没变 → 一次性：绝不覆盖已有文件（用户后改的设置要留住）。
                 // 包变了 → 强制重铺；只有老调用方（没给指纹）才回去比新鲜度。
-                bool leave = payloadChanged
+                bool leave = preserveSettings && IsSettingsFile(entry.FileName) || (payloadChanged
                     ? !knownIdentity && HysxFileLink.IsUpToDate(entry.SourcePath, target)
-                    : true;
+                    : true);
+                if (HysxFileLink.IsNeuralRuntime(entry.SourcePath))
+                    leave = HysxFileLink.AreHardLinked(entry.SourcePath, target);
                 if (leave)
                 {
                     kept++;
@@ -410,18 +483,17 @@ public static class GameAddonPack
         {
             try
             {
-                foreach (string file in Directory.EnumerateFiles(addonDirectory, "*", SearchOption.TopDirectoryOnly))
+                foreach (string name in previousFiles)
                 {
-                    string name = Path.GetFileName(file);
-                    if (string.Equals(name, MarkerFileName, StringComparison.OrdinalIgnoreCase) || wanted.Contains(name))
+                    if (wanted.Contains(name) || preserveSettings && IsSettingsFile(name))
                     {
                         continue;
                     }
 
                     try
                     {
-                        File.Delete(file);
-                        removed++;
+                        string file = ResolvePackFile(addonDirectory, name);
+                        if (File.Exists(file)) { File.Delete(file); removed++; }
                     }
                     catch
                     {
@@ -435,7 +507,7 @@ public static class GameAddonPack
             }
         }
 
-        WriteMarker(addonDirectory, selections, knownIdentity ? identity : null);
+        WriteMarker(addonDirectory, selections, knownIdentity ? identity : null, wanted);
         return new AddonPackSyncResult
         {
             AddonDirectory = addonDirectory,
@@ -459,7 +531,8 @@ public static class GameAddonPack
     private static void WriteMarker(
         string addonDirectory,
         IEnumerable<(string ExtensionId, string Tag)>? selections,
-        string? identity = null)
+        string? identity = null,
+        IEnumerable<string>? managedFiles = null)
     {
         try
         {
@@ -469,6 +542,7 @@ public static class GameAddonPack
                 syncedAt = DateTimeOffset.Now,
                 selections = (selections ?? []).Select(s => new { id = s.ExtensionId, tag = s.Tag }).ToArray(),
                 identity = identity ?? string.Empty,
+                managedFiles = (managedFiles ?? []).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray(),
             };
 
             File.WriteAllText(Path.Combine(addonDirectory, MarkerFileName), JsonSerializer.Serialize(payload, _json));
@@ -545,26 +619,9 @@ public static class GameAddonPackAudit
         var store = new AddonVersionStore(cacheRoot);
 
         var missingArchive = new List<string>();
-        var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(sharedAddonsDirectory) && Directory.Exists(sharedAddonsDirectory))
-        {
-            try
-            {
-                foreach (string file in Directory.EnumerateFiles(sharedAddonsDirectory, "*", SearchOption.TopDirectoryOnly))
-                {
-                    string name = Path.GetFileName(file);
-                    if (name.Length > 0)
-                    {
-                        expected[name] = file;
-                    }
-                }
-            }
-            catch
-            {
-                // 共享目录读不了就当没有
-            }
-        }
+        Dictionary<string, string> expected = GameAddonPack.Plan(sharedAddonsDirectory, selections,
+                (id, tag) => store.AddonFiles(id, tag))
+            .ToDictionary(e => e.FileName, e => e.SourcePath, StringComparer.OrdinalIgnoreCase);
 
         // 选过版本的扩展：用归档里的那份替换同名文件
         foreach ((string extensionId, string tag) in selections)
@@ -576,14 +633,6 @@ public static class GameAddonPackAudit
                 continue;
             }
 
-            foreach (string file in files)
-            {
-                string name = Path.GetFileName(file);
-                if (name.Length > 0)
-                {
-                    expected[name] = file;
-                }
-            }
         }
 
         var actual = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -593,9 +642,9 @@ public static class GameAddonPackAudit
 
         try
         {
-            foreach (string file in Directory.EnumerateFiles(addonDirectory, "*", SearchOption.TopDirectoryOnly))
+            foreach (string file in Directory.EnumerateFiles(addonDirectory, "*", SearchOption.AllDirectories))
             {
-                string name = Path.GetFileName(file);
+                string name = Path.GetRelativePath(addonDirectory, file);
                 if (string.Equals(name, GameAddonPack.MarkerFileName, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;

@@ -1,6 +1,7 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Core.HoYoPlay;
 using HoYoShadeHub.Extensions.OptiScaler;
+using HoYoShadeHub.Extensions.Dlls;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Features.Plugins;
 using HoYoShadeHub.Frameworks;
@@ -87,7 +88,23 @@ public sealed partial class OptiScalerBuildItemViewModel : ObservableObject
     /// <summary>当前构建 id（换版本 / 配配置按它记）</summary>
     public string CurrentBuildId => CurrentBuild?.Id ?? string.Empty;
 
-    public string? DllPath => CurrentBuild?.DllPath;
+    public GameId? NrGameId { get; init; }
+
+    public string NrVersionText => "NR：" + (NrGameId is { } game ? AppConfig.GetGameNrVersion(game, "opti") ?? "构建默认" : "构建默认");
+
+    public void RefreshNrChoice() => OnPropertyChanged(nameof(NrVersionText));
+
+    public string? DllPath
+    {
+        get
+        {
+            string? original = CurrentBuild?.DllPath;
+            if (original is null || NrGameId is null) return original;
+            string isolated = Path.Combine(NrRuntimeLibrary.OptiDirectory(AppConfig.CacheRoot,
+                NrGameId.GameBiz.Value, CurrentBuildId), Path.GetFileName(original));
+            return File.Exists(isolated) ? isolated : original;
+        }
+    }
 
     public string Detail => CurrentBuild is not { } build
         ? "这个来源没有可用构建"
@@ -444,6 +461,7 @@ public sealed partial class OptiScalerPage : PageBase
 
                     var item = new OptiScalerBuildItemViewModel
                     {
+                        NrGameId = gameId,
                         SourceId = build.SourceId,
                         SourceName = source?.Name ?? build.SourceId,
                         TagsText = source?.Tags is { Length: > 0 } tags ? string.Join(" ", tags) : string.Empty,
@@ -529,6 +547,41 @@ public sealed partial class OptiScalerPage : PageBase
     /// 点整张卡片 = 这个游戏改用这一版（单选，和以前那个 ListView 单选是一个意思）。
     /// 卡片里的下拉 / 按钮自己会吃掉点击，所以只有点卡片空白处才会走到这里。
     /// </summary>
+    private void ComboBox_Nr_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is ComboBox combo && _gameId is { } game)
+            NrVersionPicker.Fill(combo, AppConfig.GetGameNrVersion(game, "opti"));
+    }
+
+    private void ComboBox_Nr_DropDownOpened(object sender, object e) => ComboBox_Nr_Loaded(sender, new RoutedEventArgs());
+
+    private async void ComboBox_Nr_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo || combo.Tag is not false || combo.SelectedItem is not ComboBoxItem { IsEnabled: true } selected) return;
+        if (_gameId is not { } game || _loading || sender is not FrameworkElement { DataContext: OptiScalerBuildItemViewModel item }
+            || item.CurrentBuild?.DllPath is not { } dll) return;
+        string? version = selected.Tag as string;
+        if (string.Equals(version, AppConfig.GetGameNrVersion(game, "opti"), StringComparison.OrdinalIgnoreCase)) return;
+        combo.IsEnabled = false;
+        try
+        {
+            if (version is not null || Directory.Exists(NrRuntimeLibrary.OptiDirectory(AppConfig.CacheRoot, game.GameBiz.Value, item.CurrentBuildId)))
+                await Task.Run(() => NrRuntimeLibrary.PrepareOpti(AppConfig.CacheRoot, game.GameBiz.Value, item.CurrentBuildId, dll, version));
+            if (_gameId?.GameBiz != game.GameBiz) return;
+            AppConfig.SetGameNrVersion(game, "opti", version);
+            OnBuildChanged(item, item.CurrentBuildId);
+            foreach (var row in _items) row.RefreshNrChoice();
+            NrVersionPicker.RefreshInline(this, version);
+            TextBlock_Status.Text = "本游戏 OptiScaler NR：" + (version ?? "构建默认") + "（重启游戏生效）";
+        }
+        catch (Exception ex) { TextBlock_Status.Text = "NR 版本切换失败：" + ex.Message; }
+        finally
+        {
+            NrVersionPicker.Fill(combo, AppConfig.GetGameNrVersion(game, "opti"));
+            combo.IsEnabled = item.HasQuickConfig;
+        }
+    }
+
     private void Card_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
     {
         if (_loading || _gameId is null
@@ -553,6 +606,15 @@ public sealed partial class OptiScalerPage : PageBase
         {
             return;
         }
+
+        try
+        {
+            string? nr = AppConfig.GetGameNrVersion(_gameId, "opti");
+            if ((nr is not null || Directory.Exists(NrRuntimeLibrary.OptiDirectory(AppConfig.CacheRoot, _gameId.GameBiz.Value, buildId)))
+                && item.CurrentBuild?.DllPath is { } original)
+                NrRuntimeLibrary.PrepareOpti(AppConfig.CacheRoot, _gameId.GameBiz.Value, buildId, original, nr);
+        }
+        catch (Exception ex) { TextBlock_Status.Text = "NR 加载目录准备失败：" + ex.Message; return; }
 
         AppConfig.SetOptiScalerVersion(_gameId, buildId);
 
@@ -679,6 +741,7 @@ public sealed partial class OptiScalerPage : PageBase
 
         foreach (OptiQuickDescriptor descriptor in OptiScalerQuickOptions.Descriptors)
         {
+            if (descriptor.Key is "SmoothMotion" or "HookOriginalNvngxOnly" or "AutoExposure") continue;
             item.QuickItems.Add(new OptiQuickItemViewModel(descriptor,
                 (desc, value) => CommitQuickValue(item, desc, value)));
         }

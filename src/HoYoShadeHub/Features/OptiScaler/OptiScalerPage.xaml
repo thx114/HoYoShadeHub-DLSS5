@@ -140,11 +140,11 @@
                                        Style="{ThemeResource CaptionTextBlockStyle}"
                                        Text="{x:Bind Detail, Mode=OneWay}"
                                        TextTrimming="CharacterEllipsis" />
+
                             <!--  第三行：当前配置  -->
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <TextBlock VerticalAlignment="Center"
-                                           Style="{ThemeResource CaptionTextBlockStyle}"
-                                           Text="当前配置：" />
+
+                                <TextBlock VerticalAlignment="Center" Style="{ThemeResource CaptionTextBlockStyle}" Text="当前配置：" />
                                 <ComboBox MinWidth="160"
                                           ItemsSource="{x:Bind PresetOptions, Mode=OneWay}"
                                           SelectedItem="{x:Bind CurrentPreset, Mode=TwoWay}" />
@@ -160,6 +160,7 @@
                                            Style="{ThemeResource CaptionTextBlockStyle}"
                                            Text="{x:Bind CurrentProfileText}"
                                            TextTrimming="CharacterEllipsis" />
+                                <ComboBox x:Name="ComboBox_NrVersion" Width="160" VerticalAlignment="Center" Loaded="ComboBox_Nr_Loaded" DropDownOpened="ComboBox_Nr_DropDownOpened" SelectionChanged="ComboBox_Nr_SelectionChanged" IsEnabled="{x:Bind HasQuickConfig, Mode=OneWay}" ToolTipService.ToolTip="选择本游戏 NR 版本；选择后立即保存，重启游戏生效" AutomationProperties.Name="NR 版本" />
                                 </StackPanel>
                             </StackPanel>
 

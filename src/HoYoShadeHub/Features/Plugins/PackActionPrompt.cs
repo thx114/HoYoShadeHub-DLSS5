@@ -188,7 +188,8 @@ public static class OverlayPackActionPrompter
     private static readonly ILogger _logger = AppConfig.GetLogger<GamePluginPage>();
 
     /// <returns>执行结果汇总（没有待办 / 用户都点了「下次再说」= 空串）</returns>
-    public static async Task<string> PromptAndRunAsync(XamlRoot xamlRoot, ShadeHost? host, Action<string>? report)
+    public static async Task<string> PromptAndRunAsync(XamlRoot xamlRoot, ShadeHost? host, Action<string>? report,
+        IReadOnlyCollection<string>? refreshGameHints = null, bool refreshReimportedPack = false)
     {
         // 按 auto.json 内容 hash 分组：同一份包内容（多个服共用一份）只弹一次窗
         var groups = new Dictionary<string, (string PackRoot, string Hash, List<PackAutoAction> Actions,
@@ -231,7 +232,22 @@ public static class OverlayPackActionPrompter
             foreach ((GameId id, GameEntry entry) in candidates)
             {
                 string gameKey = id.GameBiz.Value;
+                if (refreshGameHints is { Count: > 0 }
+                    && !refreshGameHints.Any(hint => gameKey.StartsWith(hint, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
                 string packRoot = GameAddonPack.PackDirectory(cacheRoot, gameKey);
+
+                if (refreshReimportedPack && refreshGameHints is { Count: > 0 })
+                {
+                    // A successful second import of the same GamePack is a new
+                    // user-authorized batch, even when auto.json has the same hash.
+                    PackOnceLedger.ResetForReimport(packRoot);
+                    PackActionConsent.ResetForReimport(gameKey);
+                    _logger.LogInformation("覆盖包重新导入：已刷新 {Game} 的 auto.json 同意和 once 账本", gameKey);
+                }
 
                 // 暂存的 GamePack 先铺进包目录（同 GameAddonPackService.Sync 的暂存逻辑）：
                 // 全新实例导入时 cache\games\ 还没有这个游戏的目录，不铺的话弹窗永远不会在导入当场弹

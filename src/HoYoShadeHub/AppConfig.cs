@@ -1838,6 +1838,18 @@ public static class AppConfig
     /// <summary>写这个游戏的 OptiScaler 版本；null = 不选（这个游戏不注入 OptiScaler）</summary>
     public static void SetOptiScalerVersion(GameId gameId, string? buildId) => SetSelectedOptiScalerId(gameId, buildId);
 
+    public static bool IsNrVersionEnabled(string version)
+        => GetValue(true, "nr_available_" + version);
+
+    public static void SetNrVersionEnabled(string version, bool enabled)
+        => SetValue(enabled, "nr_available_" + version);
+
+    public static string? GetGameNrVersion(GameId gameId, string consumer)
+        => GetValue<string>(null, $"nr_version_{consumer}_{gameId.GameBiz}");
+
+    public static void SetGameNrVersion(GameId gameId, string consumer, string? version)
+        => SetValue(version, $"nr_version_{consumer}_{gameId.GameBiz}");
+
     /// <summary>这个游戏实际要注入的 OptiScaler DLL（没开总开关 / 没选 / 那个构建没了 → null）</summary>
     public static string? GetSelectedOptiScalerDll(GameId? gameId)
     {
@@ -1866,6 +1878,13 @@ public static class AppConfig
                 return null;
             }
 
+            if (gameId is not null)
+            {
+                string isolated = Path.Combine(Extensions.Dlls.NrRuntimeLibrary.OptiDirectory(
+                    CacheRoot, gameId.GameBiz.Value, build.Id), Path.GetFileName(build.DllPath ?? "OptiScaler.dll"));
+                if (File.Exists(isolated)) return isolated;
+                if (GetGameNrVersion(gameId, "opti") is not null) return null;
+            }
             return build.DllPath;
         }
         catch
@@ -2304,6 +2323,12 @@ public static class AppConfig
     public static void SetUseRocketLaunchOption(GameId gameId, bool value) =>
         SetValue(value, BuildLaunchOptionKey(gameId, "use_rocket"));
 
+    /// <summary>Mod 管理页的后端选择，独立于游戏启动方式，按游戏持久保存。</summary>
+    public static bool GetModBrowserUseRocket(GameId gameId) =>
+        GetValue(GetUseRocketLaunchOption(gameId), BuildLaunchOptionKey(gameId, "mod_browser_use_rocket"));
+
+    public static void SetModBrowserUseRocket(GameId gameId, bool value) =>
+        SetValue(value, BuildLaunchOptionKey(gameId, "mod_browser_use_rocket"));
     public static string? RocketConfigPath
     {
         get => GetValue<string>(null, "hysx_rocket_config_path");

@@ -75,6 +75,22 @@ public static class PackActionConsent
         if (!AppConfig.TrySetValue(RecordKey(gameBiz), raw))
             throw new IOException("覆盖包同意记录未持久化；拒绝执行。");
     }
+
+    /// <summary>同一个覆盖包重新导入时，忘掉上一次同意，下一次重新弹确认。</summary>
+    public static void ResetForReimport(string gameBiz)
+    {
+        if (string.IsNullOrWhiteSpace(gameBiz))
+        {
+            return;
+        }
+
+        if (!AppConfig.TrySetValue(RecordKey(gameBiz), null)
+            || !AppConfig.TrySetValue(HashKey(gameBiz), null)
+            || !AppConfig.TrySetValue(DisabledKey(gameBiz), null))
+        {
+            throw new IOException("覆盖包重新导入时无法清除旧同意记录。");
+        }
+    }
 }
 
 /// <summary>

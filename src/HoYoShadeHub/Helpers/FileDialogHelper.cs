@@ -112,7 +112,7 @@ internal static class FileDialogHelper
 
     public static async Task<string?> PickSingleFileAsync(XamlRoot xamlRoot, params (string Name, string Extension)[] fileTypeFilter)
     {
-        return await PickSingleFileAsync((nint)xamlRoot.ContentIslandEnvironment.AppWindowId.Value, fileTypeFilter);
+        return await PickSingleFileAsync(Microsoft.UI.Win32Interop.GetWindowFromWindowId(xamlRoot.ContentIslandEnvironment.AppWindowId), fileTypeFilter);
     }
 
 

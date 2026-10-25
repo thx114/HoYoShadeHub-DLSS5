@@ -1,10 +1,12 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using HoYoShadeHub.Extensions.Dlls;
+using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Models;
 using HoYoShadeHub.Extensions.Services;
 using HoYoShadeHub.Frameworks;
 using HoYoShadeHub.Helpers;
 using HoYoShadeHub.Features.ViewHost;
+using HoYoShadeHub.Features.OptiScaler;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -13,6 +15,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -42,6 +45,8 @@ public sealed partial class DllConfigPage : PageBase
     private ShadeHost? _host;
     private DllCatalog? _catalog;
     private bool _isWorking;
+    private bool _buildingCards;
+    private readonly HashSet<string> _nrUpdates = new(StringComparer.OrdinalIgnoreCase);
 
     public DllConfigPage()
     {
@@ -54,10 +59,11 @@ public sealed partial class DllConfigPage : PageBase
     public ObservableCollection<InstalledDllViewModel> Installed { get; } = [];
 
     public ObservableCollection<DllFamilyViewModel> Families { get; } = [];
+    public ObservableCollection<InstalledDllViewModel> OtherInstalled { get; } = [];
+    public ObservableCollection<NrVersionCardViewModel> NrVersions { get; } = [];
 
     protected override void OnLoaded()
     {
-        InstalledList.ItemsSource = Installed;
 
         // 先把「下载服务器」这个设置推给 HysxHttp，再去拉组件清单。
         // 不推的话 ProxyUrl 是 null，清单会直连 raw.githubusercontent.com ——
@@ -71,6 +77,8 @@ public sealed partial class DllConfigPage : PageBase
     {
         Installed.Clear();
         Families.Clear();
+        OtherInstalled.Clear();
+        NrVersions.Clear();
     }
 
     #region 刷新
@@ -103,6 +111,11 @@ public sealed partial class DllConfigPage : PageBase
             }
 
             TextBlock_TargetPath.Text = _host.AddonsPath;
+            // 本地版本先显示，云端刷新失败或耗时不应让已下载内容消失。
+            var recoveryErrors = await Task.Run(() => NrRuntimeLibrary.RecoverContentVersions(AppConfig.CacheRoot));
+            foreach (string recoveryError in recoveryErrors) _logger.LogWarning("NR version recovery: {Error}", recoveryError);
+            BuildNrCards();
+            await RemoteCatalogService.RefreshIfDueAsync();
             await LoadInstalledAsync();
 
             _catalog ??= await DllComponentCatalog.LoadAsync();
@@ -145,7 +158,7 @@ public sealed partial class DllConfigPage : PageBase
             Installed.Add(new InstalledDllViewModel(dll));
         }
 
-        TextBlock_InstalledEmpty.Visibility = Installed.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
     }
 
     private void BuildFamilies()
@@ -161,7 +174,11 @@ public sealed partial class DllConfigPage : PageBase
 
         foreach (DllFamily family in DllComponentCatalog.Families)
         {
-            IReadOnlyList<DllComponent> components = _catalog.Of(family.Id);
+            if (family.Id.Equals("dlssnr", StringComparison.OrdinalIgnoreCase)) continue;
+            var archive = new DllVersionStore(AppConfig.CacheRoot);
+            IReadOnlyList<DllComponent> components = _catalog.Of(family.Id).Concat(
+                archive.ListVersions(family.Id).Where(v => !_catalog.Of(family.Id).Any(c => c.Version.Equals(v.Version, StringComparison.OrdinalIgnoreCase)))
+                    .Select(v => new DllComponent(family.Id, v.Version, ""))).ToArray();
             if (components.Count == 0)
             {
                 continue;
@@ -176,14 +193,16 @@ public sealed partial class DllConfigPage : PageBase
                 AppConfig.GetInstalledDllVariant(family.Id),
                 AppConfig.GetInstalledDllVariantSize(family.Id),
                 store);
-            if (selected.TryGetValue(family.Id, out string? previous) && vm.Versions.Contains(previous))
+            if ((!vm.HasInstalled || vm.IsCurrentKnown)
+                && selected.TryGetValue(family.Id, out string? previous)
+                && vm.Versions.Contains(previous))
             {
                 vm.SelectedVersion = previous;
             }
-            else if (family.PreferredVersion is { } preferred && vm.Versions.Contains(preferred))
+            else if (!vm.HasInstalled
+                && DllSelectionPolicy.SelectDefault(family, components, OptiScalerPresetCatalog.GpuClass) is { } defaultComponent)
             {
-                // 没有历史选择：streamline 默认挑首选版（2.14.0.0）—— 别拿清单第一条（新版包缺 sl.interposer.dll）
-                vm.SelectedVersion = preferred;
+                vm.SelectComponent(defaultComponent);
             }
 
             // 需求6：把归档里这一类 dll 装过的版本铺出来（每行一个删除）
@@ -197,15 +216,46 @@ public sealed partial class DllConfigPage : PageBase
                         stored.Version,
                         // 「使用中」只认准了的那一版：以前这里用 SameNumbers，同数字段的会被一起标上
                         // （装了 Lecram 结果 310.8.0 那行也显示「使用中」）
-                        isCurrent: DllVersion.IsSame(stored.Version, vm.CurrentVersion))));
+                        isCurrent: vm.IsCurrentKnown && string.Equals(stored.Version, vm.CurrentVersion, StringComparison.OrdinalIgnoreCase))));
             }
             catch
             {
                 vm.SetInstalledVersions([]);
             }
 
+            if (vm.HasInstalled && !vm.InstalledVersionRows.Any(r => r.IsCurrent))
+                vm.InstalledVersionRows.Insert(0, new InstalledDllVersionRow(family.Id,
+                    vm.CurrentVersion ?? "未知版本", vm.IsCurrentKnown ? vm.CurrentVersion : "PE " + vm.CurrentVersion + "（变体未确认）", true, false));
             Families.Add(vm);
         }
+        OtherInstalled.Clear();
+        foreach (var dll in Installed.Where(d => !HysxFileLink.IsNeuralRuntime(d.FileName)
+            && !DllComponentCatalog.Families.Any(f => DllInstaller.Matches(d.FileName, f)))) OtherInstalled.Add(dll);
+        BuildNrCards();
+    }
+
+    private void BuildNrCards()
+    {
+        _buildingCards = true;
+        try
+        {
+            NrVersions.Clear();
+            var store = new DllVersionStore(AppConfig.CacheRoot);
+            var components = _catalog?.Of("dlssnr") ?? [];
+            var versions = DllFingerprintCatalog.Fingerprints.Where(f => f.Family.Equals("dlssnr", StringComparison.OrdinalIgnoreCase)).Select(f => f.Version)
+                .Concat(components.Select(c => c.Version)).Concat(store.ListVersions("dlssnr").Select(v => v.Version))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            bool downloadHeadingShown = false;
+            foreach (string version in versions.OrderByDescending(v => store.FilePath("dlssnr", v, NrRuntimeLibrary.FileName).Length > 0))
+            {
+                var component = components.FirstOrDefault(c => c.Version.Equals(version, StringComparison.OrdinalIgnoreCase));
+                bool installed = store.FilePath("dlssnr", version, NrRuntimeLibrary.FileName).Length > 0;
+                NrVersions.Add(new NrVersionCardViewModel(version, component, installed,
+                    AppConfig.IsNrVersionEnabled(version), _nrUpdates.Contains(version), !installed && !downloadHeadingShown));
+                if (!installed) downloadHeadingShown = true;
+            }
+        }
+        finally { _buildingCards = false; }
     }
 
     /// <summary>DLSS5 那两样齐了没</summary>
@@ -254,7 +304,184 @@ public sealed partial class DllConfigPage : PageBase
             return;
         }
 
-        await RunInstallAsync(component);
+        var store = new DllVersionStore(AppConfig.CacheRoot);
+        if (!store.Has(component.Family, component.Version))
+        {
+            await RunInstallAsync(component);
+            return;
+        }
+        if (_isWorking) return;
+        _isWorking = true;
+        try
+        {
+            foreach (string source in Directory.EnumerateFiles(store.DirectoryFor(component.Family, component.Version), "*.dll"))
+                HysxFileLink.LinkOrCopy(source, Path.Combine(_host.AddonsPath, Path.GetFileName(source)));
+            AppConfig.SetInstalledDllVariant(component.Family, component.Version);
+            AppConfig.SetInstalledDllVariantSize(component.Family,
+                DllInstaller.GetInstalledSize(DllInstaller.Scan(_host.AddonsPath), family.Family));
+            GameAddonPackService.SyncAll();
+            await LoadInstalledAsync();
+            BuildFamilies();
+            UpdateStatusInfo();
+        }
+        catch (Exception ex) { ShowInfo("DLL 切换失败", ex.Message, InfoBarSeverity.Error); }
+        finally { _isWorking = false; }
+    }
+
+    private void Toggle_NrGlobal_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_buildingCards || sender is not ToggleSwitch { DataContext: NrVersionCardViewModel row } toggle) return;
+        bool expected = AppConfig.IsNrVersionEnabled(row.Version);
+        if (toggle.IsOn == expected) return;
+        if (_isWorking) { toggle.IsOn = expected; return; }
+        try
+        {
+            AppConfig.SetNrVersionEnabled(row.Version, toggle.IsOn);
+            BuildNrCards();
+        }
+        catch (Exception ex)
+        {
+            toggle.IsOn = expected;
+            ShowInfo("NR 可选状态保存失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+    private void Button_OpenNr_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: NrVersionCardViewModel row })
+            Process.Start(new ProcessStartInfo("explorer.exe", new DllVersionStore(AppConfig.CacheRoot).DirectoryFor("dlssnr", row.Version)) { UseShellExecute = true });
+    }
+
+    private async void Button_DownloadNr_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isWorking || sender is not FrameworkElement { DataContext: NrVersionCardViewModel { Component: { } component } }) return;
+        _isWorking = true;
+        ProgressBar_Overall.Visibility = Visibility.Visible;
+        ProgressBar_Overall.IsIndeterminate = false;
+        try
+        {
+            var progress = new Progress<DownloadProgress>(p =>
+            {
+                ProgressBar_Overall.Value = p.Percent ?? 0;
+                TextBlock_Status.Text = $"正在下载 {component.Version}… {p.BytesReceived / 1024d / 1024d:F1} MB";
+            });
+            await NrRuntimeLibrary.DownloadVersionAsync(AppConfig.CacheRoot, component, progress);
+            _nrUpdates.Remove(component.Version);
+            ShowInfo("NR 已加入版本库", component.Version + "；可在 OPT 或游戏插件卡片内选择。", InfoBarSeverity.Success);
+        }
+        catch (Exception ex) { ShowInfo("NR 下载失败", ex.Message, InfoBarSeverity.Error); }
+        finally { BuildNrCards(); _isWorking = false; ProgressBar_Overall.Visibility = Visibility.Collapsed; }
+    }
+
+    private async void Button_CheckNrUpdate_Click(object sender, RoutedEventArgs e)
+        => await CheckNrUpdatesAsync((sender as FrameworkElement)?.DataContext is NrVersionCardViewModel row ? row.Version : null);
+
+    private async Task CheckNrUpdatesAsync(string? version = null)
+    {
+        if (_isWorking) return;
+        _isWorking = true;
+        try
+        {
+            var result = await RemoteCatalogService.RefreshAsync(force: true);
+            if (!result.DllFingerprintsUpdated)
+            {
+                ShowInfo("NR 更新检查未完成", result.Message + " 保留上次有效目录。", InfoBarSeverity.Warning);
+                return;
+            }
+            _catalog = await DllComponentCatalog.LoadAsync();
+            var store = new DllVersionStore(AppConfig.CacheRoot);
+            var updates = await Task.Run(() => DllFingerprintCatalog.Fingerprints
+                .Where(f => f.Family.Equals("dlssnr", StringComparison.OrdinalIgnoreCase))
+                .GroupBy(f => f.Version, StringComparer.OrdinalIgnoreCase)
+                .Where(group =>
+                {
+                    string file = store.FilePath("dlssnr", group.Key, NrRuntimeLibrary.FileName);
+                    if (file.Length == 0) return false;
+                    try { DllFingerprintCatalog.ValidateKnownFile("dlssnr", group.Key, file); return false; }
+                    catch { return true; }
+                }).Select(group => group.Key).ToArray());
+            _nrUpdates.Clear();
+            foreach (string update in updates) _nrUpdates.Add(update);
+            await LoadInstalledAsync();
+            BuildFamilies();
+            ShowInfo("NR 更新检查完成", version is not null
+                ? _nrUpdates.Contains(version) ? version + " 有更新，可点击更新下载。" : version + " 未发现内容更新；新版本已列在版本库。"
+                : $"发现 {_nrUpdates.Count} 个本地版本内容更新；所有可下载版本已刷新。", InfoBarSeverity.Informational);
+        }
+        catch (Exception ex) { ShowInfo("检查更新失败", ex.Message, InfoBarSeverity.Warning); }
+        finally { _isWorking = false; }
+    }
+
+    private void Button_OpenDllVersion_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: InstalledDllVersionRow row })
+            Process.Start(new ProcessStartInfo("explorer.exe", new DllVersionStore(AppConfig.CacheRoot).DirectoryFor(row.FamilyId, row.Version)) { UseShellExecute = true });
+    }
+
+    private async void Button_ConsolidateNr_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isWorking || _host is null) return;
+        _isWorking = true;
+        try
+        {
+            var errors = await Task.Run(() => NrRuntimeLibrary.Consolidate(AppConfig.CacheRoot,
+                _host.AddonsPath, AppConfig.OptiScalerRootPath, AppConfig.CacheRoot));
+            ShowInfo(errors.Count == 0 ? "NR 硬链接整理完成" : "部分 NR 未能整理",
+                errors.Count == 0 ? "受管目录中相同内容的 NR 已共用硬链接。" : string.Join(Environment.NewLine, errors),
+                errors.Count == 0 ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        }
+        finally { _isWorking = false; }
+    }
+
+    private async void Button_ImportNr_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isWorking)
+        {
+            ShowInfo("正在处理 DLL 任务", "请等待当前刷新或下载完成后再导入 NR。", InfoBarSeverity.Informational);
+            return;
+        }
+        _isWorking = true;
+        string temporary = Path.Combine(AppConfig.CacheRoot, "nr-import-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            _logger.LogInformation("Opening NR import picker");
+            string? file = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("NR DLL", ".dll"), ("ZIP", ".zip"));
+            if (file is null) return;
+            string version = await Task.Run(() =>
+            {
+                Directory.CreateDirectory(temporary);
+                string source = Path.Combine(temporary, NrRuntimeLibrary.FileName);
+                if (Path.GetExtension(file).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var zip = ZipFile.OpenRead(file);
+                    var entries = zip.Entries.Where(x => Path.GetFileName(x.FullName).Equals(NrRuntimeLibrary.FileName, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    if (entries.Length != 1) throw new IOException("ZIP 必须包含唯一的 nvngx_dlssnr.dll。");
+                    entries[0].ExtractToFile(source);
+                }
+                else File.Copy(file, source);
+                string hash = NrRuntimeLibrary.Hash(source);
+                var fingerprint = DllFingerprintCatalog.Find("dlssnr", new FileInfo(source).Length, hash);
+                if (!DllFingerprintCatalog.ValidatePe(source, fingerprint, out string peError))
+                    throw new IOException("NR PE 验证失败：" + peError);
+                string label = fingerprint?.Version ?? ("自定义-" + hash[..16]);
+                var store = new DllVersionStore(AppConfig.CacheRoot);
+                store.Archive("dlssnr", label, [source]);
+                string stored = store.FilePath("dlssnr", label, NrRuntimeLibrary.FileName);
+                if (stored.Length == 0 || NrRuntimeLibrary.Hash(stored) != hash) throw new IOException("NR 导入校验失败。");
+                return label;
+            });
+            BuildNrCards();
+            ShowInfo("NR 已加入版本库", version + "；可在游戏插件或 OptiScaler 卡片中选择。", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "NR import failed");
+            ShowInfo("导入失败", ex.Message, InfoBarSeverity.Error);
+        }
+        finally
+        {
+            _isWorking = false;
+            HysxUtil.TryDeleteDirectory(temporary);
+        }
     }
 
     /// <summary>「安装必要组件」：缺 nvngx_dlssnr.dll 就装默认那版，缺 Streamline 就装最新那版</summary>
@@ -269,7 +496,8 @@ public sealed partial class DllConfigPage : PageBase
         AddonDllStatus status = CurrentDlss5Status();
 
         if (status.MissingRequired.Any(r => r.Files.Contains("nvngx_dlssnr.dll", StringComparer.OrdinalIgnoreCase))
-            && _catalog.Of("dlssnr").FirstOrDefault() is { } nr)
+            && DllComponentCatalog.FamilyOf("dlssnr") is { } nrFamily
+            && DllSelectionPolicy.SelectDefault(nrFamily, _catalog.Of("dlssnr"), OptiScalerPresetCatalog.GpuClass) is { } nr)
         {
             toInstall.Add(nr);
         }
@@ -368,6 +596,10 @@ public sealed partial class DllConfigPage : PageBase
                 }
 
                 string extra = result.Overwritten.Count > 0 ? $"（覆盖了 {string.Join("、", result.Overwritten)}）" : string.Empty;
+                var linkErrors = await Task.Run(() => NrRuntimeLibrary.Consolidate(AppConfig.CacheRoot,
+                    _host.AddonsPath, AppConfig.OptiScalerRootPath, AppConfig.CacheRoot));
+                if (linkErrors.Count > 0) throw new IOException(string.Join(Environment.NewLine, linkErrors));
+                GameAddonPackService.SyncAll();
                 TextBlock_Status.Text = $"{family?.DisplayName ?? component.Family} {component.Version} 装好了：{string.Join("、", result.Installed)}{extra}";
                 if (!quiet)
                 {
@@ -437,8 +669,7 @@ public sealed partial class DllConfigPage : PageBase
 
     private async void Button_Refresh_Click(object sender, RoutedEventArgs e)
     {
-        _catalog = null;
-        await RefreshAsync();
+        await CheckNrUpdatesAsync();
     }
 
     private async void Button_PickFolder_Click(object sender, RoutedEventArgs e)
@@ -540,6 +771,7 @@ public partial class DllFamilyViewModel : ObservableObject
         Family = family;
         _components = components;
         Title = family.DisplayName;
+        Files = installed.Where(d => DllInstaller.Matches(d.FileName, family)).Select(d => new InstalledDllViewModel(d)).ToArray();
 
         string requirement = family.Level == DllRequirementLevel.Required ? "缺了插件起不来" : "缺了可能不出画面";
         Note = $"{family.FilePattern} · {requirement} —— {family.Note}";
@@ -561,29 +793,46 @@ public partial class DllFamilyViewModel : ObservableObject
         CurrentVersion = probe.Variant ?? DllInstaller.GetInstalledVersion(installed, family);
 
         bool hasAny = InstalledDlls(installed, family).Any();
+        HasInstalled = hasAny;
+        IsCurrentKnown = probe.Known;
         InstalledText = !hasAny
             ? "还没装"
             : probe.Known
                 ? $"已装：{probe.Display}"
                 : string.IsNullOrWhiteSpace(probe.Display)
                     ? "已装（读不出版本）"
-                    : $"已装：{probe.Display}（变体认不出来；从这儿装一次就认得出了）";
+                    : $"已装：PE {probe.Display}（变体未确认）";
 
-        // 默认选：装了就选对得上的那个；没装就选「清单里本来就有」的那条
-        // （我硬编码补进来的 RTX40 / SF 变体带 Note，不抢默认位）
-        DllComponent? match = components.FirstOrDefault(c => DllVersion.IsSame(c.Version, CurrentVersion))
-                              ?? components.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Note))
-                              ?? components[0];
-        SelectedVersion = DisplayOf(match);
+        // 只有当前文件能和清单准确对上时才自动选中；未知 NR 保持空选，避免回退到第一条 50xx。
+        DllComponent? match = components.FirstOrDefault(c => string.Equals(c.Version, probe.Variant, StringComparison.OrdinalIgnoreCase))
+                              ?? (family.Id.Equals("dlssnr", StringComparison.OrdinalIgnoreCase) ? null
+                                  : components.FirstOrDefault(c => DllVersion.IsSame(c.Version, CurrentVersion)));
+        if (match is not null)
+        {
+            SelectedVersion = DisplayOf(match);
+        }
+        else if (!hasAny && !family.Id.Equals("dlssnr", StringComparison.OrdinalIgnoreCase))
+        {
+            SelectedVersion = DisplayOf(components.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Note)) ?? components[0]);
+        }
+        else
+        {
+            SelectedVersion = string.Empty;
+        }
     }
 
     public DllFamily Family { get; }
+    public IReadOnlyList<InstalledDllViewModel> Files { get; }
 
     public string Title { get; }
 
     public string Note { get; }
 
     public string InstalledText { get; }
+
+    public bool HasInstalled { get; }
+
+    public bool IsCurrentKnown { get; }
 
     /// <summary>盘上现在这一版（PE 版本 + 记账变体），给「使用中」角标用</summary>
     public string? CurrentVersion { get; }
@@ -620,6 +869,8 @@ public partial class DllFamilyViewModel : ObservableObject
 
     public bool CanInstall => SelectedComponent is not null;
 
+    public void SelectComponent(DllComponent component) => SelectedVersion = DisplayOf(component);
+
     private static string DisplayOf(DllComponent component) =>
         string.IsNullOrWhiteSpace(component.Note) ? component.Version : $"{component.Version}（{component.Note}）";
 
@@ -631,15 +882,34 @@ public partial class DllFamilyViewModel : ObservableObject
 /// 「DLL 配置」页「已安装版本」列表里的一行（需求6）：归档里的一份版本 + 删除。
 /// 数据模板里只能挂 Click，所以删除动作由页面处理器读这一行来做。
 /// </summary>
+public sealed class NrVersionCardViewModel(string version, DllComponent? component, bool installed, bool available, bool update, bool showDownloadHeading = false)
+{
+    public string Version { get; } = version;
+    public DllComponent? Component { get; } = component;
+    public bool IsInstalled { get; } = installed;
+    public bool IsAvailable { get; } = available;
+    public string StatusText => update ? "有更新" : IsInstalled ? IsAvailable ? "已下载 · 可供选择" : "已下载 · 已从可选列表关闭" : "未下载";
+    public string DownloadText => update ? "更新" : "下载";
+    public Visibility DownloadVisibility => Component is not null && (!IsInstalled || update) ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility InstalledActionsVisibility => IsInstalled ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility DownloadHeadingVisibility => showDownloadHeading ? Visibility.Visible : Visibility.Collapsed;
+    public Microsoft.UI.Xaml.Media.Brush BarBrush => CatalogRowVisual.Bar(IsInstalled && IsAvailable);
+}
+
 public sealed class InstalledDllVersionRow
 {
-    public InstalledDllVersionRow(string familyId, string version, string? displayText, bool isCurrent)
+    public InstalledDllVersionRow(string familyId, string version, string? displayText, bool isCurrent, bool archived = true)
     {
         FamilyId = familyId;
         Version = version;
         DisplayText = string.IsNullOrWhiteSpace(displayText) ? version : displayText;
         IsCurrent = isCurrent;
+        IsArchived = archived;
     }
+
+    public Microsoft.UI.Xaml.Media.Brush BarBrush => CatalogRowVisual.Bar(IsCurrent);
+
+    public bool IsArchived { get; }
 
     public string FamilyId { get; }
 

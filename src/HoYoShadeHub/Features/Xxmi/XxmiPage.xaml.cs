@@ -19,6 +19,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace HoYoShadeHub.Features.Xxmi;
@@ -39,6 +40,8 @@ public sealed record XxmiInstanceItem(string Importer, string Path)
 /// 所以这些值都缓存成普通属性，不要放进 getter 里现算。
 /// </para>
 /// </summary>
+public sealed record ModCategoryItem(string DisplayName, string? Directory);
+
 public sealed partial class XxmiModItem : ObservableObject
 {
     internal XxmiModItem(XxmiModEntry entry, ModDirectoryLease lease)
@@ -48,6 +51,7 @@ public sealed partial class XxmiModItem : ObservableObject
         Name = entry.Name;
         Path = entry.Path;
         IsDirectory = entry.IsDirectory;
+        Category = entry.Category;
         _enabled = entry.Enabled;
         ModId = GameBananaPreviewService.ModIdFromFolderName(DisplayStem);
     }
@@ -55,10 +59,11 @@ public sealed partial class XxmiModItem : ObservableObject
     internal ModDirectoryLease Lease { get; }
     internal string DisplayStem { get; }
     internal string StorageIdentity => Lease.Context.OwnerKey + "|" + Lease.Context.Backend + "|"
-        + Lease.Context.ModsDirectory.ToLowerInvariant() + "|" + (ModId is { } id ? "gb:" + id : "name:" + DisplayStem);
+        + Lease.Context.ModsDirectory.ToLowerInvariant() + "|" + (Category is null ? "" : Category + "|") + (ModId is { } id ? "gb:" + id : "name:" + DisplayStem);
 
     /// <summary>磁盘上的名字（<c>gb_719975</c> / <c>xyz DISABLED</c>）—— 身份判定和改盘都用它</summary>
     public string Name { get; }
+    public string? Category { get; }
 
     private string? _remoteName;
 
@@ -361,7 +366,7 @@ public sealed partial class XxmiModItem : ObservableObject
 /// 上面选 MI 实例（绝区零 = ZZMI、原神 = GIMI、星铁 = SRMI…，可自动查找或手动指定），
 /// 下面管这个实例 <c>Mods\</c> 里的 mod：启用/禁用（改名字加/去掉 DISABLED）、打开、删除、导入文件夹 / zip。
 /// </summary>
-public sealed partial class XxmiPage : PageBase
+public sealed partial class XxmiPage : PageBase, IShellFileDropTarget
 {
     private readonly ILogger<XxmiPage> _logger = AppConfig.GetLogger<XxmiPage>();
     private readonly ObservableCollection<XxmiModItem> _mods = [];
@@ -398,6 +403,11 @@ public sealed partial class XxmiPage : PageBase
 
     /// <summary>搜索框里的关键词（空 = 不过滤）</summary>
     private string _searchText = string.Empty;
+    private List<ModCategoryItem> _categories = [];
+    private string? _selectedCategory;
+    private bool _bindingCategories;
+    private bool _importingDrop;
+    private nint _dropWindow;
 
     public XxmiPage()
     {
@@ -406,13 +416,21 @@ public sealed partial class XxmiPage : PageBase
         GridView_Mods.ItemsSource = _mods;
     }
 
+    protected override void OnLoaded()
+    {
+        _dropWindow = XamlRoot.GetWindowHandle();
+        ShellFileDrop.Register(_dropWindow, this);
+    }
+
+    protected override void OnUnloaded() => ShellFileDrop.Unregister(_dropWindow, this);
+
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
         _gameId = e.Parameter as GameId;
         _gameName = ResolveGameName();
         _selectingBackend = true;
-        ComboBox_Backend.SelectedIndex = _gameId is not null && AppConfig.GetUseRocketLaunchOption(_gameId) ? 1 : 0;
+        ComboBox_Backend.SelectedIndex = _gameId is not null && AppConfig.GetModBrowserUseRocket(_gameId) ? 1 : 0;
         _selectingBackend = false;
         LoadInstance();
     }
@@ -428,7 +446,9 @@ public sealed partial class XxmiPage : PageBase
 
     private void ComboBox_Backend_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!_selectingBackend && _gameId is not null) LoadInstance();
+        if (_selectingBackend || _gameId is null) return;
+        AppConfig.SetModBrowserUseRocket(_gameId, UseRocketMods);
+        LoadInstance();
     }
 
     private ModDirectoryLease RequireModDirectory()
@@ -468,6 +488,8 @@ public sealed partial class XxmiPage : PageBase
         long revision = _selectionRevision = _modSession.Select(owner, rocket ? ModBackend.Rocket : ModBackend.Xxmi);
         _modDirectory = null;
         _instance = null;
+        _selectedCategory = null;
+        _categories.Clear();
         _mods.Clear();
         _modsCountText = string.Empty;
         _loadingMods = false;
@@ -479,6 +501,7 @@ public sealed partial class XxmiPage : PageBase
         UpdateStatusBar();
         Button_Browse.IsEnabled = !rocket;
         ComboBox_Importer.IsEnabled = !rocket;
+        ComboBox_Importer.Visibility = rocket ? Visibility.Collapsed : Visibility.Visible;
         MenuFlyout_OpenXxmi.IsEnabled = !rocket;
         Button_AutoFind.Content = rocket ? "读取配置" : "自动查找";
         try
@@ -711,7 +734,17 @@ public sealed partial class XxmiPage : PageBase
         }
 
         List<ModDirectoryEntry> directoryEntries;
-        try { directoryEntries = await Task.Run(() => ModDirectoryPolicy.List(_modSession, lease)); }
+        List<ModCategoryItem> categories = [];
+        try
+        {
+            (directoryEntries, categories) = await Task.Run(() =>
+            {
+                var top = ModDirectoryPolicy.List(_modSession, lease);
+                var groups = top.Where(e => e.IsDirectory && ModDirectoryPolicy.IsCategoryDirectory(e.Path))
+                    .Select(e => new ModCategoryItem(e.DisplayName, e.Path)).ToList();
+                return (ModDirectoryPolicy.ListGrouped(_modSession, lease), groups);
+            });
+        }
         catch
         {
             if (!_modSession.IsCurrent(lease)) return;
@@ -719,7 +752,16 @@ public sealed partial class XxmiPage : PageBase
             throw;
         }
         if (!_modSession.IsCurrent(lease)) return;
-        List<XxmiModEntry> entries = directoryEntries.Select(e => new XxmiModEntry(e.Name, e.Path, e.IsDirectory, e.Enabled)).ToList();
+        _categories = [new("全部角色", null), .. categories, new("未分类", "")];
+        _bindingCategories = true;
+        try
+        {
+            ListView_Categories.ItemsSource = _categories;
+            ListView_Categories.SelectedItem = _categories.FirstOrDefault(c => c.DisplayName == _selectedCategory) ?? _categories[0];
+            _selectedCategory = (ListView_Categories.SelectedItem as ModCategoryItem)?.DisplayName;
+        }
+        finally { _bindingCategories = false; }
+        List<XxmiModEntry> entries = directoryEntries.Select(e => new XxmiModEntry(e.Name, e.Path, e.IsDirectory, e.Enabled, e.Category)).ToList();
 
         // 尽量**就地更新**而不是清空重建：
         // 卡片带预览图，重建会让已经贴上的图全丢、画面闪一下。
@@ -747,7 +789,7 @@ public sealed partial class XxmiPage : PageBase
 
             // 用户起的名字优先（按稳定身份查，启用/禁用改名后也不会丢）
             // Existing XXMI alias keys stay intact; Rocket aliases are scoped to game/backend/root.
-            string? customName = _renames.GetName(lease.Context.Backend == ModBackend.Xxmi ? LegacyIdentityOf(entry) : key);
+            string? customName = _renames.GetName(lease.Context.Backend == ModBackend.Xxmi && entry.Category is null ? LegacyIdentityOf(entry) : key);
             rebuilt[^1].ApplyCustomName(customName);
         }
 
@@ -780,7 +822,7 @@ public sealed partial class XxmiPage : PageBase
         int enabled = _mods.Count(m => m.Enabled);
         _modsCountText = $"共 {_mods.Count} 个 mod（启用 {enabled} / 禁用 {_mods.Count - enabled}）";
         _loadingMods = false;
-        UpdateStatusBar();
+        ApplySearchFilter();
 
         // 预览图是网络活，别卡住列表显示：先出卡片，图拉到了再逐张贴上
         _ = LoadPreviewsAsync();
@@ -802,7 +844,7 @@ public sealed partial class XxmiPage : PageBase
     private static string IdentityOf(XxmiModEntry entry, ModDirectoryLease lease) =>
         new XxmiModItem(entry, lease).StorageIdentity;
 
-    private static string RenameIdentityOf(XxmiModItem item) => item.Lease.Context.Backend == ModBackend.Xxmi
+    private static string RenameIdentityOf(XxmiModItem item) => item.Lease.Context.Backend == ModBackend.Xxmi && item.Category is null
         ? item.ModId is { } id ? "gb:" + id : "name:" + item.DisplayStem
         : item.StorageIdentity;
 
@@ -1034,6 +1076,66 @@ public sealed partial class XxmiPage : PageBase
 
     private void Button_Refresh_Click(object sender, RoutedEventArgs e) => LoadInstance();
 
+    private void ListView_Categories_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_bindingCategories) return;
+        _selectedCategory = (ListView_Categories.SelectedItem as ModCategoryItem)?.DisplayName;
+        ApplySearchFilter();
+    }
+
+    public Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths) => OnShellFilesDroppedAsync(paths, null);
+
+    public async Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths, Windows.Foundation.Point? screenPoint)
+    {
+        if (_importingDrop || _loadingMods) return;
+        ModDirectoryLease? lease = _modDirectory;
+        if (lease is null) { TextBlock_Status.Text = "请先配置当前游戏的 Mod 后端。"; return; }
+        string? category = (ListView_Categories.SelectedItem as ModCategoryItem)?.Directory;
+        if (screenPoint is { } screen)
+        {
+            var client = new DropPoint { X = (int)screen.X, Y = (int)screen.Y };
+            if (ScreenToClient(_dropWindow, ref client))
+            {
+                var local = new Windows.Foundation.Point(client.X / XamlRoot.RasterizationScale, client.Y / XamlRoot.RasterizationScale);
+                foreach (var group in _categories)
+                {
+                    if (ListView_Categories.ContainerFromItem(group) is not FrameworkElement container) continue;
+                    var origin = container.TransformToVisual(XamlRoot.Content).TransformPoint(new(0, 0));
+                    if (new Windows.Foundation.Rect(origin.X, origin.Y, container.ActualWidth, container.ActualHeight).Contains(local))
+                    { category = group.Directory; break; }
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(category)) category = null;
+        _importingDrop = true;
+        try
+        {
+            foreach (string path in paths)
+            {
+                _modSession.Require(lease);
+                string imported = await Task.Run(() => Directory.Exists(path)
+                    ? ModDirectoryPolicy.ImportFolder(_modSession, lease, path, category)
+                    : Path.GetExtension(path).Equals(".zip", StringComparison.OrdinalIgnoreCase)
+                        ? ModDirectoryPolicy.ImportZip(_modSession, lease, path, category)
+                        : throw new InvalidDataException("支持拖入 Mod 文件夹或 ZIP 压缩包。"));
+                if (!_modSession.IsCurrent(lease)) return;
+                TextBlock_Status.Text = "已导入：" + Path.GetFileName(imported);
+            }
+            await LoadMods();
+        }
+        catch (Exception ex)
+        {
+            if (_modSession.IsCurrent(lease)) TextBlock_Status.Text = "拖入 Mod 失败：" + ex.Message;
+        }
+        finally { _importingDrop = false; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DropPoint { public int X; public int Y; }
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ScreenToClient(nint window, ref DropPoint point);
+
     private async void Button_ImportFolder_Click(object sender, RoutedEventArgs e)
     {
         long revision = _selectionRevision;
@@ -1042,7 +1144,8 @@ public sealed partial class XxmiPage : PageBase
             var lease = RequireModDirectory();
             string? folder = await FileDialogHelper.PickFolderAsync(XamlRoot);
             if (string.IsNullOrWhiteSpace(folder) || !_modSession.IsCurrent(lease)) return;
-            string imported = ModDirectoryPolicy.ImportFolder(_modSession, lease, folder);
+            string imported = ModDirectoryPolicy.ImportFolder(_modSession, lease, folder,
+                string.IsNullOrEmpty((ListView_Categories.SelectedItem as ModCategoryItem)?.Directory) ? null : (ListView_Categories.SelectedItem as ModCategoryItem)?.Directory);
             await LoadMods();
             if (!_modSession.IsCurrent(lease)) return;
             TextBlock_Status.Text = $"已导入：{Path.GetFileName(imported)}";
@@ -1062,7 +1165,8 @@ public sealed partial class XxmiPage : PageBase
             var lease = RequireModDirectory();
             string? zip = await FileDialogHelper.PickSingleFileAsync(XamlRoot, ("压缩包", ".zip"), ("所有文件", ".*"));
             if (string.IsNullOrWhiteSpace(zip) || !_modSession.IsCurrent(lease)) return;
-            string imported = ModDirectoryPolicy.ImportZip(_modSession, lease, zip);
+            string imported = ModDirectoryPolicy.ImportZip(_modSession, lease, zip,
+                string.IsNullOrEmpty((ListView_Categories.SelectedItem as ModCategoryItem)?.Directory) ? null : (ListView_Categories.SelectedItem as ModCategoryItem)?.Directory);
             await LoadMods();
             if (!_modSession.IsCurrent(lease)) return;
             TextBlock_Status.Text = $"已导入并解压：{Path.GetFileName(imported)}";
@@ -1089,7 +1193,7 @@ public sealed partial class XxmiPage : PageBase
         try
         {
             RequireModItem(item);
-            if (ModDirectoryPolicy.IsEnabled(item.Lease.Context, Path.GetFileName(item.Path)) == wanted) return;
+            if (item.Category is null && ModDirectoryPolicy.IsEnabled(item.Lease.Context, Path.GetFileName(item.Path)) == wanted) return;
             item.Path = ModDirectoryPolicy.SetEnabled(_modSession, item.Lease, item.Path, wanted);
             ReloadMods();
             TextBlock_Status.Text = $"{item.Name} → {(wanted ? "已启用" : "已禁用")}";
@@ -1161,9 +1265,9 @@ public sealed partial class XxmiPage : PageBase
             return;
         }
 
-        // 暂时不做裁剪：Composition 的 Clip 在这个嵌套布局里会把卡片边缘一起切掉，
-        // 先保证边框完整（功能优先），圆角溢出问题另想办法。
-        _ = root;
+        // 仅裁图片容器，卡片边框和悬停控件留在外侧。
+        if (FindDescendant<Border>(root, "Border_ImageClip") is { } clip)
+            ApplyRoundedClip(clip, 5f, 206f, 286f);
     }
 
     /// <summary>
@@ -1256,18 +1360,17 @@ public sealed partial class XxmiPage : PageBase
     {
         try
         {
-            if (FindDescendant<Image>(card, "Image_Preview") is not { } image)
+            if (FindDescendant<Grid>(card, "Grid_PreviewScale") is not { } viewport)
             {
                 return;
             }
 
-            Visual visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(image);
+            Visual visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(viewport);
 
-            // 以图片中心为缩放原点
-            visual.CenterPoint = new System.Numerics.Vector3(
-                (float)image.ActualWidth / 2f,
-                (float)image.ActualHeight / 2f,
-                0f);
+            // 使用卡片内固定视口的视觉尺寸，避免 UniformToFill 图片的布局尺寸/偏移影响原点。
+            // 表达式随视口尺寸更新，图片异步解码与 DPI 变化时仍保持居中。
+            visual.StartAnimation("CenterPoint", visual.Compositor.CreateExpressionAnimation(
+                "Vector3(this.Target.Size.X / 2, this.Target.Size.Y / 2, 0)"));
 
             Vector3KeyFrameAnimation animation = visual.Compositor.CreateVector3KeyFrameAnimation();
             animation.InsertKeyFrame(1f, new System.Numerics.Vector3(scale, scale, 1f));
@@ -1388,15 +1491,15 @@ public sealed partial class XxmiPage : PageBase
     {
         foreach (XxmiModItem item in _mods)
         {
-            bool visible = _searchText.Length == 0
-                || item.SearchText.Contains(_searchText, StringComparison.OrdinalIgnoreCase);
+            bool visible = (_searchText.Length == 0 || item.SearchText.Contains(_searchText, StringComparison.OrdinalIgnoreCase))
+                && (_selectedCategory is null or "全部角色" || (_selectedCategory == "未分类" ? item.Category is null : item.Category == _selectedCategory));
 
             item.IsVisible = visible;
             item.FilterVisibility = visible ? Visibility.Visible : Visibility.Collapsed;
         }
 
         int shown = _mods.Count(m => m.IsVisible);
-        _modsCountText = _searchText.Length == 0
+        _modsCountText = _searchText.Length == 0 && (_selectedCategory is null or "全部角色")
             ? $"共 {_mods.Count} 个 mod（启用 {_mods.Count(m => m.Enabled)} / 禁用 {_mods.Count(m => !m.Enabled)}）"
             : $"筛选出 {shown} / {_mods.Count} 个 mod";
 
@@ -1591,36 +1694,40 @@ public sealed partial class XxmiPage : PageBase
         }
     }
 
+    private void ModToggleShadow_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Grid host || host.Children[0] is not Microsoft.UI.Xaml.Shapes.Rectangle shape) return;
+        var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(host);
+        var shadow = visual.Compositor.CreateDropShadow();
+        shadow.Color = Windows.UI.Color.FromArgb(255, 0, 0, 0);
+        shadow.Opacity = 0.7f;
+        shadow.BlurRadius = 8;
+        shadow.Offset = new System.Numerics.Vector3(0, 2, 0);
+        shadow.Mask = shape.GetAlphaMask();
+        var sprite = visual.Compositor.CreateSpriteVisual();
+        sprite.Size = new System.Numerics.Vector2(40, 20);
+        sprite.Shadow = shadow;
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetElementChildVisual(host, sprite);
+    }
+
     private void ShowFilterPanel()
     {
+        // 停止旧动画，避免已完成的隐藏动画继续覆盖 Width/Opacity。
+        Storyboard_ShowFilter.Stop();
+        Storyboard_HideFilter.Stop();
+        Panel_Filter.Width = 160;
+        Panel_Filter.Opacity = 1;
         Panel_Filter.Visibility = Visibility.Visible;
-
-        // 先摆到「收起」的样子，再跑动画，否则会先闪一下全宽
-        Panel_Filter.Width = 0;
-        Panel_Filter.Opacity = 0;
-        Storyboard_ShowFilter.Begin();
+        ToggleButton_Filter.IsChecked = true;
     }
 
     private void HideFilterPanel()
     {
-        Storyboard_HideFilter.Completed -= OnHideFilterCompleted;
-        Storyboard_HideFilter.Completed += OnHideFilterCompleted;
-        Storyboard_HideFilter.Begin();
-    }
-
-    /// <summary>收起动画放完才真正隐藏，否则动画会被 Visibility 掐掉</summary>
-    private void OnHideFilterCompleted(object? sender, object e)
-    {
-        Storyboard_HideFilter.Completed -= OnHideFilterCompleted;
+        Storyboard_ShowFilter.Stop();
+        Storyboard_HideFilter.Stop();
         Panel_Filter.Visibility = Visibility.Collapsed;
-    }
-
-    private void Button_CloseFilter_Click(object sender, RoutedEventArgs e)
-    {
         ToggleButton_Filter.IsChecked = false;
-        HideFilterPanel();
     }
-
     private void Button_OpenMod_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: XxmiModItem item })

@@ -53,6 +53,9 @@ param(
     # 打包工作目录（默认 build/full-<版本>/HoYoShadeHub）
     [string] $Output = "",
 
+    # Full ZIP 输出目录（默认 build/release；可指定其他磁盘以避开工作区空间不足）
+    [string] $ReleaseDirectory = "",
+
     # HoYoShade 框架来源目录（里面有 ReShade64.dll）。默认按顺序找：参数 → HYSHADE_SHADE_SOURCE → 仓库下 HoYoShade → D:\APPS\HoYoShadeHub\HoYoShade
     [string] $ShadeSource = "",
 
@@ -91,6 +94,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
+. (Join-Path $repoRoot 'tools\package-storage.ps1')
+$cleanupRecords = [System.Collections.Generic.List[object]]::new()
+$packageSucceeded = $false
+$stagingOwned = $false
+$outDir = $null
+$zipFull = $null
 
 if (-not $Output) { $Output = "build/full-$Version/HoYoShadeHub" }
 
@@ -262,6 +271,15 @@ try {
     Write-Host "配置           : $Configuration / $Architecture / $Version" -ForegroundColor DarkGray
 
     $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+    $zipDir = if ($ReleaseDirectory) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ReleaseDirectory) } else { Join-Path $repoRoot 'build\release' }
+    if ($zipDir.StartsWith($outDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or $zipDir.Equals($outDir, [StringComparison]::OrdinalIgnoreCase)) { throw 'ZIP 输出不能位于打包暂存目录内。' }
+    $buildScope = (Join-Path $repoRoot 'build').TrimEnd('\') + '\'
+    if ($repoRoot.Equals($outDir, [StringComparison]::OrdinalIgnoreCase) -or $repoRoot.StartsWith($outDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        ($outDir.StartsWith($repoRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -and -not $outDir.StartsWith($buildScope, [StringComparison]::OrdinalIgnoreCase))) { throw '仓库内暂存目录必须位于 build 下，不能使用源码或仓库根目录。' }
+    foreach ($state in @('HoYoShadeHubDatabase.db', 'config.ini', 'cache', 'log', '.cache', '.hysx')) {
+        if (Test-Path -LiteralPath (Join-Path $outDir $state)) { throw "暂存目录含用户状态，拒绝清理：$outDir\$state" }
+    }
+    if ($shadeRoot.Equals($outDir, [StringComparison]::OrdinalIgnoreCase) -or $shadeRoot.StartsWith($outDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw '框架源不能位于打包暂存目录内。' }
     if ($IncludeFilterChinese -and $Architecture -ne 'x64') { throw 'Filter Chinese addon requires x64.' }
     $chineseBuild = Join-Path $repoRoot 'native\ReShadeChinese\build'
     if ($IncludeFilterChinese) {
@@ -270,15 +288,21 @@ try {
         }
     }
 
+    # 每次只保留本次 Full 成品；先清前次暂存目录、普通包和 Full ZIP。
+    # SDK、_research、测试安装与源码构建缓存不属于打包暂存，不能混删。
+    $preserve = if ($SkipBaseBuild) { $outDir } else { '' }
+    Clear-PreviousPackages -RepoRoot $repoRoot -ReleaseDirectory $zipDir -PreserveOutput $preserve -ProtectedPaths @($shadeRoot) -Records $cleanupRecords
+    $stagingOwned = $true
+
     # 复用输出目录时，先清掉上一步完整包添加的 HoYoShade 框架：内层 package.ps1 会把
     # 输出目录里的所有内容打进「基础便携包」zip，不清的话第二次构建基础包从 180MB 肿到 235MB。
     $staleShade = Join-Path $outDir "HoYoShade"
-    if (Test-Path $staleShade) { Remove-Item $staleShade -Recurse -Force }
+    Remove-PackageArtifact -LiteralPath $staleShade -AllowedRoot $outDir -Records $cleanupRecords
 
     # 1) 基础便携包（app-<版本> + version.ini + HoYoShadeHub.exe）
     if (-not $SkipBaseBuild) {
         Write-Host "==> 先构建基础便携包" -ForegroundColor Cyan
-        & (Join-Path $repoRoot "package.ps1") -Version $Version -Architecture $Architecture -Configuration $Configuration -Output $Output -SkipVerify
+        & (Join-Path $repoRoot "package.ps1") -Version $Version -Architecture $Architecture -Configuration $Configuration -Output $Output -SkipVerify -SkipZip
         if ($LASTEXITCODE -ne 0) { throw "基础便携包构建失败（exit $LASTEXITCODE）" }
     }
 
@@ -287,7 +311,7 @@ try {
     }
 
     $target = Join-Path $outDir "HoYoShade"
-    if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+    Remove-PackageArtifact -LiteralPath $target -AllowedRoot $outDir -Records $cleanupRecords
     New-Item -ItemType Directory -Force -Path $target | Out-Null
 
     # 预设口径：自动推导滤镜/材质白名单（显式给了 -ShaderAllowList / -TextureAllowList 就以显式为准）
@@ -391,7 +415,6 @@ try {
     $layout | ConvertTo-Json | Set-Content -Path (Join-Path $outDir 'portable-layout.json') -Encoding UTF8
 
     # 7) 打 zip
-    $zipDir = Join-Path $repoRoot "build/release"
     New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
     $zip = Join-Path $zipDir ("HoYoShadeHub_Portable_" + $Version + "_" + $Architecture + "_Full.zip")
     if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -406,7 +429,7 @@ try {
 
     # 条目名相对输出目录（zip 根上就是 version.ini / HoYoShadeHub.exe / app-<版本>/ / HoYoShade/）
     $prefixLen = $outDir.TrimEnd("\").Length + 1
-    Get-ChildItem -Path $outDir -Recurse -File | ForEach-Object {
+    Get-ChildItem -LiteralPath $outDir -Recurse -File -Force | ForEach-Object {
         $entryName = $_.FullName.Substring($prefixLen).Replace("\", "/")
         $entry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
         $entry.LastWriteTime = $_.LastWriteTime
@@ -436,6 +459,7 @@ try {
             $names = $readArchive.Entries | ForEach-Object { $_.FullName }
 
             $need = @(
+                ".portable",
                 "version.ini",
                 "portable-layout.json",
                 "HoYoShadeHub.exe",
@@ -465,6 +489,15 @@ try {
             }
             if ($shaderEntries.Count -eq 0) { throw "zip 里没有滤镜" }
             if ($textureEntries.Count -eq 0) { throw "zip 里没有材质" }
+            # 逐文件读取并与暂存源的 SHA256 比对，同时覆盖 .portable 等隐藏文件。
+            foreach ($fileEntry in $readArchive.Entries) {
+                if ($fileEntry.FullName.EndsWith('/')) { continue }
+                $entryStream = $fileEntry.Open()
+                try { $entryHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($entryStream)) }
+                finally { $entryStream.Dispose() }
+                $sourceFile = Join-Path $outDir $fileEntry.FullName
+                if ($entryHash -ne (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash) { throw "ZIP 内容哈希不符：$($fileEntry.FullName)" }
+            }
         } finally { $readArchive.Dispose() }
 
         Write-Host "    校验通过，条目数：$entries" -ForegroundColor DarkGray
@@ -473,15 +506,26 @@ try {
         try { $entries = $readArchive.Entries.Count } finally { $readArchive.Dispose() }
     }
 
+    $packageReceipt = [ordered]@{ version = $Version; architecture = $Architecture; zip = $zipFull; bytes = $zipInfo.Length; sha256 = (Get-FileHash -LiteralPath $zipFull -Algorithm SHA256).Hash; entries = $entries; contentsVerified = -not $SkipVerify; shadeSource = $shadeRoot; uiTested = $false; gameTested = $false }
+    $packageReceipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath ($zipFull + '.verification.json') -Encoding utf8
+    $packageSucceeded = $true
     Write-Host ""
     Write-Host "完整包构建完成：" -ForegroundColor Green
-    Write-Host "  启动器 : $(Join-Path $outDir 'HoYoShadeHub.exe')"
-    Write-Host "  框架   : $target"
     Write-Host "  压缩包 : $zip"
     Write-Host ("  大小   : {0:F1} MB / {1} 个条目" -f ($zipInfo.Length / 1MB), $entries)
     $addonSummary = if ($IncludeFilterChinese) { '独立滤镜汉化 addon' } else { '插件目录留空' }
     Write-Host ("  内含   : app-$Version、HoYoShade 框架、$shaderCount 个滤镜、$textureCount 个材质、$addonSummary")
 }
 finally {
-    Pop-Location
+    try {
+        # 本次暂存也不留第二份大副本；失败时清掉未完成的 ZIP。
+        if ($stagingOwned -and (Test-Path -LiteralPath $outDir)) {
+            Remove-PackageArtifact -LiteralPath $outDir -AllowedRoot ([IO.Path]::GetDirectoryName($outDir)) -Records $cleanupRecords
+            $parent = [IO.Path]::GetDirectoryName($outDir)
+            if ([IO.Path]::GetFileName($parent) -eq "full-$Version" -and -not @(Get-ChildItem -LiteralPath $parent -Force).Count) { Remove-Item -LiteralPath $parent -Force }
+        }
+        if (-not $packageSucceeded -and $zipFull) { Remove-PackageArtifact -LiteralPath $zipFull -AllowedRoot ([IO.Path]::GetDirectoryName($zipFull)) -Records $cleanupRecords }
+        $cleanupRecords | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $repoRoot 'build\package-storage-cleanup.json') -Encoding utf8
+    }
+    finally { Pop-Location }
 }

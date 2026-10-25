@@ -18,6 +18,38 @@ internal static class ModDirectoryPolicyTests
         _root = Path.GetFullPath(root);
         if (Directory.Exists(_root)) throw new IOException("Fresh isolated fixture root required.");
         Directory.CreateDirectory(_root);
+        Test("Role groups list inner mods and keep same names independent", () =>
+        {
+            var f = New("roles");
+            foreach (string role in new[] { "Alice", "Bob" })
+            {
+                string dir = Path.Combine(f.Mods, role, "Outfit"); Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "mod.ini"), "KEEP");
+            }
+            var entries = ModDirectoryPolicy.ListGrouped(f.Session, f.Lease);
+            Check(entries.Count == 2 && entries.Select(e => e.Category).Distinct().Count() == 2, "roles flattened incorrectly");
+            string disabled = ModDirectoryPolicy.SetEnabled(f.Session, f.Lease, entries[0].Path, false);
+            Check(Path.GetDirectoryName(disabled) == Path.GetDirectoryName(entries[0].Path), "nested toggle moved mod out of role");
+            Check(File.ReadAllText(Path.Combine(entries[1].Path, "mod.ini")) == "KEEP", "other role changed");
+        });
+        Test("Folder and ZIP import target selected role without overwrites", () =>
+        {
+            var f = New("role-import"); string role = Path.Combine(f.Mods, "Alice"); Directory.CreateDirectory(role);
+            string folder = ModDirectoryPolicy.ImportFolder(f.Session, f.Lease, Source(f, "Outfit"), role);
+            Check(Path.GetDirectoryName(folder) == role, "folder imported outside selected role");
+            string zip = Zip(f, "ZipOutfit.zip", [("mod.ini", "ZIP")]);
+            string imported = ModDirectoryPolicy.ImportZip(f.Session, f.Lease, zip, role);
+            Check(Path.GetDirectoryName(imported) == role && File.ReadAllText(Path.Combine(imported, "mod.ini")) == "ZIP", "ZIP role destination wrong");
+            Reject(() => ModDirectoryPolicy.ImportFolder(f.Session, f.Lease, Source(f, "Outfit"), role));
+            Reject(() => ModDirectoryPolicy.ImportFolder(f.Session, f.Lease, Source(f, "Outside"), f.Root));
+        });
+        Test("Disabled role never reports enabled inner mods", () =>
+        {
+            var f = New("disabled-role"); string dir = Path.Combine(f.Mods, "DISABLED Alice", "Outfit"); Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "mod.ini"), "KEEP");
+            Check(!ModDirectoryPolicy.ListGrouped(f.Session, f.Lease).Single().Enabled, "disabled ancestor ignored");
+            Reject(() => ModDirectoryPolicy.SetEnabled(f.Session, f.Lease, dir, true));
+        });
         Test("Rocket resolves configured target and Include, not backend-directory name", () =>
         {
             var f = New("resolve");

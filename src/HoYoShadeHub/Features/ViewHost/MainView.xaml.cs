@@ -33,7 +33,7 @@ using System.Threading.Tasks;
 namespace HoYoShadeHub.Features.ViewHost;
 
 [INotifyPropertyChanged]
-public sealed partial class MainView : UserControl
+public sealed partial class MainView : UserControl, IShellFileDropTarget
 {
 
 
@@ -41,6 +41,8 @@ public sealed partial class MainView : UserControl
     private readonly UiLifetime _lifetime = new();
     private bool _startupChecksStarted;
     private bool _navigationQueued;
+    private nint _shellDropWindow;
+    private bool _installingDroppedOverlay;
     private (Type? Page, object? Parameter, NavigationTransitionInfo? Transition)? _pendingNavigation;
     private (Type Page, string? Id, string? Biz)? _lastNavigation;
 
@@ -97,6 +99,8 @@ public sealed partial class MainView : UserControl
         if (!_lifetime.Enter()) return;
         Current = this;
         WeakReferenceMessenger.Default.Register<MainViewNavigateMessage>(this, OnMainViewNavigateMessageReceived);
+        _shellDropWindow = XamlRoot.GetWindowHandle();
+        ShellFileDrop.RegisterWindowTarget(_shellDropWindow, this);
         WeakReferenceMessenger.Default.Register<BH3GlobalGameServerChangedMessage>(this, OnBH3GlobalGameServerChanged);
         WeakReferenceMessenger.Default.Register<LanguageChangedMessage>(this, (_, _) =>
         {
@@ -119,6 +123,7 @@ public sealed partial class MainView : UserControl
     private void MainView_Unloaded(object sender, RoutedEventArgs e)
     {
         if (!_lifetime.Exit()) return;
+        ShellFileDrop.UnregisterWindowTarget(_shellDropWindow, this);
         WeakReferenceMessenger.Default.UnregisterAll(this);
         _navigationQueued = false;
         _pendingNavigation = null;
@@ -362,6 +367,39 @@ public sealed partial class MainView : UserControl
     }
 
 
+
+    public Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths) => OnShellFilesDroppedAsync(paths, null);
+
+    public async Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths, Windows.Foundation.Point? screenPoint)
+    {
+        if (_installingDroppedOverlay) return;
+        var originalPageTarget = ShellFileDrop.GetPageTarget(_shellDropWindow);
+        var overlays = await Task.Run(() => paths.Where(p => File.Exists(p)
+            && LocalPackageInstaller.DetectKind(p) == LocalPackageKind.Overlay).ToArray());
+        if (overlays.Length == 0)
+        {
+            if (originalPageTarget is { } target && ReferenceEquals(target, ShellFileDrop.GetPageTarget(_shellDropWindow)))
+                await target.OnShellFilesDroppedAsync(paths, screenPoint);
+            return;
+        }
+        _installingDroppedOverlay = true;
+        try
+        {
+            ExecuteNavigation(typeof(GlobalPluginPage), null, new SuppressNavigationTransitionInfo());
+            if (MainView_Frame.Content is not GlobalPluginPage page) return;
+            for (int i = 0; !page.IsReadyForShellDrop && i < 300; i++)
+            {
+                await Task.Delay(100);
+                if (!ReferenceEquals(MainView_Frame.Content, page)) return;
+            }
+            foreach (string overlay in overlays)
+            {
+                if (!ReferenceEquals(MainView_Frame.Content, page) || !page.IsReadyForShellDrop) return;
+                await page.OnShellFilesDroppedAsync([overlay]);
+            }
+        }
+        finally { _installingDroppedOverlay = false; }
+    }
 
     private void NavigateTo(Type? page, object? param = null, NavigationTransitionInfo? infoOverride = null)
     {

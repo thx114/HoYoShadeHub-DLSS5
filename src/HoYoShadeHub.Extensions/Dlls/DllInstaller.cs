@@ -1,4 +1,4 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using System.Diagnostics;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Services;
@@ -8,6 +8,9 @@ namespace HoYoShadeHub.Extensions.Dlls;
 /// <summary>插件目录里的一个 dll</summary>
 public sealed record InstalledDll(string FileName, long Size, string? Version)
 {
+    /// <summary>扫描时记录的完整路径；旧调用方构造的记录可以为空。</summary>
+    public string? Path { get; init; }
+
     public string SizeText => Size >= 1024 * 1024
         ? $"{Size / 1024d / 1024d:F1} MB"
         : $"{Size / 1024d:F0} KB";
@@ -58,7 +61,7 @@ public static class DllInstaller
                     // 读不了版本也无所谓，名字和大小还是能显示
                 }
 
-                result.Add(new InstalledDll(Path.GetFileName(file), size, version));
+                result.Add(new InstalledDll(Path.GetFileName(file), size, version) { Path = file });
             }
         }
         catch
@@ -124,7 +127,7 @@ public static class DllInstaller
             tempZip = Path.Combine(TemporaryFolder.Path, $"hysx-dll-{Guid.NewGuid():N}.zip");
 
             var downloader = new DownloadService();
-            await downloader.DownloadToFileAsync(component.Url, tempZip, expectedSha256: null, progress, cancellationToken, pauseToken);
+            await downloader.DownloadToFileAsync(component.Url, tempZip, component.Sha256, progress, cancellationToken, pauseToken);
 
             var installed = new List<string>();
             var overwritten = new List<string>();
@@ -145,19 +148,15 @@ public static class DllInstaller
                         overwritten.Add(name);
                     }
 
-                    // 先把旧文件删掉再解压：ExtractToFile 是**原地覆盖**（同一个 inode），
-                    // 而归档里那份是硬链接 —— 原地写会把归档里的旧版本一起写坏，
-                    // 大小还跟着变成一样，之后就没法靠「同名同大小」反查是哪一版了。
+                    // 临时文件 + rename：锁定时失败，绝不原地写坏旧版本的硬链接。
+                    string staged = target + ".install-" + Guid.NewGuid().ToString("N");
                     try
                     {
-                        File.Delete(target);
+                        entry.ExtractToFile(staged, overwrite: false);
+                        DllFingerprintCatalog.ValidateKnownFile(component.Family, component.Version, staged, name);
+                        File.Move(staged, target, overwrite: true);
                     }
-                    catch
-                    {
-                        // 删不掉（比如游戏正开着）就退回原来的覆盖路径
-                    }
-
-                    entry.ExtractToFile(target, overwrite: true);
+                    finally { if (File.Exists(staged)) File.Delete(staged); }
                     installed.Add(name);
                 }
             }

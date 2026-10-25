@@ -1198,19 +1198,18 @@ public static class LauncherActionRunner
             return "✗ 拉不到组件清单（网络不通？）";
         }
 
-        DllComponent chosen;
+        DllComponent? chosen;
         string? wanted = step.GetString("version");
         if (!string.IsNullOrWhiteSpace(wanted))
         {
             chosen = versions.FirstOrDefault(v =>
-                string.Equals(v.Version, wanted, StringComparison.OrdinalIgnoreCase))
-                ?? versions[0];
+                string.Equals(v.Version, wanted, StringComparison.OrdinalIgnoreCase));
+            if (chosen is null) return $"✗ 清单中没有 {family.Id} {wanted}，请明确选择可用版本";
         }
         else
         {
-            chosen = versions.FirstOrDefault(v =>
-                string.Equals(v.Version, family.PreferredVersion, StringComparison.OrdinalIgnoreCase))
-                ?? versions[0];
+            chosen = DllSelectionPolicy.SelectDefault(family, versions, OptiScalerPresetCatalog.GpuClass);
+            if (chosen is null) return $"✗ 没有适合当前显卡的 {family.Id} 默认版本，请手动选择";
         }
 
         var progress = new Progress<DownloadProgress>(p =>
@@ -1224,6 +1223,20 @@ public static class LauncherActionRunner
         }
 
         AppConfig.SetInstalledDllVariant(family.Id, chosen.Version);
+        AppConfig.SetInstalledDllVariantSize(
+            family.Id,
+            DllInstaller.GetInstalledSize(DllInstaller.Scan(addonDir), family));
+        try
+        {
+            new DllVersionStore(AppConfig.CacheRoot).Archive(
+                family.Id,
+                chosen.Version,
+                install.Installed.Select(name => Path.Combine(addonDir, name)));
+        }
+        catch
+        {
+            // 归档失败不影响已完成的安装；下次仍可依靠记账和 PE 版本识别。
+        }
         return $"已切换 {family.DisplayName} → {chosen.Version}（重启游戏生效）";
     }
 

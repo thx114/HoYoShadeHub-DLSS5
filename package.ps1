@@ -58,6 +58,9 @@ param(
     # 打包后跳过 zip 完整性校验
     [switch] $SkipVerify,
 
+    # Full 流程只需要发布目录，不重复压缩普通便携 ZIP。
+    [switch] $SkipZip,
+
     # 「真便携」：包根写入 .portable 标记 —— 主程序据此把缓存 / config.ini / 数据库备份全部
     # 留在便携目录内。默认关闭（老用户升级不上来缓存目录突然搬家）
     [switch] $PortableLocal
@@ -65,6 +68,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
+. (Join-Path $repoRoot 'tools\package-storage.ps1')
+$packageCleanup = [System.Collections.Generic.List[object]]::new()
+$ownsStaging = $false
+$ordinarySucceeded = $false
+$zipFull = $null
 
 # MSBuild / NuGet 的 Version 必须是合法 SemVer；"1.3.6b1" 这种写法会让 restore 静默失败
 # （报 MSB4181: RestoreTask returned false but did not log an error，看不到真正原因）。
@@ -114,10 +122,21 @@ try {
     $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
     $appDir = Join-Path $outDir "app-$Version"
 
+    if (-not $SkipZip) {
+        $buildScope = (Join-Path $repoRoot 'build').TrimEnd('\') + '\'
+        if ($repoRoot.Equals($outDir, [StringComparison]::OrdinalIgnoreCase) -or $repoRoot.StartsWith($outDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            ($outDir.StartsWith($repoRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -and -not $outDir.StartsWith($buildScope, [StringComparison]::OrdinalIgnoreCase))) { throw '仓库内打包暂存必须位于 build 下。' }
+        foreach ($state in @('HoYoShadeHubDatabase.db', 'config.ini', 'cache', 'log', '.cache', '.hysx')) {
+            if (Test-Path -LiteralPath (Join-Path $outDir $state)) { throw "暂存目录含用户状态，拒绝清理：$outDir\$state" }
+        }
+        Clear-PreviousPackages -RepoRoot $repoRoot -Records $packageCleanup
+        $ownsStaging = $true
+    }
+
     # 清理本次版本的旧产物，保证发布结果干净
-    if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force }
+    Remove-PackageArtifact -LiteralPath $appDir -AllowedRoot $outDir -Records $packageCleanup
     $staleLauncher = Join-Path $outDir "_launcher"
-    if (Test-Path $staleLauncher) { Remove-Item $staleLauncher -Recurse -Force }
+    Remove-PackageArtifact -LiteralPath $staleLauncher -AllowedRoot $outDir -Records $packageCleanup
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
     Write-Host "==> 发布主程序 => $appDir" -ForegroundColor Cyan
@@ -149,7 +168,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "启动器 publish 失败（exit $LASTEXITCODE）" }
 
     Move-Item (Join-Path $staleLauncher "HoYoShadeHub.exe") (Join-Path $outDir "HoYoShadeHub.exe") -Force
-    Remove-Item $staleLauncher -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-PackageArtifact -LiteralPath $staleLauncher -AllowedRoot $outDir -Records $packageCleanup
 
     Set-Content -Path (Join-Path $outDir "version.ini") `
         -Value "exe_path=app-$Version\HoYoShadeHub.exe" -Encoding UTF8
@@ -174,8 +193,13 @@ try {
         Where-Object { $_.Name -ne "app-$Version" } |
         ForEach-Object {
             Write-Host "==> 清掉历史目录 $($_.Name)" -ForegroundColor DarkGray
-            Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-PackageArtifact -LiteralPath $_.FullName -AllowedRoot $outDir -Records $packageCleanup
         }
+
+    if ($SkipZip) {
+        Write-Host "基础发布完成（Full 流程跳过普通便携 ZIP）：$outDir" -ForegroundColor Green
+        return
+    }
 
     $zipDir = Join-Path $repoRoot "build/release"
     New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
@@ -197,7 +221,7 @@ try {
     # 之前这里给条目名强加了输出目录的叶子名（HoYoShadeHub/），整个包被套进一层 —— 解压后
     # 根上的 version.ini 原封不动，启动器照旧启动旧 app-<版本>，用户「更新完还是旧版本」
     # （v1.3.8.x 的包都中了招，GithubUpdateService.ApplyAsync 现在对这种包做了兼容剥壳）。
-    Get-ChildItem -Path $outDir -Recurse -File | ForEach-Object {
+    Get-ChildItem -LiteralPath $outDir -Recurse -File -Force | ForEach-Object {
         $entryName = $_.FullName.Substring($prefixLen).Replace('\', '/')
         $entry = $zipArchive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
         $entry.LastWriteTime = $_.LastWriteTime
@@ -219,25 +243,43 @@ try {
         $check = [System.IO.Compression.ZipFile]::OpenRead($zipFull)
         $entryCount = 0
         foreach ($e in $check.Entries) {
+            $sourceFile = Join-Path $outDir $e.FullName
+            if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "ZIP 条目无对应源文件：$($e.FullName)" }
             $s = $e.Open()
-            $buf = New-Object byte[] 8192
-            for (;;) {
-                $r = $s.Read($buf, 0, $buf.Length)
-                if ($r -le 0) { break }
+            try {
+                $archiveHash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($s))
             }
-            $s.Close()
+            finally { $s.Dispose() }
+            if ($archiveHash -ne (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash) { throw "ZIP 内容哈希不匹配：$($e.FullName)" }
             $entryCount++
         }
+        if ($entryCount -ne @(Get-ChildItem -LiteralPath $outDir -Recurse -File -Force).Count) { throw 'ZIP 条目数与源目录不一致。' }
+        foreach ($required in @('HoYoShadeHub.exe', 'version.ini', "app-$Version/HoYoShadeHub.exe", "app-$Version/HoYoShadeHub.dll")) {
+            if ($required -notin $check.Entries.FullName) { throw "普通包缺少必要条目：$required" }
+        }
+        if (@($check.Entries | Where-Object { $_.FullName -like 'HoYoShade/*' }).Count) { throw '普通包不应包含 HoYoShade 框架。' }
         $check.Dispose()
         Write-Host "    校验通过，条目数：$entryCount" -ForegroundColor DarkGray
     }
 
+    $receipt = [ordered]@{ version = $Version; architecture = $Architecture; kind = 'ordinary-portable'; zip = $zipFull; bytes = (Get-Item -LiteralPath $zipFull).Length; sha256 = (Get-FileHash -LiteralPath $zipFull -Algorithm SHA256).Hash; contentsVerified = -not $SkipVerify; uiTested = $false; gameTested = $false }
+    $receipt | ConvertTo-Json | Set-Content -LiteralPath ($zipFull + '.verification.json') -Encoding utf8
+    $ordinarySucceeded = $true
     Write-Host ""
     Write-Host "便携版构建完成：" -ForegroundColor Green
-    Write-Host "  启动器 : $(Join-Path $outDir 'HoYoShadeHub.exe')"
-    Write-Host "  主程序 : $(Join-Path $appDir 'HoYoShadeHub.exe')"
     Write-Host "  压缩包 : $zip"
 }
 finally {
-    Pop-Location
+    try {
+        if ($ownsStaging -and (Test-Path -LiteralPath $outDir)) {
+            Remove-PackageArtifact -LiteralPath $outDir -AllowedRoot ([IO.Path]::GetDirectoryName($outDir)) -Records $packageCleanup
+            $parent = [IO.Path]::GetDirectoryName($outDir)
+            if ([IO.Path]::GetFileName($parent) -eq "portable-$Version" -and -not @(Get-ChildItem -LiteralPath $parent -Force).Count) { Remove-Item -LiteralPath $parent -Force }
+        }
+        if (-not $SkipZip) {
+            if (-not $ordinarySucceeded -and $zipFull) { Remove-PackageArtifact -LiteralPath $zipFull -AllowedRoot ([IO.Path]::GetDirectoryName($zipFull)) -Records $packageCleanup }
+            $packageCleanup | ConvertTo-Json -Depth 5 -AsArray | Set-Content -LiteralPath (Join-Path $repoRoot 'build\package-storage-cleanup.json') -Encoding utf8
+        }
+    }
+    finally { Pop-Location }
 }

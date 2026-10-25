@@ -623,6 +623,14 @@ public sealed partial class GameSettingPage : PageBase
                     Height = ResolutionHeight,
                 };
                 GameSettingService.SetGameResolutionSetting(CurrentGameBiz, model);
+                var appliedResolution = GameSettingService.GetGameResolutionSetting(CurrentGameBiz);
+                if (appliedResolution is null
+                    || appliedResolution.Width != model.Width
+                    || appliedResolution.Height != model.Height
+                    || appliedResolution.IsFullScreen != model.IsFullScreen)
+                {
+                    throw new InvalidOperationException($"分辨率写入后回读不一致：目标 {model.Width}×{model.Height}，实际 {appliedResolution?.Width}×{appliedResolution?.Height}。");
+                }
                 AppConfig.SetUsePopupWindow(CurrentGameBiz, UsePopupWindow);
             }
             if (IsLanguageSettingEnable)
@@ -637,11 +645,16 @@ public sealed partial class GameSettingPage : PageBase
                 }
                 if (CurrentGameBiz.Game is GameBiz.hk4e)
                 {
-                    GameSettingService.SetGenshinGraphicsSettings(CurrentGameBiz,
-                        GenshinRenderScaleIndex >= 0 && GenshinRenderScaleIndex != _savedGenshinRenderScaleIndex
-                            ? GenshinRenderScaleIndex : null,
-                        GenshinAntiAliasingIndex >= 0 && GenshinAntiAliasingIndex != _savedGenshinAntiAliasingIndex
-                            ? GenshinAntiAliasingIndex : null);
+                    int? requestedRenderScale = GenshinRenderScaleIndex >= 0 && GenshinRenderScaleIndex != _savedGenshinRenderScaleIndex
+                        ? GenshinRenderScaleIndex : null;
+                    int? requestedAntiAliasing = GenshinAntiAliasingIndex >= 0 && GenshinAntiAliasingIndex != _savedGenshinAntiAliasingIndex
+                        ? GenshinAntiAliasingIndex : null;
+                    GameSettingService.SetGenshinGraphicsSettings(CurrentGameBiz, requestedRenderScale, requestedAntiAliasing);
+                    var appliedGraphics = GameSettingService.GetGenshinGraphicsSettings(CurrentGameBiz);
+                    if (requestedRenderScale is { } expectedScale && appliedGraphics.RenderScaleIndex != expectedScale)
+                        throw new InvalidOperationException($"游戏渲染精度写入后回读不一致：目标 {GenshinGraphicsSettings.RenderScaleLabels[expectedScale]}，实际索引 {appliedGraphics.RenderScaleIndex}。");
+                    if (requestedAntiAliasing is { } expectedAa && appliedGraphics.AntiAliasingIndex != expectedAa)
+                        throw new InvalidOperationException($"抗锯齿写入后回读不一致：目标 {GenshinGraphicsSettings.AntiAliasingLabels[expectedAa]}，实际索引 {appliedGraphics.AntiAliasingIndex}。");
                     _savedGenshinRenderScaleIndex = GenshinRenderScaleIndex;
                     _savedGenshinAntiAliasingIndex = GenshinAntiAliasingIndex;
                     if (GenshinBridgeRenderScaleIndex >= 0)

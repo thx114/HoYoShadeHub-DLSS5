@@ -315,9 +315,9 @@ public static class ModuleRegistry
     }
 
     /// <summary>
-    /// Ensures the bundled Genshin FSR Bridge is ready and selected for this game.
-    /// The Bridge is injected as a module; OptiScaler is loaded by the Bridge from
-    /// the launch-time autoload file, so this method never enables OptiScaler itself.
+    /// Prepares the bundled Genshin FSR Bridge for a launch that already opted into
+    /// the module path. This method must not change the user's global or per-game
+    /// module selection; startup preparation is not an implicit enable action.
     /// </summary>
     public static bool EnsureGenshinFsrBridgeForLaunch(GameId gameId)
     {
@@ -333,10 +333,6 @@ public static class ModuleRegistry
             return false;
         }
 
-        AppConfig.SetBundledModuleRemoved(bridge.Id, false);
-        bridge.Enabled = true;
-        RemoveManualGenshinFsrBridgeSelections(gameId);
-        SetUsed(gameId, bridge.Id, true);
         _logger.LogInformation("Genshin FSR Bridge 已就绪：{Dll}", bridgeDll);
 
         // Bridge-side state is per versioned module directory, not the flat module root.
@@ -351,8 +347,6 @@ public static class ModuleRegistry
             OptiScalerRuntime.WriteFsrBridgeAutoload(bridgeDirectory, selectedOpti);
         }
 
-        // OptiScaler depends on the Bridge, so make the module launch option explicit.
-        AppConfig.SetUseModulesLaunchOption(gameId, true);
         return true;
     }
 

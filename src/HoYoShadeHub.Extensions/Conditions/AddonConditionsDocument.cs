@@ -95,6 +95,9 @@ public sealed class DllExtraEntry
 
     [JsonPropertyName("note")]
     public string? Note { get; set; }
+
+    [JsonPropertyName("sha256")]
+    public string? Sha256 { get; set; }
 }
 
 /// <summary>

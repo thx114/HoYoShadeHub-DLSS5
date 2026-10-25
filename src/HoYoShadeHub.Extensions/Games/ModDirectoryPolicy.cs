@@ -5,7 +5,7 @@ namespace HoYoShadeHub.Extensions.Games;
 
 public enum ModBackend { Xxmi, Rocket }
 public enum ModDisableStyle { Suffix, Prefix }
-public sealed record ModDirectoryEntry(string Name, string Path, bool IsDirectory, bool Enabled, string DisplayName);
+public sealed record ModDirectoryEntry(string Name, string Path, bool IsDirectory, bool Enabled, string DisplayName, string? Category = null);
 public sealed record ModConfigStamp(string Path, string Sha256);
 public sealed record ModDirectoryContext(string OwnerKey, ModBackend Backend, string InstanceDirectory,
     string ModsDirectory, ModDisableStyle DisableStyle, IReadOnlyList<ModConfigStamp> ConfigStamps);
@@ -174,19 +174,36 @@ public static class ModDirectoryPolicy
         return result;
     }
 
-    public static List<ModDirectoryEntry> List(ModDirectorySession session, ModDirectoryLease lease)
+    public static bool IsCategoryDirectory(string path)
+        => Directory.Exists(path) && !Directory.EnumerateFiles(path, "*.ini")
+            .Any(p => !Path.GetFileName(p).Equals("desktop.ini", StringComparison.OrdinalIgnoreCase));
+
+    public static List<ModDirectoryEntry> ListGrouped(ModDirectorySession session, ModDirectoryLease lease)
+    {
+        var result = new List<ModDirectoryEntry>();
+        foreach (var entry in List(session, lease))
+        {
+            if (entry.IsDirectory && IsCategoryDirectory(entry.Path)) result.AddRange(List(session, lease, entry.Path));
+            else result.Add(entry);
+        }
+        return result;
+    }
+
+    public static List<ModDirectoryEntry> List(ModDirectorySession session, ModDirectoryLease lease, string? categoryDirectory = null)
     {
         var context = session.Require(lease);
-        if (!Directory.Exists(context.ModsDirectory)) return [];
+        string directoryRoot = categoryDirectory is null ? context.ModsDirectory : CategoryDirectory(context, categoryDirectory);
+        if (!Directory.Exists(directoryRoot)) return [];
         var result = new List<ModDirectoryEntry>();
-        foreach (string path in Directory.EnumerateFileSystemEntries(context.ModsDirectory))
+        foreach (string path in Directory.EnumerateFileSystemEntries(directoryRoot))
         {
             string name = Path.GetFileName(path);
             if (name.StartsWith('.') || name.StartsWith('_')) continue;
             bool directory = Directory.Exists(path);
             if (!directory && !DisplayName(context, name).EndsWith(".ini", StringComparison.OrdinalIgnoreCase)) continue;
             ValidateEntry(context, path);
-            result.Add(new(name, path, directory, IsEnabled(context, name), DisplayName(context, name)));
+            result.Add(new(name, path, directory, IsEnabled(context, name) && (categoryDirectory is null || IsEnabled(context, Path.GetFileName(directoryRoot))), DisplayName(context, name),
+                categoryDirectory is null ? null : DisplayName(context, Path.GetFileName(directoryRoot))));
         }
         session.Require(lease);
         return result.OrderByDescending(m => m.Enabled).ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -204,11 +221,14 @@ public static class ModDirectoryPolicy
         var context = session.Require(lease);
         path = EntryPath(session, lease, path);
         string name = Path.GetFileName(path);
+        if (enabled && !SamePath(Path.GetDirectoryName(path)!, context.ModsDirectory)
+            && !IsEnabled(context, Path.GetFileName(Path.GetDirectoryName(path)!)))
+            throw new InvalidOperationException("角色文件夹已禁用，请先在后端启用该角色文件夹。");
         if (IsEnabled(context, name) == enabled) return path;
         string stem = DisplayName(context, name);
         Leaf(stem);
         string wanted = enabled ? stem : context.DisableStyle == ModDisableStyle.Prefix ? "DISABLED " + stem : stem + " DISABLED";
-        string target = Path.Combine(context.ModsDirectory, wanted);
+        string target = Path.Combine(Path.GetDirectoryName(path)!, wanted);
         NoReparse(target);
         if (Exists(target)) throw new IOException("目标 Mod 名称冲突，未覆盖任何文件：" + wanted);
         session.Require(lease);
@@ -223,7 +243,7 @@ public static class ModDirectoryPolicy
         if (Directory.Exists(path)) Directory.Delete(path, true); else File.Delete(path);
     }
 
-    public static string ImportFolder(ModDirectorySession session, ModDirectoryLease lease, string source)
+    public static string ImportFolder(ModDirectorySession session, ModDirectoryLease lease, string source, string? categoryDirectory = null)
     {
         var context = session.Require(lease);
         source = Absolute(source);
@@ -233,26 +253,27 @@ public static class ModDirectoryPolicy
         NoReparseTree(source);
         string name = Path.GetFileName(source);
         Leaf(name);
-        string destination = Destination(context, name);
+        string destination = Destination(categoryDirectory is null ? context : context with { ModsDirectory = CategoryDirectory(context, categoryDirectory) }, name);
         string stage = Stage(session, lease);
         try
         {
             CopyTree(source, stage, () => session.Require(lease));
             session.Require(lease);
+            if (categoryDirectory is not null) CategoryDirectory(context, categoryDirectory);
             Directory.Move(stage, destination);
             return destination;
         }
         finally { Cleanup(stage); }
     }
 
-    public static string ImportZip(ModDirectorySession session, ModDirectoryLease lease, string zip)
+    public static string ImportZip(ModDirectorySession session, ModDirectoryLease lease, string zip, string? categoryDirectory = null)
     {
         var context = session.Require(lease);
         zip = Absolute(zip);
         NoReparse(zip);
         string name = Path.GetFileNameWithoutExtension(zip);
         Leaf(name);
-        string destination = Destination(context, name);
+        string destination = Destination(categoryDirectory is null ? context : context with { ModsDirectory = CategoryDirectory(context, categoryDirectory) }, name);
         using var archive = ZipFile.OpenRead(zip);
         var paths = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in archive.Entries)
@@ -296,6 +317,7 @@ public static class ModDirectoryPolicy
             }
             session.Require(lease);
             NoReparseTree(stage);
+            if (categoryDirectory is not null) CategoryDirectory(context, categoryDirectory);
             Directory.Move(stage, destination);
             return destination;
         }
@@ -323,10 +345,22 @@ public static class ModDirectoryPolicy
     private static void ValidateEntry(ModDirectoryContext context, string path)
     {
         path = Absolute(path);
-        if (!SamePath(Path.GetDirectoryName(path)!, context.ModsDirectory)) throw new InvalidDataException("Mod 路径不属于当前游戏/后端一级目录。");
+        if (!SamePath(Path.GetDirectoryName(path)!, context.ModsDirectory))
+            CategoryDirectory(context, Path.GetDirectoryName(path)!);
         Leaf(Path.GetFileName(path));
         if (!Exists(path)) throw new FileNotFoundException("Mod 已不存在。", path);
         NoReparseTree(path);
+    }
+
+    private static string CategoryDirectory(ModDirectoryContext context, string path)
+    {
+        path = Absolute(path);
+        if (!SamePath(Path.GetDirectoryName(path)!, context.ModsDirectory))
+            throw new InvalidDataException("角色分类不属于当前游戏/后端。");
+        Leaf(Path.GetFileName(path));
+        NoReparseTree(path);
+        if (!IsCategoryDirectory(path)) throw new InvalidDataException("目标不是角色分类文件夹。");
+        return path;
     }
 
     private static void CopyTree(string source, string destination, Action check)

@@ -161,77 +161,38 @@ public sealed partial class GameLauncherPage : PageBase
     }
 
     /// <summary>
-    /// 原神启用 OptiScaler 时，确保 FSR Bridge 作为前置模块存在且已加入本游戏。
-    /// 单独启用 Bridge 不会写 OptiScaler autoload；是否加载 Opti 仍由启动页开关决定。
+    /// 原神启用 OptiScaler 时，尽量关联 FSR Bridge；Bridge 是可选能力，不再阻断独立 OptiScaler 启动。
+    /// 有 Bridge 时继续使用进程内链路；没有 Bridge 时由普通注入规格直接加载 OptiScaler。
     /// </summary>
-    private async Task<bool> ConfirmGenshinFsrBridgeForOptiAsync()
+    private Task<bool> ConfirmGenshinFsrBridgeForOptiAsync()
     {
         try
         {
             if (!UseOptiScaler || CurrentGameId is not { } gameId || !ModuleRegistry.IsGenshin(gameId))
             {
-                return true;
+                return Task.FromResult(true);
             }
 
-            ModuleDefinition? bridge = ModuleRegistry.Find("genshin-fsr-bridge");
-            string? bridgeDll = ModuleRegistry.EnsureBundledGenshinFsrBridge();
-            bool ready = bridge is not null
-                && bridge.Enabled
-                && bridgeDll is not null
-                && ModuleRegistry.IsUsed(gameId, bridge.Id);
-            if (!ready && bridgeDll is not null && ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
+            bool modulesRequested = AppConfig.GetUseModulesLaunchOption(gameId);
+            bool bridgeReady = modulesRequested
+                && ModuleRegistry.ResolveInjectionDlls(gameId)
+                    .Any(spec => ModuleRegistry.IsGenshinFsrBridgeDll(spec.DllPath));
+            if (bridgeReady)
             {
-                UseModules = true;
-                _logger.LogInformation("Installed Genshin FSR Bridge associated with {Game} before OptiScaler", gameId.GameBiz);
-                return true;
+                return Task.FromResult(true);
             }
 
-            if (ready)
-            {
-                // 以前只勾了模块页、但关了启动页「启用模块」时，不能让 OptiScaler
-                // 走回原神的外部注入路径；Opti 开启时把它联动打开。
-                UseModules = true;
-                return true;
-            }
-
-            var dialog = new ContentDialog
-            {
-                XamlRoot = XamlRoot,
-                Title = "OptiScaler 需要 Genshin FSR Bridge",
-                Content = "原神启用了 OptiScaler，但 FSR Bridge 模块没有启用到本游戏。FSR Bridge 必须先于 OptiScaler 加载，是否现在安装并启用？",
-                PrimaryButtonText = "安装并启用",
-                CloseButtonText = "取消启动",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-            {
-                return false;
-            }
-
-            if (!ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
-            {
-                await new ContentDialog
-                {
-                    XamlRoot = XamlRoot,
-                    Title = "FSR Bridge 缺失",
-                    Content = "已安装模块或覆盖包中没有受支持的 Dx11FsrBridge.dll（需要 2.3.1 及以上），"
-                              + "请重新导入原神覆盖包或从「全局插件 → 模块」下载 FSR Bridge。"
-                              + Environment.NewLine + Environment.NewLine
-                              + "已查找这些位置：" + Environment.NewLine
-                              + ModuleRegistry.DescribeGenshinFsrBridgeSearch(),
-                    CloseButtonText = "确定",
-                }.ShowAsync();
-                return false;
-            }
-
-            UseModules = true;
-            _logger.LogInformation("Genshin FSR Bridge enabled for {Game} before OptiScaler", gameId.GameBiz);
-            return true;
+            // Bridge 是可选能力：缺失时继续走普通 OptiScaler 注入，不能把整次启动拦掉。
+            _logger.LogWarning(
+                "原神 FSR Bridge 不可用；继续独立启动 OptiScaler，Bridge 专属的 FSR/NR/链式能力不可用：{Game}; Search={Search}",
+                gameId.GameBiz, ModuleRegistry.DescribeGenshinFsrBridgeSearch());
+            return Task.FromResult(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Check Genshin FSR Bridge before OptiScaler launch; refusing unsafe external OptiScaler injection");
-            return false;
+            // 检查失败也不能把可独立运行的 OptiScaler 变成硬阻断。
+            _logger.LogWarning(ex, "检查 Genshin FSR Bridge 失败；继续独立启动 OptiScaler");
+            return Task.FromResult(true);
         }
     }
 
@@ -758,24 +719,6 @@ public sealed partial class GameLauncherPage : PageBase
     {
         List<InjectDllSpec> specs = [];
 
-        // 原神的 Bridge 是 OptiScaler 的进程内宿主。Opti 已启用时，启动前自动关联 Bridge，
-        // 避免模块页勾选但每游戏 used-keys 仍是旧配置，导致 Bridge 注入后不再 autoload Opti。
-        if (includeGameExtras && UseOptiScaler && CurrentGameId is { } genshin
-            && ModuleRegistry.IsGenshin(genshin))
-        {
-            if (ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(genshin))
-            {
-                UseModules = true;
-                _logger.LogInformation("原神 OptiScaler 启动前自动关联 Genshin FSR Bridge：{Game}",
-                    genshin.GameBiz);
-            }
-            else
-            {
-                _logger.LogWarning("原神 OptiScaler 启动前未能关联 Genshin FSR Bridge：{Game}",
-                    genshin.GameBiz);
-            }
-        }
-
         // ⓪ 黑名单绕行（鸣潮）：shade 本体最先注，OptiScaler / 模块跟在后面
         if (!string.IsNullOrWhiteSpace(shadeReShadeDll) && File.Exists(shadeReShadeDll))
         {
@@ -985,10 +928,14 @@ public sealed partial class GameLauncherPage : PageBase
                     }
                     else
                     {
-                        // 原神不能在 Bridge 失败时偷偷退回外部注入：mhyprot 会拒绝，
-                        // 更糟时会把游戏打崩。宁可不注 Opti，也不走不安全路径。
-                        _logger.LogError(
-                            "FSR Bridge autoload 写入失败，已跳过原神 OptiScaler 外部注入：{Directory}", bridgeDirectory);
+                        // Bridge 是可选能力。没有 Bridge 时没有进程内宿主，退回普通 OptiScaler
+                        // 注入规格，让用户仍能独立使用 OptiScaler；FSR/NR/链式能力由运行时自行判定。
+                        specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
+                            WaitForModule: waitForShadeModule));
+                        _logger.LogWarning(
+                            "原神 FSR Bridge autoload 不可用；OptiScaler 改为独立外部注入：{Target}; BridgeDirectory={Directory}",
+                            optiScaler, bridgeDirectory);
                     }
                 }
                 else if (!isGenshin)
@@ -1000,8 +947,13 @@ public sealed partial class GameLauncherPage : PageBase
                 }
                 else
                 {
-                    // 原神 + OptiScaler 必须由 Bridge 进程内加载，不能退回外部注入。
-                    _logger.LogError("原神启用了 OptiScaler，但 FSR Bridge 不在注入列表中；已跳过 OptiScaler 注入");
+                    // 没有 Bridge 时仍保留独立 OptiScaler；Bridge 专属链路能力不在本次启动中声明。
+                    specs.Add(new InjectDllSpec(optiScaler, "OptiScaler", buildDirectory, gameKey,
+                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(optiGameId.GameBiz),
+                        WaitForModule: waitForShadeModule));
+                    _logger.LogWarning(
+                        "原神未找到 FSR Bridge；OptiScaler 将独立外部注入，Bridge 专属 FSR/NR/链式能力不可用：{Target}",
+                        optiScaler);
                 }
             }
         }
@@ -2080,6 +2032,7 @@ public sealed partial class GameLauncherPage : PageBase
             if (_pageLaunchReservation is not null)
                 throw new InvalidOperationException("Game launch already in progress on this page.");
             if (SnapshotGameId() is not { } gameId) return;
+            if (UseOptiScaler) GameNrRuntimeService.PrepareOpti(gameId);
             reservation = GameLaunchReservation.Acquire(gameId.GameBiz.ToString(), cancellation.Token);
             _pageLaunchReservation = reservation;
             _pageLaunchCts = cancellation;
@@ -2234,8 +2187,13 @@ public sealed partial class GameLauncherPage : PageBase
                         return;
                     }
                 }
-                string chainBridgeDll = ModuleRegistry.ResolveInjectionDlls(officialGame)
-                    .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath;
+                // The module master switch is an independent launch gate. A stale
+                // per-game selection or an installed legacy Bridge must not turn
+                // the ordered chain back on after the user disabled modules.
+                string? chainBridgeDll = UseModules
+                    ? ModuleRegistry.ResolveInjectionDlls(officialGame)
+                        .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath
+                    : null;
                 orderedInjectChain = GenshinLaunchRouting.CanUseOrderedInjectChain(
                     manualXxmi, UseInjectMode, UseStarwardLauncher, UseOptiScaler,
                     ModuleRegistry.IsGenshin(officialGame), GameInstallPath, chainBridgeDll);
@@ -2425,12 +2383,15 @@ public sealed partial class GameLauncherPage : PageBase
                 && CurrentGameId is { } earlyGenshin
                 && ModuleRegistry.IsGenshin(earlyGenshin)
                 && UseOptiScaler
+                && UseModules
                 && !string.IsNullOrWhiteSpace(GameInstallPath))
             {
                 string? earlyProcessName = await _gameLauncherService.GetGameExeNameAsync(earlyGenshin);
                 string earlyExe = Path.Combine(GameInstallPath!, earlyProcessName);
-                string? bridgePath = ModuleRegistry.ResolveInjectionDlls(earlyGenshin)
-                    .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath;
+                string? bridgePath = UseModules
+                    ? ModuleRegistry.ResolveInjectionDlls(earlyGenshin)
+                        .FirstOrDefault(x => ModuleRegistry.IsGenshinFsrBridgeDll(x.DllPath)).DllPath
+                    : null;
                 string? optiPath = EnsureNamedOptiScalerDll(
                     AppConfig.GetSelectedOptiScalerDll(earlyGenshin),
                     AppConfig.GetOptiScalerDllName(earlyGenshin));

@@ -13,6 +13,16 @@ internal static class PackageInstallSafetyTests
         {
             foreach (string game in new[] { "../..", "..\\..", "C:\\outside", "hk4e/child", ".", "" })
                 Reject(() => new OverlayManifest { Schema = 1, Game = game }.ValidatePaths(root));
+            Reject(() => new OverlayManifest
+            {
+                Schema = 1,
+                GamePacks = [new() { Game = "../outside", Path = "GamePack/nap" }]
+            }.ValidatePaths(root));
+            Reject(() => new OverlayManifest
+            {
+                Schema = 1,
+                GamePacks = [new() { Game = "nap", Path = "GamePack/nap" }, new() { Game = "NAP", Path = "GamePack/other" }]
+            }.ValidatePaths(root));
             foreach (string from in new[] { "../outside", "C:\\outside", "\\outside", "a/../../outside" })
                 Reject(() => new OverlayManifest { Schema = 1, Targets = [new() { From = from, To = "shade" }] }.ValidatePaths(root));
             new OverlayManifest { Schema = 1, Game = "hkrpg_bilibili", Targets = [new() { From = "HoYoShade", To = "shade" }] }.ValidatePaths(root);
@@ -59,6 +69,24 @@ internal static class PackageInstallSafetyTests
             await installer.InstallAsync(validZip, LocalPackageKind.Module);
             Check(File.ReadAllText(Path.Combine(modules, "valid-module", "nested", "module.dll")) == "module", "Module commit incomplete");
 
+            // Release archives commonly add one top-level product folder (for example "DLSS F5/").
+            // The installer must remove that wrapper before committing the module/build root.
+            string wrappedZip = Path.Combine(root, "dlss-f5-shaped.zip");
+            using (var zip = ZipFile.Open(wrappedZip, ZipArchiveMode.Create))
+            {
+                using (var writer = new StreamWriter(zip.CreateEntry("DLSS F5/OptiScaler.dll").Open())) writer.Write("dll");
+                using (var writer = new StreamWriter(zip.CreateEntry("DLSS F5/OptiScaler/module.dll").Open())) writer.Write("wrapped");
+            }
+            Check(LocalPackageInstaller.DetectKindFromEntries(
+                    ["DLSS F5/OptiScaler.dll", "DLSS F5/OptiScaler.ini", "DLSS F5/package-manifest.json"])
+                  == LocalPackageKind.OptiScaler,
+                "DLSS F5 外壳包仍识别为 OptiScaler");
+            await installer.InstallAsync(wrappedZip, LocalPackageKind.Module);
+            Check(File.ReadAllText(Path.Combine(modules, "dlss-f5-shaped", "OptiScaler", "module.dll")) == "wrapped",
+                "单层顶级目录外壳没有展平到模块根");
+            Check(!Directory.Exists(Path.Combine(modules, "dlss-f5-shaped", "DLSS F5")),
+                "模块安装残留了 DLSS F5 外壳目录");
+
             using var canceled = new CancellationTokenSource();
             canceled.Cancel();
             await RejectAsync(() => installer.InstallAsync(validZip, LocalPackageKind.Module, canceled.Token));
@@ -99,6 +127,28 @@ internal static class PackageInstallSafetyTests
             double[] percentages = reports.Where(p => p.Percent.HasValue).Select(p => p.Percent!.Value).ToArray();
             Check(percentages.Zip(percentages.Skip(1)).All(p => p.First <= p.Second), "Progress moved backwards");
             Check(File.ReadAllText(Path.Combine(cache, "games", ".pending-gamepacks", "hkrpg_bilibili", "ini_config", "nested", "preset.ini")) == "nested", "Pending staging dropped subdirectory");
+
+            string multiCache = Path.Combine(root, "multi-cache");
+            foreach (string game in new[] { "nap_cn", "hkrpg_bilibili" })
+                Directory.CreateDirectory(Path.Combine(multiCache, "games", game));
+            string multiOverlay = Path.Combine(root, "multi-game-overlay.zip");
+            MakeMultiGameOverlay(multiOverlay);
+            var multiInstaller = new LocalPackageInstaller(opti,
+                Path.Combine(root, "shade", "reshade-shaders", "Addons"), modules, cacheRoot: multiCache);
+            LocalPackageInstallResult multiResult = await multiInstaller.InstallAsync(multiOverlay, LocalPackageKind.Overlay)
+                .WaitAsync(TimeSpan.FromSeconds(20));
+            Check(multiResult.GamePackReplaced, "Multi-game GamePacks were not reported to the import action flow");
+            Check((multiResult.GamePackGameHints ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    .SetEquals(["nap", "hkrpg"]),
+                "Multi-game import did not return both game targets for action confirmation");
+            string napPack = Path.Combine(multiCache, "games", "nap_cn");
+            string hkrpgPack = Path.Combine(multiCache, "games", "hkrpg_bilibili");
+            Check(File.ReadAllText(Path.Combine(napPack, "auto.json")) == "nap-auto", "Multi-game overlay missed ZZZ auto actions");
+            Check(File.ReadAllText(Path.Combine(napPack, "F5-nap.ini")) == "nap-config", "Multi-game overlay missed ZZZ config");
+            Check(File.ReadAllText(Path.Combine(hkrpgPack, "auto.json")) == "hkrpg-auto", "Multi-game overlay missed Star Rail auto actions");
+            Check(File.ReadAllText(Path.Combine(hkrpgPack, "F5-hkrpg.ini")) == "hkrpg-config", "Multi-game overlay missed Star Rail config");
+            Check(!File.Exists(Path.Combine(napPack, "F5-hkrpg.ini")) && !File.Exists(Path.Combine(hkrpgPack, "F5-nap.ini")),
+                "Multi-game overlay crossed game-specific configs");
 
             string extraction = Path.Combine(root, "cancel-extract");
             using var cancelExtract = new CancellationTokenSource();
@@ -162,6 +212,35 @@ internal static class PackageInstallSafetyTests
         {
             using var writer = new StreamWriter(zip.CreateEntry(pair.Item1).Open());
             writer.Write(pair.Item2);
+        }
+    }
+
+    private static void MakeMultiGameOverlay(string path)
+    {
+        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+        var entries = new Dictionary<string, string>
+        {
+            ["filelist.json"] = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                hysxOverlay = 1,
+                name = "multi-game fixture",
+                gamePacks = new[]
+                {
+                    new { game = "nap", path = "GamePack/nap" },
+                    new { game = "hkrpg", path = "GamePack/hkrpg" }
+                },
+                targets = new[] { new { from = "Payload", to = "modules" } }
+            }),
+            ["Payload/runtime.dll"] = "shared-runtime",
+            ["GamePack/nap/auto.json"] = "nap-auto",
+            ["GamePack/nap/F5-nap.ini"] = "nap-config",
+            ["GamePack/hkrpg/auto.json"] = "hkrpg-auto",
+            ["GamePack/hkrpg/F5-hkrpg.ini"] = "hkrpg-config"
+        };
+        foreach ((string name, string content) in entries)
+        {
+            using var writer = new StreamWriter(zip.CreateEntry(name).Open());
+            writer.Write(content);
         }
     }
 

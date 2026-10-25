@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions.Games;
 using System;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -40,15 +41,28 @@ internal static class GameSettingService
     public static GraphicsSettings_PCResolution_h431323223? GetGameResolutionSetting(GameBiz biz)
     {
         var keyPath = biz.GetGameRegistryKey();
-        if (biz.ToGame().Value is GameBiz.bh3 or GameBiz.hkrpg)
+        if (biz.ToGame().Value is GameBiz.bh3)
         {
-            var keyName = biz.ToGame().Value switch
-            {
-                GameBiz.bh3 => GENERAL_DATA_V2_ScreenSettingData_h1916288658,
-                GameBiz.hkrpg => GraphicsSettings_PCResolution_h431323223,
-                _ => ""
-            };
+            var keyName = GENERAL_DATA_V2_ScreenSettingData_h1916288658;
             var data = Registry.GetValue(keyPath, keyName, null) as byte[];
+            if (data is not null)
+            {
+                var str = Encoding.UTF8.GetString(data).TrimEnd('\0');
+                return JsonSerializer.Deserialize<GraphicsSettings_PCResolution_h431323223>(str);
+            }
+        }
+        if (biz.ToGame() == GameBiz.hkrpg)
+        {
+            // The JSON sidecar can retain an old fullscreen flag. Unity's
+            // Screenmanager values are the live source for width/height/mode.
+            var width = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Width_h182942802, 0));
+            var height = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, 0));
+            if (width * height > 0)
+            {
+                var fullScreen = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Fullscreen_mode_h3630240806, 3)) != 3;
+                return new GraphicsSettings_PCResolution_h431323223 { Width = width, Height = height, IsFullScreen = fullScreen };
+            }
+            var data = Registry.GetValue(keyPath, GraphicsSettings_PCResolution_h431323223, null) as byte[];
             if (data is not null)
             {
                 var str = Encoding.UTF8.GetString(data).TrimEnd('\0');
@@ -57,9 +71,9 @@ internal static class GameSettingService
         }
         if (biz.ToGame() == GameBiz.hk4e)
         {
-            var fullScreen = (int)(Registry.GetValue(keyPath, Screenmanager_Is_Fullscreen_mode_h3981298716, 0) ?? 0) != 0;
-            var width = (int)(Registry.GetValue(keyPath, Screenmanager_Resolution_Width_h182942802, 0) ?? 0);
-            var height = (int)(Registry.GetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, 0) ?? 0);
+            var fullScreen = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Is_Fullscreen_mode_h3981298716, 0)) != 0;
+            var width = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Width_h182942802, 0));
+            var height = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, 0));
             if (width * height > 0)
             {
                 return new GraphicsSettings_PCResolution_h431323223 { Width = width, Height = height, IsFullScreen = fullScreen };
@@ -67,15 +81,28 @@ internal static class GameSettingService
         }
         if (biz.ToGame() == GameBiz.nap)
         {
-            var fullScreen = (int)(Registry.GetValue(keyPath, Screenmanager_Fullscreen_mode_h3630240806, 0) ?? 0) != 3;
-            var width = (int)(Registry.GetValue(keyPath, Screenmanager_Resolution_Width_h182942802, 0) ?? 0);
-            var height = (int)(Registry.GetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, 0) ?? 0);
+            var fullScreen = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Fullscreen_mode_h3630240806, 0)) != 3;
+            var width = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Width_h182942802, 0));
+            var height = ReadRegistryInt(Registry.GetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, 0));
             if (width * height > 0)
             {
                 return new GraphicsSettings_PCResolution_h431323223 { Width = width, Height = height, IsFullScreen = fullScreen };
             }
         }
         return null;
+    }
+
+    private static int ReadRegistryInt(object? value)
+    {
+        return value switch
+        {
+            null => 0,
+            int number => number,
+            long number => checked((int)number),
+            uint number => checked((int)number),
+            ulong number => checked((int)number),
+            _ => Convert.ToInt32(value, CultureInfo.InvariantCulture),
+        };
     }
 
 
@@ -112,9 +139,6 @@ internal static class GameSettingService
             Registry.SetValue(keyPath, Screenmanager_Resolution_Height_h2627697771, model.Height);
         }
     }
-
-
-
 
     public static int? GetGameVoiceLanguageSetting(GameBiz biz)
     {

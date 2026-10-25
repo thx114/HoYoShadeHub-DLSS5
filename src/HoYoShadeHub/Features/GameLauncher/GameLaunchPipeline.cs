@@ -83,6 +83,7 @@ public static class GameLaunchPipeline
             return null;
         }
 
+        if (AppConfig.GetUseOptiScalerLaunchOption(gameId)) GameNrRuntimeService.PrepareOpti(gameId);
         report?.Invoke("准备启动 " + gameId.GameBiz);
 
         ApplyForceHookOff(gameId, entry);
@@ -556,14 +557,6 @@ public static class GameLaunchPipeline
         bool optiScalerWanted = useOptiScaler
             && !string.IsNullOrWhiteSpace(AppConfig.GetSelectedOptiScalerDll(gameId));
 
-        // CLI / auto.json 没有 UI 弹窗，也必须和启动页走同一条安全链路：
-        // 原神 + OptiScaler 自动选中随包 Bridge，并打开模块启动选项。
-        if (isGenshin && optiScalerWanted
-            && !ModuleRegistry.EnsureGenshinFsrBridgeForLaunch(gameId))
-        {
-            _logger.LogError("无法准备原神 FSR Bridge；将拒绝 OptiScaler 外部注入");
-        }
-
         // ① 启动选项里勾的「启用模块」
         if (AppConfig.GetUseModulesLaunchOption(gameId))
         {
@@ -708,7 +701,13 @@ public static class GameLaunchPipeline
                     }
                     else
                     {
-                        _logger.LogError("FSR Bridge autoload 写入失败，已跳过原神 OptiScaler 外部注入：{Directory}", bridgeDirectory);
+                        specs.Add(new InjectSpec(optiScaler, "OptiScaler",
+                            BuildDirectory: buildDirectory, GameKey: gameKey,
+                            DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
+                            WaitForModule: waitForShadeModule));
+                        _logger.LogWarning(
+                            "FSR Bridge autoload 状态未判定；OptiScaler 保持独立外部注入：{Target}; Directory={Directory}",
+                            optiScaler, bridgeDirectory);
                     }
                 }
                 else if (!isGenshin)
@@ -720,7 +719,13 @@ public static class GameLaunchPipeline
                 }
                 else
                 {
-                    _logger.LogError("原神启用了 OptiScaler，但 FSR Bridge 不在注入列表中；已跳过 OptiScaler 注入");
+                    specs.Add(new InjectSpec(optiScaler, "OptiScaler",
+                        BuildDirectory: buildDirectory, GameKey: gameKey,
+                        DelaySeconds: AppConfig.GetOptiScalerInjectDelayEffective(gameId.GameBiz),
+                        WaitForModule: waitForShadeModule));
+                    _logger.LogWarning(
+                        "原神未找到 FSR Bridge；OptiScaler 将独立外部注入，Bridge 专属 FSR/NR/链式能力不可用：{Target}",
+                        optiScaler);
                 }
             }
         }

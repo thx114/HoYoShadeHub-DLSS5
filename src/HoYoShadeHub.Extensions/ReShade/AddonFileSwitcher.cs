@@ -37,18 +37,39 @@ public static class AddonFileSwitcher
     {
         try
         {
-            if (!File.Exists(addonFilePath))
+            string currentPath = addonFilePath;
+            if (!File.Exists(currentPath))
+            {
+                // The global-plugin card keeps the manifest's original enabled
+                // path. After disabling, that path no longer exists; recover the
+                // sibling .addon64x/.addon32x file so the same card can re-enable it.
+                string? candidateDirectory = Path.GetDirectoryName(Path.GetFullPath(addonFilePath));
+                if (candidateDirectory is not null)
+                {
+                    string fileName = Path.GetFileName(addonFilePath);
+                    string alternateName = IsDisabledName(fileName)
+                        ? EnabledNameOf(fileName)
+                        : DisabledNameOf(fileName);
+                    string alternatePath = Path.Combine(candidateDirectory, alternateName);
+                    if (File.Exists(alternatePath))
+                    {
+                        currentPath = alternatePath;
+                    }
+                }
+            }
+
+            if (!File.Exists(currentPath))
             {
                 return new AddonToggleResult(false, null, "文件不在了：" + addonFilePath);
             }
 
-            string directory = Path.GetDirectoryName(Path.GetFullPath(addonFilePath))!;
-            string currentName = Path.GetFileName(addonFilePath);
+            string directory = Path.GetDirectoryName(Path.GetFullPath(currentPath))!;
+            string currentName = Path.GetFileName(currentPath);
             string targetName = enabled ? EnabledNameOf(currentName) : DisabledNameOf(currentName);
 
             if (string.Equals(currentName, targetName, StringComparison.Ordinal))
             {
-                return AddonToggleResult.Already(addonFilePath);
+                return AddonToggleResult.Already(currentPath);
             }
 
             string targetPath = Path.Combine(directory, targetName);
@@ -57,7 +78,7 @@ public static class AddonFileSwitcher
                 return new AddonToggleResult(false, null, $"同名文件已经存在：{targetName}");
             }
 
-            File.Move(addonFilePath, targetPath);
+            File.Move(currentPath, targetPath);
             return new AddonToggleResult(true, targetPath, null);
         }
         catch (Exception ex)

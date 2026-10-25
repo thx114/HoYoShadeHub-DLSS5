@@ -7,7 +7,7 @@ using System.Linq;
 namespace HoYoShadeHub.Features.Xxmi;
 
 /// <summary>Mods 目录里的一条：一级子目录（常见）或一级 .ini</summary>
-internal sealed record XxmiModEntry(string Name, string Path, bool IsDirectory, bool Enabled);
+internal sealed record XxmiModEntry(string Name, string Path, bool IsDirectory, bool Enabled, string? Category = null);
 
 /// <summary>
 /// XXMI / 3DMigoto 的 mod 管理。约定：<c>&lt;MI 实例&gt;\Mods\</c> 下**一级子目录就是一个 mod**，
@@ -63,8 +63,8 @@ internal static class XxmiModManager
     /// mod 目录里自带的预览图（<c>&lt;mod&gt;\preview.png</c> 这类）；没有返回 null。
     ///
     /// <para>
-    /// 只看 <b>一级</b>目录里这几个约定名 —— mod 目录里塞满了 diffuse / normalmap 贴图，
-    /// 随便挑一张图当预览，挑到的十有八九是法线贴图。
+    /// 根目录优先，其后按层查三层子目录（Rocket 常有分类/压缩包目录）。
+    /// 只认约定预览名，不挑 diffuse / normalmap 等材质；不跟随目录链接。
     /// </para>
     /// </summary>
     public static string? LocalPreview(string? modDirectory)
@@ -74,17 +74,24 @@ internal static class XxmiModManager
             return null;
         }
 
-        foreach (string name in _previewNames)
+        var pending = new Queue<(string Path, int Depth)>();
+        pending.Enqueue((modDirectory, 0));
+        int visited = 0;
+        while (pending.Count > 0 && visited++ < 128)
         {
+            var (directory, depth) = pending.Dequeue();
             try
             {
-                string path = Path.Combine(modDirectory, name);
-
-                // Windows 文件系统大小写不敏感，preview.png 也能命中 Preview.PNG
-                if (File.Exists(path))
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                foreach (string name in _previewNames)
                 {
-                    return path;
+                    string path = Path.Combine(directory, name);
+                    if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
+                        return path;
                 }
+                if (depth >= 3) continue;
+                foreach (string child in Directory.EnumerateDirectories(directory).OrderBy(p => p, StringComparer.OrdinalIgnoreCase).Take(128 - pending.Count))
+                    pending.Enqueue((child, depth + 1));
             }
             catch
             {

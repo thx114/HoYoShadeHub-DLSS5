@@ -1,4 +1,4 @@
-using HoYoShadeHub.Core;
+﻿using HoYoShadeHub.Core;
 using System.IO.Compression;
 using HoYoShadeHub.Extensions.Archives;
 using HoYoShadeHub.Extensions.Dlls;
@@ -40,7 +40,10 @@ public sealed record LocalPackageInstallResult(
     string DisplayName,
     string? Version,
     string TargetPath,
-    List<string> Details)
+    List<string> Details,
+    string? GamePackGameHint = null,
+    bool GamePackReplaced = false,
+    IReadOnlyList<string>? GamePackGameHints = null)
 {
     /// <summary>给界面状态栏用的一句话。</summary>
     public string Summary =>
@@ -329,7 +332,7 @@ public sealed class LocalPackageInstaller
         progress?.Report(new(0, "正在识别安装包…"));
         LocalPackageKind kind = kindOverride ?? DetectKind(file);
 
-        return kind switch
+        LocalPackageInstallResult result = kind switch
         {
             LocalPackageKind.Addon => await InstallAddonAsync(file, cancellationToken),
             LocalPackageKind.OptiScaler => await InstallOptiScalerAsync(file, cancellationToken),
@@ -340,6 +343,12 @@ public sealed class LocalPackageInstaller
                 + "把它解压覆盖到启动器目录，或者用「检查更新」。"),
             _ => throw new NotSupportedException("标准 hysx 扩展包请走扩展安装器。"),
         };
+        if (!string.IsNullOrWhiteSpace(_cacheRoot))
+        {
+            var errors = NrRuntimeLibrary.Consolidate(_cacheRoot, _addonsDirectory, _optiscalerRoot, _cacheRoot);
+            if (errors.Count > 0) throw new IOException("NR 硬链接整理未完成：" + string.Join(Environment.NewLine, errors));
+        }
+        return result;
     }
 
     // ───────────────────────── addon / 插件 ─────────────────────────
@@ -430,6 +439,10 @@ public sealed class LocalPackageInstaller
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);
+                // Release 包常把全部内容放进一个顶层目录（例如「DLSS F5/…」）。
+                // 识别阶段会剥这层壳，但安装阶段也必须把它展平，否则构建根、
+                // OptiDllPath 以及 NR/Streamline 依赖都会落到错误的子目录。
+                FlattenSingleWrapper(extract);
                 PackageTree.ValidateTree(extract);
 
                 // dlss-unlocked 发布出来的正身叫 dxgi.dll，落库后统一成 OptiScaler.dll。
@@ -557,6 +570,7 @@ public sealed class LocalPackageInstaller
             try
             {
                 ZipExtractor.ExtractToDirectory(file, extract);
+                FlattenSingleWrapper(extract);
                 cancellationToken.ThrowIfCancellationRequested();
                 PackageTree.Commit(extract, target);
             }
@@ -629,6 +643,14 @@ public sealed class LocalPackageInstaller
             cancellationToken.ThrowIfCancellationRequested();
             PackageTree.ValidateTree(root);
             manifest?.ValidatePaths(root);
+            if (manifest is not null)
+                foreach (OverlayManifestGamePack gamePack in manifest.GamePacks)
+                {
+                    string gamePackSource = PackageTree.ResolveRelative(root, gamePack.Path ?? string.Empty);
+                    if (!Directory.Exists(gamePackSource)
+                        || !Directory.EnumerateFiles(gamePackSource, "*", SearchOption.AllDirectories).Any())
+                        throw new InvalidDataException($"GamePack directory is missing or empty: {gamePack.Path}");
+                }
             string incomingGamePack = Path.Combine(root, "GamePack");
             if (Directory.Exists(incomingGamePack))
                 foreach (string incoming in Directory.EnumerateFiles(incomingGamePack, "*", SearchOption.AllDirectories))
@@ -643,6 +665,16 @@ public sealed class LocalPackageInstaller
                 string pending = PackageTree.ResolveRelative(pendingRoot, pendingGame);
                 if (Directory.Exists(pending)) PackageTree.ValidateTree(pending);
                 // Only the game's destination is validated, not every unrelated game's cache.
+            }
+            if (manifest is not null && _cacheRoot.Length > 0)
+            {
+                string games = PackageTree.ResolveRelative(_cacheRoot, "games");
+                string pendingRoot = PackageTree.ResolveRelative(games, ".pending-gamepacks");
+                foreach (OverlayManifestGamePack gamePack in manifest.GamePacks)
+                {
+                    string pending = PackageTree.ResolveRelative(pendingRoot, gamePack.Game!);
+                    if (Directory.Exists(pending)) PackageTree.ValidateTree(pending);
+                }
             }
 
             // 包里带 HoYoShade 那一半、但本机还没定位到 HoYoShade 目录：直接说清楚，别默默只装一半。
@@ -661,6 +693,7 @@ public sealed class LocalPackageInstaller
 
             var details = new List<string>();
             var stuck = new List<string>();
+            bool gamePackReplaced = false;
             string target = _shadeRoot.Length > 0 ? _shadeRoot : _optiscalerRoot;
             int total = 0;
             int copiedProgress = 0;
@@ -767,6 +800,7 @@ public sealed class LocalPackageInstaller
                         if (copied > 0)
                         {
                             placed = true;
+                            gamePackReplaced = true;
                             details.Add($"GamePack → {gameKey} 覆盖包目录：{copied} 个文件（打开该游戏插件页确认动作后即生效）");
                         }
                     }
@@ -789,6 +823,7 @@ public sealed class LocalPackageInstaller
                         cancellationToken.ThrowIfCancellationRequested();
                         pending = PackageTree.ResolveRelative(pendingRoot, gameHint);
                         PackageTree.Commit(pendingStage, pending);
+                        gamePackReplaced = true;
                     }
                     finally { HysxUtil.TryDeleteDirectory(pendingStage); }
 
@@ -796,6 +831,52 @@ public sealed class LocalPackageInstaller
 
             }
                 }
+            if (manifest is { GamePacks.Count: > 0 } && _cacheRoot.Length > 0)
+            {
+                string gamesRoot = Path.Combine(_cacheRoot, "games");
+                foreach (OverlayManifestGamePack gamePack in manifest.GamePacks)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string gamePackGameHint = gamePack.Game!;
+                    string gamePackSource = PackageTree.ResolveRelative(root, gamePack.Path!);
+                    bool placed = false;
+                    if (Directory.Exists(gamesRoot))
+                    {
+                        foreach (string dir in Directory.EnumerateDirectories(gamesRoot))
+                        {
+                            string gameKey = Path.GetFileName(dir);
+                            if (gameKey.StartsWith(".", StringComparison.Ordinal)
+                                || !gameKey.StartsWith(gamePackGameHint, StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            string packDir = GameAddonPack.PackDirectory(_cacheRoot, gameKey);
+                            Directory.CreateDirectory(packDir);
+                            int copied = PackageTree.Copy(gamePackSource, packDir, cancellationToken);
+                            if (copied > 0)
+                            {
+                                placed = true;
+                                gamePackReplaced = true;
+                                details.Add($"GamePack → {gameKey} 覆盖包目录：{copied} 个文件（打开该游戏插件页确认动作后即生效）");
+                            }
+                        }
+                    }
+
+                    if (placed) continue;
+                    string pendingRoot = PackageTree.ResolveRelative(gamesRoot, ".pending-gamepacks");
+                    string pending = PackageTree.ResolveRelative(pendingRoot, gamePackGameHint);
+                    string pendingStage = PackageTree.CreateStage(pending);
+                    try
+                    {
+                        PackageTree.Copy(gamePackSource, pendingStage, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        pending = PackageTree.ResolveRelative(pendingRoot, gamePackGameHint);
+                        PackageTree.Commit(pendingStage, pending);
+                        gamePackReplaced = true;
+                    }
+                    finally { HysxUtil.TryDeleteDirectory(pendingStage); }
+                    details.Add($"GamePack 已暂存（游戏 {gamePackGameHint}* 尚未注册）；游戏出现后会自动铺进其覆盖包目录");
+                }
+            }
+
             // 归档：让 DLL 页 / 插件页认下「盘上这份是哪个版本」
             progress?.Report(new(82, "正在归档版本与登记安装结果…"));
             var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -817,7 +898,13 @@ public sealed class LocalPackageInstaller
                 manifest?.DisplayName ?? Path.GetFileNameWithoutExtension(file),
                 manifest?.Version ?? selected?.Version,
                 target,
-                details);
+                details,
+                manifest?.Game,
+                gamePackReplaced,
+                gamePackReplaced
+                    ? manifest?.GetGamePacks().Select(p => p.Game!).Where(g => !string.IsNullOrWhiteSpace(g))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                    : []);
         }
         finally
         {
@@ -1069,6 +1156,60 @@ public sealed class LocalPackageInstaller
 
         return current;
     }
+
+    /// <summary>
+    /// 把解压结果中「只有一个顶层目录、根上没有文件」的外壳原地移除。
+    /// 只处理最多三层，且根目录为空壳时才移动内容，因此不会改变正常的多根包布局。
+    /// </summary>
+    private static void FlattenSingleWrapper(string directory)
+    {
+        string current = directory;
+
+        for (int i = 0; i < 3; i++)
+        {
+            string[] dirs = Directory.GetDirectories(current);
+            if (dirs.Length != 1 || Directory.GetFiles(current).Length != 0)
+            {
+                return;
+            }
+
+            string wrapper = dirs[0];
+            if (!LooksLikeOptiScalerWrapper(wrapper))
+            {
+                return;
+            }
+
+            foreach (string entry in Directory.EnumerateFileSystemEntries(wrapper))
+            {
+                string destination = Path.Combine(current, Path.GetFileName(entry));
+                if (File.Exists(destination) || Directory.Exists(destination))
+                {
+                    return;
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    Directory.Move(entry, destination);
+                }
+                else
+                {
+                    File.Move(entry, destination);
+                }
+            }
+
+            Directory.Delete(wrapper);
+        }
+    }
+
+    /// <summary>
+    /// 只把明确像 OptiScaler release 的外壳剥掉；普通模块包里的
+    /// <c>nested/module.dll</c> 仍保留原有目录结构。
+    /// </summary>
+    private static bool LooksLikeOptiScalerWrapper(string directory)
+        => File.Exists(Path.Combine(directory, "OptiScaler.dll"))
+           || File.Exists(Path.Combine(directory, "OptiScaler.ini"))
+           || File.Exists(Path.Combine(directory, "package-manifest.json"))
+           || File.Exists(Path.Combine(directory, "BUILD-STATUS.json"));
 
     /// <summary>找覆盖包里某一层：优先 <c>&lt;root&gt;\&lt;名字&gt;</c>，没有就认「内容直接铺在根上」</summary>
     private static string? ResolveOverlayFolder(string root, string folderName, string markerFile)

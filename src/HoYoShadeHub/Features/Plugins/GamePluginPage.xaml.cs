@@ -141,6 +141,38 @@ public sealed partial class GamePluginPage : PageBase
         });
     }
 
+    private void ComboBox_Nr_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is ComboBox combo && CurrentGameId is { } game)
+            NrVersionPicker.Fill(combo, AppConfig.GetGameNrVersion(game, "reshade"));
+    }
+
+    private void ComboBox_Nr_DropDownOpened(object sender, object e) => ComboBox_Nr_Loaded(sender, new RoutedEventArgs());
+
+    private void ComboBox_Nr_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo || combo.Tag is not false || combo.SelectedItem is not ComboBoxItem { IsEnabled: true } selected) return;
+        if (CurrentGameId is not { } game || _entry is null || _host is null || _isWorking) return;
+        var entry = _entry;
+        var host = _host;
+        string? version = selected.Tag as string;
+        if (!_isPageAlive || string.Equals(version, AppConfig.GetGameNrVersion(game, "reshade"), StringComparison.OrdinalIgnoreCase)) return;
+        string? previous = AppConfig.GetGameNrVersion(game, "reshade");
+        try
+        {
+            AppConfig.SetGameNrVersion(game, "reshade", version);
+            GameAddonPackService.Sync(game, entry, host);
+            LoadGame(entry);
+            TextBlock_Status.Text = "本游戏 ReShade NR：" + (version ?? "插件默认") + "（重启游戏生效）";
+        }
+        catch (Exception ex)
+        {
+            AppConfig.SetGameNrVersion(game, "reshade", previous);
+            NrVersionPicker.Fill(combo, previous);
+            ShowInfo("NR 版本切换失败", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
     #region 刷新
 
     private async Task RefreshAsync()
@@ -275,6 +307,7 @@ public sealed partial class GamePluginPage : PageBase
 
             var item = new AddonItemViewModel(state, OnAddonEnabledChanged, OnLoadFromDllMainChanged)
             {
+                NrVersionText = "NR：" + (CurrentGameId is { } nrGame ? AppConfig.GetGameNrVersion(nrGame, "reshade") ?? "插件默认" : "插件默认"),
                 VersionDispatchQueue = DispatcherQueue,
                 HookPointChanged = OnAddonHookPointChanged,
                 Dx11SourceChanged = OnAddonDx11SourceChanged,
@@ -851,22 +884,22 @@ public sealed partial class GamePluginPage : PageBase
             return;
         }
 
-        var combo = new ComboBox { MinWidth = 260, SelectedIndex = 0 };
+        DllComponent? recommended = DllSelectionPolicy.SelectDefault(family, versions,
+            HoYoShadeHub.Features.OptiScaler.OptiScalerPresetCatalog.GpuClass);
+        var combo = new ComboBox { MinWidth = 260, SelectedIndex = -1 };
         foreach (DllComponent component in versions)
         {
-            combo.Items.Add(component.Version + (component.Version == family.PreferredVersion ? "  ← 推荐" : string.Empty));
+            combo.Items.Add(component.Version
+                + (string.IsNullOrWhiteSpace(component.Note) ? string.Empty : $"（{component.Note}）")
+                + (component == recommended ? "  ← 推荐" : string.Empty));
+            if (component == recommended) combo.SelectedIndex = combo.Items.Count - 1;
         }
-
-        int preferred = versions
-            .Select((component, index) => (component, index))
-            .FirstOrDefault(pair => string.Equals(pair.component.Version, family.PreferredVersion, StringComparison.OrdinalIgnoreCase)).index;
-        combo.SelectedIndex = preferred < 0 ? 0 : preferred;
 
         var hint = new TextBlock
         {
             Text = family.Id == "streamline"
                 ? "选一个 Streamline 运行时版本装进插件目录。2.14.1.0 起的包里已经没有 sl.interposer.dll，所以默认给你选 2.14.0.0。"
-                : "选一个版本装进插件目录。",
+                : "RTX 20/30 默认使用 F5 加速特化版；RTX 40/50 默认使用 SF 通用版。可手动选择其他版本。",
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 320,
         };
@@ -907,6 +940,17 @@ public sealed partial class GamePluginPage : PageBase
 
             AppConfig.SetInstalledDllVariant(family.Id, chosen.Version);
             AppConfig.SetInstalledDllVariantSize(family.Id, DllInstaller.GetInstalledSize(DllInstaller.Scan(_plugins.AddonDirectory), family));
+            try
+            {
+                new DllVersionStore(AppConfig.CacheRoot).Archive(
+                    family.Id,
+                    chosen.Version,
+                    install.Installed.Select(name => Path.Combine(_plugins.AddonDirectory, name)));
+            }
+            catch
+            {
+                // 归档失败不影响已经完成的安装。
+            }
 
             // 就地刷红横幅：拿盘上最新状态按文件名对回卡片
             foreach (GameAddonState state in _plugins.GetAddons())
@@ -1613,6 +1657,10 @@ public partial class AddonItemViewModel : ObservableObject
     /// <summary>DLSS5 那一类插件（驱动版本检查只对它们做）</summary>
     public bool IsDlss5 { get; }
 
+    public string NrVersionText { get; set; } = "NR：跟随全局";
+
+    public Visibility NrChoiceVisibility => IsDlss5 || GamePluginService.IsNeuralInterposer(FileName) ? Visibility.Visible : Visibility.Collapsed;
+
     /// <summary>插件自己会往 ini 里登记加载方式（那种就不显示「从 DllMain 加载」）</summary>
     public bool SelfRegistersInIni { get; }
 
@@ -1678,7 +1726,7 @@ public partial class AddonItemViewModel : ObservableObject
 
     /// <summary>有专属配置才显示扩展按钮（免得点开是空的）</summary>
     public Visibility ConfigToggleVisibility =>
-        (IsFeed && HasFeedConfig) || IsRenoDxDlssFamily || LoadFromDllMainVisibility == Visibility.Visible
+        (IsFeed && HasFeedConfig) || IsRenoDxDlssFamily || LoadFromDllMainVisibility == Visibility.Visible || NrChoiceVisibility == Visibility.Visible
             ? Visibility.Visible
             : Visibility.Collapsed;
 

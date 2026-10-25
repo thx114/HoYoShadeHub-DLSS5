@@ -16,7 +16,7 @@
             <Storyboard x:Name="Storyboard_ShowFilter">
                 <DoubleAnimation Storyboard.TargetName="Panel_Filter"
                                  Storyboard.TargetProperty="Width"
-                                 From="0" To="260"
+                                 From="0" To="160"
                                  Duration="0:0:0.22">
                     <DoubleAnimation.EasingFunction>
                         <CubicEase EasingMode="EaseOut" />
@@ -30,7 +30,7 @@
             <Storyboard x:Name="Storyboard_HideFilter">
                 <DoubleAnimation Storyboard.TargetName="Panel_Filter"
                                  Storyboard.TargetProperty="Width"
-                                 From="260" To="0"
+                                 From="160" To="0"
                                  Duration="0:0:0.18">
                     <DoubleAnimation.EasingFunction>
                         <CubicEase EasingMode="EaseIn" />
@@ -125,7 +125,7 @@
                               MinWidth="0"
                               Padding="10,5"
                               Click="ToggleButton_Filter_Click"
-                              ToolTipService.ToolTip="筛选（先做成能开合的壳，内容待定）">
+                              IsChecked="True" ToolTipService.ToolTip="显示或隐藏角色分类">
                     <FontIcon FontSize="14" Glyph="&#xE71C;" />
                 </ToggleButton>
             </Grid>
@@ -212,18 +212,13 @@
                                     <!-- 预览图铺满整张卡片。悬停放大用代码改 Scale（x:Bind 不能直接绑 Transform 的比例）。
                                          外面套一层 Border 专门做裁剪：只裁图片，不裁卡片边框
                                          （裁整张卡会把边框一起裁掉）。 -->
-                                    <Border x:Name="Border_ImageClip"
-                                            CornerRadius="5">
-                                        <Image x:Name="Image_Preview"
-                                               Source="{x:Bind PreviewImage, Mode=OneWay}"
-                                               Stretch="UniformToFill"
-                                               RenderTransformOrigin="0.5,0.5">
-                                            <Image.RenderTransform>
-                                                <ScaleTransform x:Name="Scale_Preview" ScaleX="1" ScaleY="1" />
-                                            </Image.RenderTransform>
-                                        </Image>
+                                    <Border x:Name="Border_ImageClip" CornerRadius="5">
+                                        <Grid x:Name="Grid_PreviewScale">
+                                            <Image x:Name="Image_Preview"
+                                                   Source="{x:Bind PreviewImage, Mode=OneWay}"
+                                                   Stretch="UniformToFill" />
+                                        </Grid>
                                     </Border>
-
                                     <!-- 占位图：没预览图时顶上 -->
                                     <StackPanel HorizontalAlignment="Center"
                                                 VerticalAlignment="Center"
@@ -250,7 +245,12 @@
                                         </Grid.ColumnDefinitions>
 
                                         <!-- 左侧：左右切换式开关（常显）。字号压到最小，去掉内容文字免得占宽 -->
-                                        <ToggleSwitch Grid.Column="0"
+                                        <Grid Grid.Column="0">
+                                            <Grid Width="40" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                                  IsHitTestVisible="False" Loaded="ModToggleShadow_Loaded">
+                                                <Rectangle Width="40" Height="20" RadiusX="10" RadiusY="10" Fill="Black" />
+                                            </Grid>
+                                        <ToggleSwitch
                                                       MinWidth="0"
                                                       OffContent=""
                                                       OnContent=""
@@ -262,6 +262,7 @@
                                                 <x:Double x:Key="ToggleSwitchPostContentMargin">0</x:Double>
                                             </ToggleSwitch.Resources>
                                         </ToggleSwitch>
+                                        </Grid>
 
                                         <!-- 右侧：删除、属性 —— 鼠标移上去才慢慢显示 -->
                                         <StackPanel x:Name="Panel_CardActions"
@@ -469,41 +470,21 @@
         </Grid>
 
         <!-- 右侧筛选侧边栏：先做壳（能开合、能收起），内容待定 -->
-        <Border x:Name="Panel_Filter"
-                Grid.Column="1"
-                Width="260"
-                Margin="12,0,0,0"
-                Padding="12"
+        <Border x:Name="Panel_Filter" Grid.Column="1" Width="160"
+                Margin="8,0,0,0" Padding="4"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="6"
-                Opacity="0"
-                Visibility="Collapsed">
-            <Grid RowSpacing="8">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <Grid Grid.Row="0">
-                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="筛选" />
-                    <Button MinWidth="0"
-                            Padding="7,3"
-                            HorizontalAlignment="Right"
-                            Click="Button_CloseFilter_Click"
-                            ToolTipService.ToolTip="收起">
-                        <FontIcon FontSize="12" Glyph="&#xE711;" />
-                    </Button>
-                </Grid>
-
-                <!-- 这里先空着：你说「应该是筛选什么的，先空着」 -->
-                <TextBlock Grid.Row="1"
-                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                           Text="筛选条件待定。&#x0a;（先做成能开合的侧边栏壳子）"
-                           TextWrapping="Wrap"
-                           VerticalAlignment="Top" />
-            </Grid>
+                BorderThickness="1" CornerRadius="6" Opacity="1" Visibility="Visible">
+            <ListView x:Name="ListView_Categories" DisplayMemberPath="DisplayName"
+                      SelectionChanged="ListView_Categories_SelectionChanged">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Setter Property="MinHeight" Value="32" />
+                        <Setter Property="Padding" Value="8,4" />
+                        <Setter Property="FontSize" Value="13" />
+                    </Style>
+                </ListView.ItemContainerStyle>
+            </ListView>
         </Border>
     </Grid>
 </sf:PageBase>

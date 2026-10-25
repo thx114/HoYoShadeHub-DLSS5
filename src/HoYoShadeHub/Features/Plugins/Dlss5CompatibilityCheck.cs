@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -71,6 +72,7 @@ internal class Dlss5CompatibilityCheck
         items.Add(CheckAiFrameGeneration(context));
         items.Add(CheckGpuModel());
         items.Add(CheckHardwareAcceleratedGpuScheduling());
+        items.Add(CheckDpiScaling(context));
 
         // 8~12 启动器（当前 HoYoShade）
         Stage(32, "正在检查启动器和 HoYoShade 文件…");
@@ -147,6 +149,77 @@ internal class Dlss5CompatibilityCheck
         }
         return item;
     }
+
+    private static Dlss5CompatItem CheckDpiScaling(Dlss5CompatContext context)
+    {
+        var item = new Dlss5CompatItem(24, "系统", "当前设备 DPI 缩放与游戏高 DPI 设置");
+        try
+        {
+            uint dpi = GetDpiForSystem();
+            if (dpi == 0)
+            {
+                item.Level = Dlss5CheckLevel.Info;
+                item.Message = "无法读取当前设备 DPI 缩放；请自行确认游戏 exe 的高 DPI 设置。";
+                return item;
+            }
+
+            int scale = (int)Math.Round(dpi * 100d / 96d);
+            if (scale <= 100)
+            {
+                item.Level = Dlss5CheckLevel.Ok;
+                item.Message = $"当前设备显示缩放为 {scale}%（{dpi} DPI），无需额外设置。";
+                return item;
+            }
+
+            string? exe = context.GameExePath;
+            if (!string.IsNullOrWhiteSpace(exe) && HasHighDpiOverride(exe))
+            {
+                item.Level = Dlss5CheckLevel.Ok;
+                item.Message = $"当前设备显示缩放为 {scale}%；已检测到此游戏 exe 有高 DPI 缩放替代设置。";
+                return item;
+            }
+
+            item.Level = Dlss5CheckLevel.Warning;
+            item.Message = $"当前设备显示缩放为 {scale}%。建议右键「{(string.IsNullOrWhiteSpace(exe) ? "游戏.exe" : Path.GetFileName(exe))}」→ 属性 → 兼容性 → 更改高 DPI 设置，打开「替代高 DPI 缩放行为」。";
+            item.FixLabel = "打开游戏属性";
+            item.CanFix = !string.IsNullOrWhiteSpace(exe) && File.Exists(exe);
+            if (item.CanFix)
+            {
+                item.Fix = () =>
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = exe!,
+                        Verb = "properties",
+                        UseShellExecute = true,
+                    });
+                    return Task.FromResult<string?>("已打开游戏.exe 属性；请进入「兼容性 → 更改高 DPI 设置」，打开「替代高 DPI 缩放行为」后应用。");
+                };
+            }
+
+            return item;
+        }
+        catch (Exception ex)
+        {
+            item.Level = Dlss5CheckLevel.Info;
+            item.Message = "读取 DPI 缩放失败：" + ex.Message;
+            return item;
+        }
+    }
+
+    private static bool HasHighDpiOverride(string exePath)
+    {
+        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers");
+        string? flags = key?.GetValue(Path.GetFullPath(exePath)) as string;
+        return !string.IsNullOrWhiteSpace(flags)
+            && (flags.Contains("HIGHDPIAWARE", StringComparison.OrdinalIgnoreCase)
+                || flags.Contains("DPIUNAWARE", StringComparison.OrdinalIgnoreCase)
+                || flags.Contains("GDIDPISCALING", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForSystem();
 
     #region 1 显卡是否超频
 

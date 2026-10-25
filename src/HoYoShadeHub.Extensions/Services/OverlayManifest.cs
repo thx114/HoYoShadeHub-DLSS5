@@ -40,6 +40,14 @@ public sealed class OverlayManifestTarget
     [JsonPropertyName("to")] public string? To { get; set; }
 }
 
+/// <summary>单个覆盖包中某一款游戏的独立 GamePack 目录</summary>
+public sealed class OverlayManifestGamePack
+{
+    [JsonPropertyName("game")] public string? Game { get; set; }
+
+    [JsonPropertyName("path")] public string? Path { get; set; }
+}
+
 /// <summary>文件清单里的一条（装之前给用户看清单、也便于校验包完不完整）</summary>
 public sealed class OverlayManifestFile
 {
@@ -73,7 +81,10 @@ public sealed class OverlayManifestOptiScaler
 ///   "hysxOverlay": 1,
 ///   "name": "星穹铁道 6 倍覆盖包",
 ///   "version": "1.1",
-///   "game": "hkrpg",
+///   "gamePacks": [
+///     { "game": "nap", "path": "GamePack/nap" },
+///     { "game": "hkrpg", "path": "GamePack/hkrpg" }
+///   ],
 ///   "note": "DLSS5 + OptiScaler MFG Ada",
 ///   "targets": [ { "from": "HoYoShade", "to": "shade" },
 ///                { "from": "OptiScaler", "to": "optiscaler" } ],
@@ -120,6 +131,9 @@ public sealed class OverlayManifest
     /// <summary>给哪个游戏配的（hkrpg / hk4e / nap / bh3 …），只用于提示</summary>
     [JsonPropertyName("game")] public string? Game { get; set; }
 
+    /// <summary>多游戏覆盖包各自投放的 GamePack；旧版单游戏包继续使用 <see cref="Game"/>。</summary>
+    [JsonPropertyName("gamePacks")] public List<OverlayManifestGamePack> GamePacks { get; set; } = [];
+
     [JsonPropertyName("note")] public string? Note { get; set; }
 
     [JsonPropertyName("targets")] public List<OverlayManifestTarget> Targets { get; set; } = [];
@@ -140,6 +154,21 @@ public sealed class OverlayManifest
     public void ValidatePaths(string packageRoot)
     {
         if (Game is not null) PackageTree.ValidateGame(Game);
+        if (GamePacks.Count > 0 && !string.IsNullOrWhiteSpace(Game))
+            throw new InvalidDataException("Overlay manifest cannot combine game and gamePacks.");
+        var games = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (OverlayManifestGamePack gamePack in GamePacks)
+        {
+            if (string.IsNullOrWhiteSpace(gamePack.Game))
+                throw new InvalidDataException("GamePack target requires a game id.");
+            PackageTree.ValidateGame(gamePack.Game);
+            if (!games.Add(gamePack.Game))
+                throw new InvalidDataException("Duplicate GamePack game target: " + gamePack.Game);
+            if (string.IsNullOrWhiteSpace(gamePack.Path)
+                || !gamePack.Path.Replace('\\', '/').StartsWith("GamePack/", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("GamePack target path must be under GamePack/.");
+            PackageTree.ResolveRelative(packageRoot, gamePack.Path ?? string.Empty);
+        }
         foreach (OverlayManifestTarget target in Targets)
             PackageTree.ResolveRelative(packageRoot, target.From ?? string.Empty);
         foreach (OverlayManifestDll dll in Dlls)
@@ -148,6 +177,14 @@ public sealed class OverlayManifest
             if (!string.IsNullOrWhiteSpace(addon.File)) PackageTree.ResolveRelative(packageRoot, addon.File);
         foreach (OverlayManifestFile file in Files)
             if (!string.IsNullOrWhiteSpace(file.Path)) PackageTree.ResolveRelative(packageRoot, file.Path);
+    }
+
+    public IReadOnlyList<OverlayManifestGamePack> GetGamePacks()
+    {
+        if (GamePacks.Count > 0) return GamePacks;
+        return string.IsNullOrWhiteSpace(Game)
+            ? []
+            : [new OverlayManifestGamePack { Game = Game, Path = "GamePack" }];
     }
 
     /// <summary>界面上的名字：没写 name 就用版本号 / 「覆盖包」</summary>

@@ -17,6 +17,8 @@ public interface IShellFileDropTarget
 {
     /// <summary>文件落在窗口上了（绝对路径，至少一个；在 UI 线程上调用）。</summary>
     Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths);
+    Task OnShellFilesDroppedAsync(IReadOnlyList<string> paths, Windows.Foundation.Point? screenPoint)
+        => OnShellFilesDroppedAsync(paths);
 }
 
 
@@ -76,6 +78,18 @@ public static partial class ShellFileDrop
 
     /// <summary>窗口 → 接拖放的页面（只认顶层窗口句柄）。</summary>
     private static readonly Dictionary<IntPtr, IShellFileDropTarget> Targets = [];
+    private static readonly Dictionary<IntPtr, IShellFileDropTarget> WindowTargets = [];
+
+    public static IShellFileDropTarget? GetPageTarget(IntPtr window) => Targets.GetValueOrDefault(window);
+    public static void RegisterWindowTarget(IntPtr window, IShellFileDropTarget target)
+    {
+        WindowTargets[window] = target;
+        EnableTree(window);
+    }
+    public static void UnregisterWindowTarget(IntPtr window, IShellFileDropTarget target)
+    {
+        if (WindowTargets.GetValueOrDefault(window) == target) WindowTargets.Remove(window);
+    }
 
     /// <summary>只为拿 ILogger 用（静态类不能当泛型参数）。</summary>
     private sealed class Log { }
@@ -171,6 +185,7 @@ public static partial class ShellFileDrop
 
         // HDROP 只在处理这条消息期间有效：路径必须在这里同步读完
         List<string> paths = ReadPaths(wParam);
+        Windows.Foundation.Point? dropPoint = GetCursorPos(out NativePoint point) ? new(point.X, point.Y) : null;
 
         IShellFileDropTarget? target = Resolve(hwnd);
         if (target is null)
@@ -193,14 +208,20 @@ public static partial class ShellFileDrop
         DispatcherQueue? queue = DispatcherQueue.GetForCurrentThread();
         if (queue is null)
         {
-            _ = target.OnShellFilesDroppedAsync(paths);
+            _ = DispatchAsync(target, paths, dropPoint);
         }
         else
         {
-            queue.TryEnqueue(() => _ = target.OnShellFilesDroppedAsync(paths));
+            queue.TryEnqueue(() => _ = DispatchAsync(target, paths, dropPoint));
         }
 
         return true;
+    }
+
+    private static async Task DispatchAsync(IShellFileDropTarget target, IReadOnlyList<string> paths, Windows.Foundation.Point? point)
+    {
+        try { await target.OnShellFilesDroppedAsync(paths, point); }
+        catch (Exception ex) { Logger.LogError(ex, "处理拖入文件失败"); }
     }
 
 
@@ -256,6 +277,7 @@ public static partial class ShellFileDrop
         IntPtr current = hwnd;
         for (int depth = 0; current != IntPtr.Zero && depth < 8; depth++)
         {
+            if (WindowTargets.TryGetValue(current, out var windowTarget)) return windowTarget;
             if (Targets.TryGetValue(current, out IShellFileDropTarget? target))
             {
                 return target;
@@ -349,6 +371,12 @@ public static partial class ShellFileDrop
     #region Win32
 
     private const string OleDropTargetProperty = "OleDropTargetInterface";
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X; public int Y; }
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetCursorPos(out NativePoint point);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

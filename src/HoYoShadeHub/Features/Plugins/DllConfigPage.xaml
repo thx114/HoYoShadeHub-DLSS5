@@ -40,23 +40,29 @@
                        VerticalAlignment="Center"
                        Foreground="{ThemeResource SystemFillColorSuccessBrush}"
                        Style="{ThemeResource CaptionTextBlockStyle}"
-                       Text="DLSS5 运行时齐了（nvngx_dlssnr.dll + Streamline）"
+                       Text="运行时齐全"
                        Visibility="Collapsed" />
 
             <StackPanel Grid.Column="2"
                         Orientation="Horizontal"
                         Spacing="8"
                         VerticalAlignment="Center">
+                <Button Click="Button_ImportNr_Click" Content="导入 NR" />
                 <Button x:Name="Button_FixDlss5"
                         Click="Button_FixDlss5_Click"
                         Content="安装必要组件"
                         Style="{ThemeResource AccentButtonStyle}"
                         ToolTipService.ToolTip="缺什么装什么：DLSS5 神经渲染运行时（nvngx_dlssnr.dll）+ Streamline" />
-                <Button x:Name="Button_Refresh" Click="Button_Refresh_Click" ToolTipService.ToolTip="重新检测">
-                    <FontIcon FontSize="14" Glyph="&#xE72C;" />
+                <Button Click="Button_Refresh_Click" Content="检查更新" />
+                <Button Content="更多">
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Click="Button_ConsolidateNr_Click" Text="整理 NR 硬链接" />
+                            <MenuFlyoutItem Click="Button_PickFolder_Click" Text="指定目录" />
+                            <MenuFlyoutItem Click="Button_OpenFolder_Click" Text="打开目录" />
+                        </MenuFlyout>
+                    </Button.Flyout>
                 </Button>
-                <Button x:Name="Button_PickFolder" Click="Button_PickFolder_Click" Content="指定目录" />
-                <Button x:Name="Button_OpenFolder" Click="Button_OpenFolder_Click" Content="打开目录" />
             </StackPanel>
         </Grid>
 
@@ -66,153 +72,99 @@
                  IsOpen="False"
                  Severity="Informational" />
 
-        <Grid Grid.Row="2" ColumnSpacing="16">
+        <Grid Grid.Row="2" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="340" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="2*" MinWidth="340" />
+                <ColumnDefinition Width="3*" />
             </Grid.ColumnDefinitions>
-
-            <!--  左：现在装了什么  -->
-            <Border Grid.Column="0"
-                    Padding="12"
-                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="4">
-                <Grid RowSpacing="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               Style="{ThemeResource CaptionTextBlockStyle}"
-                               Text="插件目录里现有的 DLL" />
-
-                    <ListView x:Name="InstalledList" Grid.Row="1" Padding="0" SelectionMode="None">
-                        <ListView.ItemTemplate>
-                            <!--  一个 dll 一行：文件名 + 版本挤一行，大小贴最右（用户要求，别两行）  -->
-                            <DataTemplate x:DataType="local:InstalledDllViewModel">
-                                <Grid Margin="0,2" ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0"
-                                                Orientation="Horizontal"
-                                                Spacing="6"
-                                                VerticalAlignment="Center">
-                                        <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind FileName, Mode=OneWay}" />
-                                        <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind VersionText, Mode=OneWay}" />
-                                    </StackPanel>
-                                    <TextBlock Grid.Column="1"
-                                               VerticalAlignment="Center"
-                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                               Style="{ThemeResource CaptionTextBlockStyle}"
-                                               Text="{x:Bind SizeText, Mode=OneWay}" />
-                                </Grid>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-
-                    <TextBlock x:Name="TextBlock_InstalledEmpty"
-                               Grid.Row="1"
-                               Margin="0,12,0,0"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               Style="{ThemeResource CaptionTextBlockStyle}"
-                               Text="这个目录里还没有 dll。"
-                               TextWrapping="Wrap"
-                               Visibility="Collapsed" />
+            <Border Padding="10,8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
+                <Grid RowSpacing="6">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="DLL 清单" />
+                    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Hidden" VerticalScrollMode="Enabled">
+                        <StackPanel Spacing="4">
+                            <ItemsControl x:Name="ItemsControl_Families" ItemsSource="{x:Bind Families}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="local:DllFamilyViewModel">
+                                        <StackPanel Padding="0,4" Spacing="3">
+                                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Title}" />
+                                            <Grid ColumnSpacing="4">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                <ComboBox MinWidth="0" HorizontalAlignment="Stretch" ItemsSource="{x:Bind Versions}" SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}" ToolTipService.ToolTip="选择 DLL 版本" />
+                                                <Button Grid.Column="1" Padding="8,4" Click="Button_InstallDll_Click" Content="切换" IsEnabled="{x:Bind CanInstall, Mode=OneWay}" />
+                                            </Grid>
+                                            <ItemsControl ItemsSource="{x:Bind Files}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="local:InstalledDllViewModel">
+                                                        <Grid ColumnSpacing="4" Padding="0,1">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                            <TextBlock Text="{x:Bind FileName}" TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}" ToolTipService.ToolTip="{x:Bind VersionText}" />
+                                                            <TextBlock Grid.Column="1" Text="{x:Bind SizeText}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <ItemsControl ItemsSource="{x:Bind OtherInstalled}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="local:InstalledDllViewModel">
+                                        <TextBlock Margin="0,1" Text="{x:Bind FileName}" TextTrimming="CharacterEllipsis" Style="{ThemeResource CaptionTextBlockStyle}" ToolTipService.ToolTip="{x:Bind VersionText}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </Border>
-
-            <!--  右：可下载的组件  -->
-            <Grid Grid.Column="1" RowSpacing="8">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <ScrollViewer Grid.Row="0" Grid.RowSpan="2">
-                    <ItemsControl x:Name="ItemsControl_Families" ItemsSource="{x:Bind Families}">
+            <Grid Grid.Column="1" RowSpacing="6">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Style="{ThemeResource SubtitleTextBlockStyle}" Text="NR 版本库" />
+                    </StackPanel>
+                </Grid>
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl x:Name="ItemsControl_NrVersions" ItemsSource="{x:Bind NrVersions}">
                         <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="local:DllFamilyViewModel">
-                                <Border Margin="0,0,0,8"
-                                        Padding="14,10"
-                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="4">
-                                    <StackPanel Spacing="6">
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <TextBlock Style="{ThemeResource BodyStrongTextBlockStyle}" Text="{x:Bind Title, Mode=OneWay}" />
-                                            <Border Padding="6,1"
-                                                    VerticalAlignment="Center"
-                                                    Background="{ThemeResource SystemFillColorCriticalBackgroundBrush}"
-                                                    CornerRadius="3"
-                                                    Visibility="{x:Bind RequiredBadgeVisibility, Mode=OneWay}">
-                                                <TextBlock FontSize="11" Text="DLSS5 必需" />
-                                            </Border>
-                                        </StackPanel>
-
-                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                   Style="{ThemeResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind Note, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-
-                                        <!--  需求6：这一类 dll 装过的版本（每行一个删除）。
-                                              删除按钮贴着版本名（用户要求，别甩到行尾）；「使用中」角标跟在后面。
-                                              「已装 xx」/「已安装版本：N 个」已删 —— 和下面列表重复。  -->
-                                        <ItemsControl ItemsSource="{x:Bind InstalledVersionRows, Mode=OneWay}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate x:DataType="local:InstalledDllVersionRow">
-                                                    <StackPanel Margin="0,1"
-                                                                Orientation="Horizontal"
-                                                                Spacing="6"
-                                                                VerticalAlignment="Center">
-                                                        <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Text="{x:Bind DisplayText, Mode=OneWay}" />
-                                                        <Button MinWidth="0"
-                                                                Padding="6,0"
-                                                                Height="20"
-                                                                Click="Button_DeleteDllVersion_Click"
-                                                                ToolTipService.ToolTip="删除归档里的这个版本（共享目录里当前生效的那份不动）">
-                                                            <FontIcon FontSize="11" Glyph="&#xE74D;" />
-                                                        </Button>
-                                                        <Border Padding="6,1"
-                                                                Background="{ThemeResource AccentFillColorDefaultBrush}"
-                                                                CornerRadius="3"
-                                                                Visibility="{x:Bind CurrentVisibility, Mode=OneWay}">
-                                                            <TextBlock FontSize="11"
-                                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                                                       Text="使用中" />
-                                                        </Border>
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <ComboBox MinWidth="200"
-                                                      ItemsSource="{x:Bind Versions, Mode=OneWay}"
-                                                      SelectedItem="{x:Bind SelectedVersion, Mode=TwoWay}"
-                                                      ToolTipService.ToolTip="选一个版本；括号里是备注" />
-                                            <Button Click="Button_InstallDll_Click"
-                                                    Content="安装"
-                                                    IsEnabled="{x:Bind CanInstall, Mode=OneWay}"
-                                                    Style="{ThemeResource AccentButtonStyle}" />
-                                        </StackPanel>
-                                    </StackPanel>
+                            <DataTemplate x:DataType="local:NrVersionCardViewModel">
+                                <StackPanel>
+                                <TextBlock Text="可下载" Margin="0,8,0,8" Style="{ThemeResource BodyStrongTextBlockStyle}" Visibility="{x:Bind DownloadHeadingVisibility}" />
+                                <Border Margin="0,0,0,6" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4">
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="4" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <Border Background="{x:Bind BarBrush}" CornerRadius="3,0,0,3" />
+                                        <Grid Grid.Column="1" Margin="0,8,12,8" ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Version}" Style="{ThemeResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                            <TextBlock Text="{x:Bind StatusText}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                <Button Width="28" Height="28" MinWidth="0" MinHeight="0" Padding="4" Background="Transparent" BorderThickness="0" VerticalAlignment="Center" Click="Button_DownloadNr_Click" ToolTipService.ToolTip="{x:Bind DownloadText}" AutomationProperties.Name="{x:Bind DownloadText}" Visibility="{x:Bind DownloadVisibility}">
+                                                    <FontIcon Glyph="&#xE896;" FontSize="14" />
+                                                </Button>
+                                                <Button Width="28" Height="28" MinWidth="0" MinHeight="0" Padding="4" Background="Transparent" BorderThickness="0" VerticalAlignment="Center" Click="Button_CheckNrUpdate_Click" ToolTipService.ToolTip="检查更新" AutomationProperties.Name="检查更新" Visibility="{x:Bind InstalledActionsVisibility}">
+                                                    <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                                                </Button>
+                                                <Button Width="28" Height="28" MinWidth="0" MinHeight="0" Padding="4" Background="Transparent" BorderThickness="0" VerticalAlignment="Center" Click="Button_OpenNr_Click" ToolTipService.ToolTip="打开目录" AutomationProperties.Name="打开目录" IsEnabled="{x:Bind IsInstalled}" Visibility="{x:Bind InstalledActionsVisibility}">
+                                                    <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                                                </Button>
+                                                <ToggleSwitch Margin="6,0,0,0" VerticalAlignment="Center" MinWidth="0" IsOn="{x:Bind IsAvailable}" IsEnabled="{x:Bind IsInstalled}" OnContent="" OffContent="" ToolTipService.ToolTip="控制此版本是否在 OPT 和插件页的 NR 选择器中出现；不更改已有游戏选择" Toggled="Toggle_NrGlobal_Toggled" Visibility="{x:Bind InstalledActionsVisibility}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Grid>
                                 </Border>
+                                </StackPanel>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
             </Grid>
         </Grid>
-
         <StackPanel Grid.Row="3" Spacing="4">
             <ProgressBar x:Name="ProgressBar_Overall"
                          Height="3"

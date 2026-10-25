@@ -1,4 +1,4 @@
-using HoYoShadeHub.Extensions.Services;
+﻿using HoYoShadeHub.Extensions.Services;
 
 namespace HoYoShadeHub.Extensions.Dlls;
 
@@ -143,6 +143,19 @@ public sealed class DllVersionStore
         }
     }
 
+    /// <summary>归档里某个文件的完整路径；没有就是空串。</summary>
+    public string FilePath(string familyId, string version, string fileName)
+    {
+        string dir = DirectoryFor(familyId, version);
+        if (dir.Length == 0 || string.IsNullOrWhiteSpace(fileName))
+        {
+            return string.Empty;
+        }
+
+        string path = Path.Combine(dir, fileName);
+        return File.Exists(path) ? path : string.Empty;
+    }
+
 
 
     /// <summary>只删这一版（其余版本与共享目录都不动）</summary>
@@ -154,7 +167,11 @@ public sealed class DllVersionStore
             return false;
         }
 
+        // 先撤销恢复记账。删除失败仍保留可见归档，避免成功删除后被页面刷新复活。
+        if (familyId.Equals("dlssnr", StringComparison.OrdinalIgnoreCase))
+            NrRuntimeLibrary.ForgetVersion(Path.GetDirectoryName(RootPath)!, version);
         HysxUtil.TryDeleteDirectory(dir);
+        if (Directory.Exists(dir)) return false;
 
         // 这个 family 的版本目录空了就把空目录一起收掉
         try
@@ -176,7 +193,7 @@ public sealed class DllVersionStore
 
     /// <summary>
     /// 把刚装好的这些文件归档一份（硬链接优先，失败 / 跨盘复制）。
-    /// 目标文件已经存在且大小一样就跳过（幂等）；任何一步失败都只记进结果，不抛。
+    /// NR 按内容硬链接并单独记账；其他文件沿用更新时间判断。单个文件失败不影响其他文件。
     /// </summary>
     /// <returns>这次真正落位的文件数</returns>
     public int Archive(string familyId, string version, IEnumerable<string>? sourceFiles)
@@ -203,12 +220,25 @@ public sealed class DllVersionStore
                     }
 
                     string target = Path.Combine(dir, Path.GetFileName(source));
-                    if (HysxFileLink.SizeEquals(source, target))
+                    if (HysxFileLink.IsNeuralRuntime(source)
+                        ? HysxFileLink.AreHardLinked(source, target)
+                        : HysxFileLink.IsUpToDate(source, target))
                     {
+                        if (familyId.Equals("dlssnr", StringComparison.OrdinalIgnoreCase) && HysxFileLink.IsNeuralRuntime(source))
+                            NrRuntimeLibrary.RememberVersion(Path.GetDirectoryName(RootPath)!, version,
+                                NrRuntimeLibrary.Intern(Path.GetDirectoryName(RootPath)!, source));
                         continue;
                     }
 
-                    HysxFileLink.LinkOrCopy(source, target);
+                    if (HysxFileLink.IsNeuralRuntime(source))
+                    {
+                        string canonical = NrRuntimeLibrary.Intern(Path.GetDirectoryName(RootPath)!, source);
+                        HysxFileLink.LinkNeuralRuntime(canonical, target);
+                        HysxFileLink.LinkNeuralRuntime(canonical, source);
+                        if (familyId.Equals("dlssnr", StringComparison.OrdinalIgnoreCase))
+                            NrRuntimeLibrary.RememberVersion(Path.GetDirectoryName(RootPath)!, version, canonical);
+                    }
+                    else HysxFileLink.LinkOrCopy(source, target);
                     archived++;
                 }
                 catch

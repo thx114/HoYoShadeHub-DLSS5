@@ -177,6 +177,7 @@
                                                   Style="{ThemeResource CaptionTextBlockStyle}"
                                                   Text="{x:Bind MetaText, Mode=OneWay}" />
 
+
                                         <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                                   Style="{ThemeResource CaptionTextBlockStyle}"
                                                   Text="{x:Bind FileName, Mode=OneWay}"
@@ -203,13 +204,16 @@
                                             <RowDefinition Height="*" />
                                         </Grid.RowDefinitions>
 
-                                        <ToggleSwitch Grid.Row="0"
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+
+                                        <ToggleSwitch
                                                      MinWidth="0"
                                                      HorizontalAlignment="Right"
                                                      IsEnabled="{x:Bind CanToggle, Mode=OneWay}"
                                                      IsOn="{x:Bind Enabled, Mode=TwoWay}"
                                                      OffContent="禁用"
                                                      OnContent="启用" />
+                                        </StackPanel>
 
                                         <!--  需求3：展开 / 缩回，贴在这一格的右下角（和左边「版本」下拉同一行）。
                                               注意：按钮**内容**里不能挂 x:Bind（这条 SDK 的 XamlCompiler 会直接崩，试过
@@ -251,6 +255,7 @@
                                                Grid.Row="1"
                                                Grid.ColumnSpan="2">
                                         <MenuFlyoutSeparator Margin="0,4,0,4" />
+                                        <ComboBox x:Name="ComboBox_NrVersion" Width="220" VerticalAlignment="Center" Loaded="ComboBox_Nr_Loaded" DropDownOpened="ComboBox_Nr_DropDownOpened" SelectionChanged="ComboBox_Nr_SelectionChanged" Visibility="{x:Bind NrChoiceVisibility, Mode=OneWay}" ToolTipService.ToolTip="选择本游戏 NR 版本；选择后立即保存，重启游戏生效" AutomationProperties.Name="NR 版本" />
 
                                         <!--  DLSS5 Feed：开局那两个延迟（写 dlss5-feed.cfg）  -->
                                         <StackPanel Spacing="6" Visibility="{x:Bind FeedConfigVisibility, Mode=OneWay}">

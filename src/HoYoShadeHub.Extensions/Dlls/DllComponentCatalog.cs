@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using HoYoShadeHub.Extensions.Conditions;
 using HoYoShadeHub.Extensions.Networking;
@@ -6,7 +6,7 @@ using HoYoShadeHub.Extensions.Networking;
 namespace HoYoShadeHub.Extensions.Dlls;
 
 /// <summary>一个可下载的 dll 包（zip）</summary>
-public sealed record DllComponent(string Family, string Version, string Url, string? Note = null)
+public sealed record DllComponent(string Family, string Version, string Url, string? Note = null, string? Sha256 = null)
 {
     /// <summary>版本归一化（去掉结尾的 .0）—— PE 里读出来是 <c>310,8,0,0</c>，清单里写的是 <c>310.8.0</c></summary>
     public string NormalizedVersion => DllVersion.Normalize(Version);
@@ -116,7 +116,7 @@ public static class DllComponentCatalog
             :
             [
                 new("dlssnr", "DLSS5 神经渲染运行时", "nvngx_dlssnr.dll", DllRequirementLevel.Required,
-                    "DLSS5 插件必须有它。50 系一般用 310.8.0；30/40 系如果不出画面，换带 RTX40 或 SF 的那几个试试。"),
+                    "DLSS5 插件必须有它。RTX 20/30 默认用 310.9.16 F5 加速特化版；RTX 40/50 默认用 SF 通用版。"),
                 new("streamline", "Streamline 运行时", "sl.*.dll", DllRequirementLevel.Required,
                     "sl.interposer.dll / sl.dlss_nr.dll 这一整套。缺了 DLSS5 大概率不出画面。\n注意：2.14.1.0 起的包里已经没有 sl.interposer.dll，默认装 2.14.0.0。",
                     PreferredVersion: "2.14.0.0"),
@@ -278,8 +278,23 @@ public static class DllComponentCatalog
                 ? extra.Url
                 : $"{DefaultDownloadBase.TrimEnd('/')}/{extra.Url.TrimStart('/')}";
 
-            AddIfMissing(components, extra.Family, extra.Version, url, extra.Note);
+            AddIfMissing(components, extra.Family, extra.Version, url, extra.Note, extra.Sha256);
         }
+
+        // DLL 下载和指纹清单独立热更新；云端元数据覆盖相同版本的旧来源。
+        foreach (DllComponent runtime in NrRuntimeCatalog.Components)
+        {
+            if (!blocked.Any(b => b.Family.Equals(runtime.Family, StringComparison.OrdinalIgnoreCase)
+                && b.Version.Equals(runtime.Version, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (components.TryGetValue(runtime.Family, out var existing))
+                    existing.RemoveAll(c => c.Version.Equals(runtime.Version, StringComparison.OrdinalIgnoreCase));
+                AddIfMissing(components, runtime.Family, runtime.Version, runtime.Url, runtime.Note, runtime.Sha256);
+            }
+        }
+
+        foreach (string family in components.Keys.ToArray())
+            components[family] = [.. components[family].OrderByDescending(c => c.Version, DllVersionComparer.Instance)];
 
         return new DllCatalog(components, error);
     }
@@ -289,7 +304,8 @@ public static class DllComponentCatalog
         string family,
         string version,
         string url,
-        string? note)
+        string? note,
+        string? sha256 = null)
     {
         if (!components.TryGetValue(family, out List<DllComponent>? list))
         {
@@ -302,7 +318,7 @@ public static class DllComponentCatalog
             return;
         }
 
-        list.Add(new DllComponent(family, version, url, note));
+        list.Add(new DllComponent(family, version, url, note, sha256));
     }
 
     private sealed class DllManifestEntry
@@ -436,6 +452,27 @@ public static class DllVersion
             int x = i < numbersA.Count ? numbersA[i] : 0;
             int y = i < numbersB.Count ? numbersB[i] : 0;
             if (x != y)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>比较版本号中已有的数字前缀，允许变体名省略 PE 的尾段。</summary>
+    public static bool SameNumericPrefix(string? a, string? b)
+    {
+        (List<int> numbersA, _) = Split(a);
+        (List<int> numbersB, _) = Split(b);
+        if (numbersA.Count == 0 || numbersB.Count == 0 || numbersA.Count > numbersB.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < numbersA.Count; i++)
+        {
+            if (numbersA[i] != numbersB[i])
             {
                 return false;
             }

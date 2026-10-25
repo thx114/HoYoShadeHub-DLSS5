@@ -1,4 +1,6 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
+using System.ComponentModel;
+using Microsoft.Win32.SafeHandles;
 using System.Security.Cryptography;
 
 namespace HoYoShadeHub.Extensions.Services;
@@ -16,6 +18,50 @@ public static class HysxFileLink
 {
     [DllImport("Kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileIdentity info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileIdentity
+    {
+        public uint Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME Creation, Access, Write;
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+
+    public static bool IsNeuralRuntime(string path) =>
+        Path.GetFileName(path).Equals("nvngx_dlssnr.dll", StringComparison.OrdinalIgnoreCase);
+
+    public static bool AreHardLinked(string a, string b)
+    {
+        try
+        {
+            using var x = File.OpenHandle(a, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var y = File.OpenHandle(b, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return GetFileInformationByHandle(x, out var first) && GetFileInformationByHandle(y, out var second)
+                && first.Volume == second.Volume && first.IndexHigh == second.IndexHigh && first.IndexLow == second.IndexLow;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>NR 必须硬链接；失败时保留原目标，禁止静默复制。</summary>
+    public static void LinkNeuralRuntime(string source, string target)
+    {
+        if (AreHardLinked(source, target)) return;
+        string full = Path.GetFullPath(target);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        string staged = full + ".hysx-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            if (!CreateHardLinkW(staged, Path.GetFullPath(source), IntPtr.Zero))
+                throw new IOException("NR 硬链接失败（源和目标必须位于同一卷）：" + full,
+                    new Win32Exception(Marshal.GetLastWin32Error()));
+            File.Move(staged, full, overwrite: true);
+            if (!AreHardLinked(source, full)) throw new IOException("NR 硬链接校验失败：" + full);
+        }
+        finally { if (File.Exists(staged)) File.Delete(staged); }
+    }
 
     /// <summary>两个路径是不是落在同一个卷上（硬链接的前提）</summary>
     public static bool SameVolume(string a, string b)
@@ -40,6 +86,11 @@ public static class HysxFileLink
     /// <returns>true = 硬链接，false = 复制</returns>
     public static bool LinkOrCopy(string source, string target)
     {
+        if (IsNeuralRuntime(source))
+        {
+            LinkNeuralRuntime(source, target);
+            return true;
+        }
         string targetFull = Path.GetFullPath(target);
         Directory.CreateDirectory(Path.GetDirectoryName(targetFull)!);
 
@@ -75,6 +126,8 @@ public static class HysxFileLink
             {
                 return false;
             }
+
+            if (IsNeuralRuntime(source)) return AreHardLinked(source, target);
 
             var sourceInfo = new FileInfo(source);
             var targetInfo = new FileInfo(target);

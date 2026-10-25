@@ -1,4 +1,4 @@
-
+﻿
 using HoYoShadeHub.Core;
 using HoYoShadeHub.Extensions;
 using HoYoShadeHub.Extensions.Conditions;
@@ -13,8 +13,29 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+if (args.Length == 1 && args[0] == "mod-preview-tests")
+    return HoYoShadeHub.Extensions.Tests.ModPreviewTests.Run();
+
+if (args.Length > 0 && args[0] == "mod-directory-tests")
+    return HoYoShadeHub.Extensions.Tests.ModDirectoryPolicyTests.Run(Path.Combine(Path.GetTempPath(), "mod-category-tests-" + Guid.NewGuid().ToString("N")), args.Length > 1 ? args[1] : null);
+
+if (args.Length > 0 && args[0] == "nr-archive-download-tests")
+    return await HoYoShadeHub.Extensions.Tests.NrArchiveDownloadTests.RunAsync();
+
+if (args.Length > 0 && args[0] == "nr-selection-tests")
+    return HoYoShadeHub.Extensions.Tests.NrSelectionTests.Run(args);
+
+if (args.Length > 0 && args[0] == "nr-runtime-tests")
+    return await HoYoShadeHub.Extensions.Tests.NrRuntimeTests.RunAsync(args);
+
 if (args.Length == 1 && args[0] == "game-launch-continuation-tests")
     return await HoYoShadeHub.Extensions.Tests.GameLaunchContinuationTests.RunAsync();
+
+if (args.Length > 0 && args[0] == "uid-report-tests")
+    return HoYoShadeHub.Extensions.Tests.UidReportTests.Run(args);
+
+if (args.Length > 0 && args[0] is "uid-pipe-tests" or "uid-foreign-client" or "uid-lifetime-worker")
+    return await HoYoShadeHub.Extensions.Tests.UidReportPipeTests.RunAsync(args);
 
 if (args.Length == 1 && args[0] == "genshin-graphics-tests")
     return HoYoShadeHub.Extensions.Tests.GenshinGraphicsSettingsTests.Run();
@@ -53,11 +74,20 @@ if (args.Length == 1 && args[0] == "rtss-profile-tests")
 if (args.Length == 1 && args[0] == "opti-ai-interlock-tests")
     return HoYoShadeHub.Extensions.Tests.OptiSmoothMotionTests.Run();
 
+if (args.Length == 1 && args[0] == "opti-standalone-tests")
+{
+    HoYoShadeHub.Extensions.Tests.OptiStandaloneLaunchTests.Run();
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "wuthering-reshade-tests")
     return HoYoShadeHub.Extensions.Tests.WutheringReShadeInjectionTests.Run();
 
 if (args.Length == 1 && args[0] == "addon-freshness-tests")
     return HoYoShadeHub.Extensions.Tests.AddonFreshnessTests.Run();
+
+if (args.Length == 1 && args[0] == "uplift-pack-tests")
+    return HoYoShadeHub.Extensions.Tests.UpliftPackTests.Run();
 
 // Focused bootstrap regressions: no game or launcher process is started.
 if (args.Length == 1 && args[0] == "bootstrap-tests")
@@ -1488,6 +1518,10 @@ AddonToggleResult back = AddonFileSwitcher.SetEnabled(off.Path!, true);
 Check(back.Ok && File.Exists(globalAddon), "再启用回来（名字还原）");
 AddonToggleResult noop = AddonFileSwitcher.SetEnabled(globalAddon, true);
 Check(noop.Ok && noop.Path == globalAddon, "已经是启用状态时是空操作");
+AddonToggleResult offFromCard = AddonFileSwitcher.SetEnabled(globalAddon, false);
+Check(offFromCard.Ok && offFromCard.Path is not null, "卡片旧路径：再次全局禁用");
+AddonToggleResult backFromCard = AddonFileSwitcher.SetEnabled(globalAddon, true);
+Check(backFromCard.Ok && backFromCard.Path == globalAddon && File.Exists(globalAddon), "卡片保留旧路径时也能重新启用");
 Check(!AddonFileSwitcher.SetEnabled(Path.Combine(globalDir, "nope.addon64"), false).Ok, "文件不在时给出错误而不是抛异常");
 
 Console.WriteLine();
@@ -1940,7 +1974,9 @@ Check(File.ReadAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRunti
 NrdllPlaceResult nrdllAgain = OptiScalerRuntime.EnsureNrdll(nrdllBuildDir, nrdllAddonsDir);
 Check(nrdllAgain.Status == NrdllPlaceStatus.AlreadyPresent, "已有同样大小的一份就不重复拷（别乱覆盖用户自己换的版本）");
 
-File.WriteAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName), "a-much-longer-user-supplied-runtime");
+string replacementNr = Path.Combine(nrdllBuildDir, "replacement-nr.tmp");
+File.WriteAllText(replacementNr, "a-much-longer-user-supplied-runtime");
+File.Move(replacementNr, Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName), true);
 NrdllPlaceResult nrdllFixedUp = OptiScalerRuntime.EnsureNrdll(nrdllBuildDir, nrdllAddonsDir);
 Check(nrdllFixedUp.Status == NrdllPlaceStatus.Copied && File.ReadAllText(Path.Combine(nrdllBuildDir, OptiScalerRuntime.NeuralRuntimeFileName)) == "nr-runtime-payload",
     "目录里那份大小不对时会被插件目录里的覆盖回去");
@@ -2902,6 +2938,21 @@ Check(dllStore.DeleteVersion("dlssnr", "310.8.0") && !dllStore.Has("dlssnr", "31
         "记账说 310.8.0、盘上 PE 却是 310.8.3.0（对不上）→ 不信记账，老实说认不出来");
     Check(!DllVariantResolver.Identify(null, nrFamily, lecramOnDisk, null, 0).Known,
         "没记账 → 认不出来（不再瞎猜成 310.8.0）");
+    var newerOnDisk = new InstalledDll("nvngx_dlssnr.dll", 123456, "310.9.16.0");
+    Check(!DllVariantResolver.Identify(null, nrFamily, newerOnDisk, "310.8.3 (50xx)", 123456).Known,
+        "新 310.9.16 不接受旧 50xx 记账（不再伪装成 50xx）");
+    Check(!DllVariantResolver.Identify(null, nrFamily, newerOnDisk, "310.8.Lecram", 999).Known,
+        "新 310.9.16 不接受旧 Lecram 记账（数字前缀不一致）");
+    string wrongLabelCache = Path.Combine(root, "dllcache-wrong-label");
+    var wrongLabelStore = new DllVersionStore(wrongLabelCache);
+    string wrongLabelStage = Path.Combine(root, "dllstage-wrong-label");
+    Directory.CreateDirectory(wrongLabelStage);
+    string wrongLabelPath = Path.Combine(wrongLabelStage, "nvngx_dlssnr.dll");
+    File.WriteAllText(wrongLabelPath, new string('n', 888));
+    Check(wrongLabelStore.Archive("dlssnr", "310.8.3 (50xx)", [wrongLabelPath]) == 1, "探针：归档错误标签");
+    var wrongLabelOnDisk = new InstalledDll("nvngx_dlssnr.dll", 888, "310.9.16.0") { Path = wrongLabelPath };
+    Check(!DllVariantResolver.Identify(wrongLabelStore, nrFamily, wrongLabelOnDisk, null, 0).Known,
+        "归档内容相同但标签与 PE 不符时不误认成 50xx");
     Check(DllVariantResolver.Identify(null, nrFamily, null, "310.8.0", 1).Variant is null,
         "没装 → 没有变体");
 
