@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-25",
+  "fingerprints": [
+    {
+      "family": "dlssnr",
+      "fileName": "nvngx_dlssnr.dll",
+      "version": "310.9.16-SF",
+      "size": 276162560,
+      "sha256": "CDFA6C1EC784867182164C7836F324F087B5C9F374D0C9FE46F54999FEABF3ED",
+      "peVersion": "310.9.16",
+      "machine": "Amd64",
+      "requireDll": true
+    },
+    {
+      "family": "dlssnr",
+      "fileName": "nvngx_dlssnr.dll",
+      "version": "310.9.16-F5",
+      "size": 534586880,
+      "sha256": "30B6B599DBC593E5F9A8A0DDB2EDAC6F2F15AD0EAA967CD6BB0AB6BB224825C3",
+      "peVersion": "310.9.16",
+      "machine": "Amd64",
+      "requireDll": true
+    },
+    {
+      "family": "dlssnr",
+      "fileName": "nvngx_dlssnr.dll",
+      "version": "原神V2 预设A_3000",
+      "size": 266424944,
+      "sha256": "2B385F0965AA9CD130A0C2A22B66FB59BEC88D8F8592CC37A6C25AD51E8CEF3D",
+      "peVersion": "310.9.16",
+      "machine": "Amd64",
+      "requireDll": true
+    },
+    {
+      "family": "dlssnr",
+      "fileName": "nvngx_dlssnr.dll",
+      "version": "原神V2 3000",
+      "size": 276162560,
+      "sha256": "E58C6FBC20D327A4CF7F8BF3C1181FD14F120F9EAE41F57F1708DAA5C867FB37",
+      "peVersion": "310.9.16",
+      "machine": "Amd64",
+      "requireDll": true
+    }
+  ],
+  "packages": [
+    {
+      "family": "dlssnr",
+      "version": "310.9.16-SF",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-310.9.16/nvngx_dlssnr_310.9.16-SF.zip",
+      "note": "通用兼容版；RTX 40/50 默认使用",
+      "sha256": "0C973B9CD94F859551D045B81E38B9101BC1DA54BC8F66F21E2554B0C16DFA36"
+    },
+    {
+      "family": "dlssnr",
+      "version": "310.9.16-F5",
+      "url": "https://github.com/thx114/HoYoShadeHub-DLSSNR-Runtimes/releases/download/nr-310.9.16/nvngx_dlssnr_310.9.16-F5-RTX20-30.zip",
+      "note": "F5 加速特化版；RTX 20/30 默认使用",
+      "sha256": "9C3A20CA0F73D59533563524F960E778D39D909D76151271BB175B68F9564187"
+    }
+  ]
+}
